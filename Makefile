@@ -1,10 +1,10 @@
 # Flaschen Taschen C++ - Top-level Makefile
 # Routes build commands to subdirectories
 
-.PHONY: all api client server examples hardware clean help
+.PHONY: all api client server examples hardware demos clean help
 
 # Default target
-all: api client server examples hardware
+all: api client server examples hardware demos
 
 # Build individual components
 api:
@@ -15,13 +15,16 @@ client: api
 	$(MAKE) -C client/game
 
 server: api
-	$(MAKE) -C server FT_BACKEND=$(FT_BACKEND)
+	$(MAKE) -C server $(if $(FT_BACKEND),FT_BACKEND=$(FT_BACKEND))
 
 examples: api
 	$(MAKE) -C examples-api-use
 
 hardware:
 	$(MAKE) -C hardware
+
+demos: api
+	$(MAKE) -C demos
 
 # Clean all artifacts
 clean:
@@ -31,18 +34,20 @@ clean:
 	$(MAKE) -C server clean
 	$(MAKE) -C examples-api-use clean
 	$(MAKE) -C hardware clean
+	$(MAKE) -C demos clean
 
 # Help
 help:
 	@echo "Flaschen Taschen C++ Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make              Build everything (api, client, server, examples, hardware)"
+	@echo "  make              Build everything (api, client, server, examples, hardware, demos)"
 	@echo "  make api          Build libftclient library only"
 	@echo "  make client       Build client tools and games"
 	@echo "  make server       Build server (FT_BACKEND=terminal by default)"
 	@echo "  make examples     Build example programs"
 	@echo "  make hardware     Build hardware utilities"
+	@echo "  make demos        Build all demo implementations (games, examples, visual effects)"
 	@echo "  make clean        Clean all build artifacts"
 	@echo "  make help         Show this help message"
 	@echo ""
