@@ -12,7 +12,6 @@ api:
 
 client: api
 	$(MAKE) -C client
-	$(MAKE) -C client/game
 
 server: api
 	$(MAKE) -C server $(if $(FT_BACKEND),FT_BACKEND=$(FT_BACKEND))
@@ -30,7 +29,6 @@ demos: api
 clean:
 	$(MAKE) -C api/lib clean
 	$(MAKE) -C client clean
-	$(MAKE) -C client/game clean
 	$(MAKE) -C server clean
 	$(MAKE) -C examples-api-use clean
 	$(MAKE) -C hardware clean
@@ -43,13 +41,17 @@ help:
 	@echo "Targets:"
 	@echo "  make              Build everything (api, client, server, examples, hardware, demos)"
 	@echo "  make api          Build libftclient library only"
-	@echo "  make client       Build client tools and games"
+	@echo "  make client       Build client tools (send-text, send-image, send-video)"
 	@echo "  make server       Build server (FT_BACKEND=terminal by default)"
 	@echo "  make examples     Build example programs"
 	@echo "  make hardware     Build hardware utilities"
-	@echo "  make demos        Build all demo implementations (games, examples, visual effects)"
+	@echo "  make demos        Build all demo implementations (examples, server, visual effects)"
 	@echo "  make clean        Clean all build artifacts"
 	@echo "  make help         Show this help message"
+	@echo ""
+	@echo "Optional targets:"
+	@echo "  make -C client/game       Build game implementations (pong-game, etc.)"
+	@echo "  make -C demos/src         Build visual effect demos (hack, black, plasma, etc.)"
 	@echo ""
 	@echo "FT_BACKEND options:"
 	@echo "  terminal          Terminal output (default)"

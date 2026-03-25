@@ -5,7 +5,7 @@ LDFLAGS=-L$(FLASCHEN_TASCHEN_API_DIR)/lib -lftclient
 FTLIB=$(FLASCHEN_TASCHEN_API_DIR)/lib/libftclient.a
 
 MAGICK_CXXFLAGS=$(shell GraphicsMagick++-config --cppflags --cxxflags)
-MAGICK_LDFLAGS=$(shell GraphicsMagick++-config --ldflags --libs)
+MAGICK_LDFLAGS=$(shell GraphicsMagick++-config --ldflags --libs) -L/opt/homebrew/Cellar/libtool/2.5.4/lib
 
 FFMPEG_LDFLAGS=$(shell pkg-config --cflags --libs  libavcodec libavformat libswscale libavutil libavdevice)
 all : send-text send-image send-video
