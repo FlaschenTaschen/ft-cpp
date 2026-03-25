@@ -1,0 +1,9 @@
+*.sh text
+*.cpp text
+*.cc text
+*.py text
+*.md text
+*.pdf binary
+*.jpg binary
+*.jpeg binary
+*.png binary

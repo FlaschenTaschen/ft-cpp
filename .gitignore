@@ -1,0 +1,34 @@
+# Claude Code
+.claude/
+
+# macOS
+.DS_Store
+.netrc
+
+# Build artifacts
+.build/
+build/
+*.o
+*.a
+*.so.1
+
+# Editor/IDE
+.compiler-flags
+.envrc
+.direnv
+
+# Compiled binaries
+ft-server
+send-text
+send-image
+send-video
+simple-animation
+simple-example
+pong-game
+game-client
+
+# Python
+*.pyc
+
+# Misc
+*~
