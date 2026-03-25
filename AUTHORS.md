@@ -32,6 +32,9 @@ See [LICENSE](LICENSE) for the full license text.
 
 The original Flaschen Taschen project is also licensed under GPLv3, ensuring that this consolidated repository maintains compatibility with the original work and remains open-source.
 
+## ft-demos Contributors
+- Carl Gorringe
+
 ## Consolidation
 This `ft-cpp` repository consolidates the server, clients, and demo applications into a single unified C++ repository while maintaining compatibility with the original make-based build system.
 
