@@ -25,6 +25,11 @@ extern "C" {
 #include <time.h>
 #include <unistd.h>
 
+// macOS compatibility: TIMER_ABSTIME is Linux-specific
+#ifndef TIMER_ABSTIME
+#define TIMER_ABSTIME 0
+#endif
+
 #include "udp-flaschen-taschen.h"
 
 typedef int64_t tmillis_t;
@@ -339,8 +344,20 @@ bool PlayVideo(const char *filename, UDPFlaschenTaschen& display, int verbose, f
 
                 total_bytes += SendFrame(output_frame, &display);
                 frame_count++;
-                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_frame,
-                                NULL);
+                // Sleep until next frame time (macOS compatible)
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                if (now.tv_sec < next_frame.tv_sec ||
+                    (now.tv_sec == next_frame.tv_sec && now.tv_nsec < next_frame.tv_nsec)) {
+                    struct timespec sleep_time;
+                    sleep_time.tv_sec = next_frame.tv_sec - now.tv_sec;
+                    sleep_time.tv_nsec = next_frame.tv_nsec - now.tv_nsec;
+                    if (sleep_time.tv_nsec < 0) {
+                        sleep_time.tv_sec--;
+                        sleep_time.tv_nsec += 1000000000;
+                    }
+                    nanosleep(&sleep_time, NULL);
+                }
             }
         }
         repeated_count++; //if time allows- keep playing
@@ -358,7 +375,7 @@ bool PlayVideo(const char *filename, UDPFlaschenTaschen& display, int verbose, f
 
     av_frame_free(&output_frame);
     av_frame_free(&decode_frame);
-    avcodec_close(codec_context);
+    avcodec_free_context(&codec_context);
     avformat_close_input(&format_context);
 
     if (verbose) {

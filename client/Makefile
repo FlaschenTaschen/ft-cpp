@@ -8,7 +8,7 @@ MAGICK_CXXFLAGS=$(shell GraphicsMagick++-config --cppflags --cxxflags)
 MAGICK_LDFLAGS=$(shell GraphicsMagick++-config --ldflags --libs)
 
 FFMPEG_LDFLAGS=$(shell pkg-config --cflags --libs  libavcodec libavformat libswscale libavutil libavdevice)
-all : send-text
+all : send-text send-image send-video
 
 send-text: send-text.cc
 
