@@ -29,6 +29,12 @@ make FT_BACKEND=spixels server     # Spixels backend
 
 See [Migrate.md](Changelog/Migrate.md) for consolidation details and directory structure.
 
+## Source Repositories
+
+This project consolidates code from:
+- [hzeller/flaschen-taschen](https://github.com/hzeller/flaschen-taschen) - Original server and core libraries
+- [cgorringe/ft-demos](https://github.com/cgorringe/ft-demos) - Demo applications and utilities
+
 ## Related Projects
 
 Ports from original C++ code:
