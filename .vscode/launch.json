@@ -1,0 +1,56 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Blur",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/demos/src/blur",
+            "args": [
+                "-h", "localhost",
+                "-l", "10",
+                "-g", "64x64",
+                "-t", "5",
+                "-d", "80",
+                "boxes",
+            ],
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "console": "integratedTerminal",
+            "preLaunchTask": "Build Demos"
+        },
+        {
+            "name": "Debug Simple Example",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/demos/src/simple-example",
+            "args": [
+                "localhost"
+            ],
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "console": "integratedTerminal",
+            "preLaunchTask": "Build Demos"
+        },
+        {
+            "name": "Debug Grayscale",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/demos/src/grayscale",
+            "args": [
+                "-h", "localhost",
+                "-l", "10",
+                "-g", "320x64",
+                "-t", "5",
+                "-d", "80",
+                "-m", "center",
+                "-o", "horizontal",
+                "-f", "content/space-invaders-1.json,content/space-invaders-2.json,content/space-invaders-3.json,content/space-invaders-4.json"
+            ],
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "console": "integratedTerminal",
+            "preLaunchTask": "Build Demos"
+        }
+    ]
+}
