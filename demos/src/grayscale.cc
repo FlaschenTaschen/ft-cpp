@@ -381,8 +381,14 @@ void drawMask(
 }
 
 int main(int argc, char *argv[]) {
+    fprintf(stderr, "grayscale: starting, argc=%d\n", argc);
+
     // Parse command line
-    if (int e = cmdLine(argc, argv)) { return e; }
+    if (int e = cmdLine(argc, argv)) {
+        fprintf(stderr, "grayscale: cmdLine failed with code %d\n", e);
+        return e;
+    }
+    fprintf(stderr, "grayscale: cmdLine OK, loading JSON from: %s\n", opt_filenames.c_str());
 
     // Load and parse JSON files
     std::vector<MaskData> masks;
@@ -461,9 +467,12 @@ int main(int argc, char *argv[]) {
     }
 
     // Open socket and create canvas
+    fprintf(stderr, "grayscale: opening socket to %s\n", opt_hostname ? opt_hostname : "(default)");
     const int socket = OpenFlaschenTaschenSocket(opt_hostname);
+    fprintf(stderr, "grayscale: socket=%d, creating %dx%d canvas\n", socket, opt_width, opt_height);
     UDPFlaschenTaschen canvas(socket, opt_width, opt_height);
     canvas.Clear();
+    fprintf(stderr, "grayscale: canvas created and cleared\n");
 
     // Create rainbow palette
     Color palette[256];
