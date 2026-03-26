@@ -43,6 +43,7 @@ RGB_LDFLAGS=-lrt -lm -lpthread
 
 INCLUDES=-I../../api/include
 OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o
+BUILD_DIR=../../build/demos/server
 
 # Nested if/else are very awkward, so we just compare each possible outcome
 ifeq ($(FT_BACKEND), ft)
@@ -69,10 +70,13 @@ CFLAGS=-Wall -O3 $(INCLUDES) $(DEFINES)
 CXXFLAGS=$(CFLAGS)
 LDFLAGS+=-lpthread
 
-all : ft-server
+all : $(BUILD_DIR)/ft-server
 
-ft-server: main.o $(OBJECTS) $(STATIC_LIBS)
-	$(CXX) -o $@ $^ $(LDFLAGS)
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+$(BUILD_DIR)/ft-server: main.o $(OBJECTS) $(STATIC_LIBS) | $(BUILD_DIR)
+	$(CXX) -o $@ $(OBJECTS) main.o $(STATIC_LIBS) $(LDFLAGS)
 
 %.o : %.cc .compiler-flags
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
@@ -93,4 +97,5 @@ $(SPIXELS_LIBRARY):
 .PHONY: FORCE
 
 clean:
-	rm -f ft-server main.o $(OBJECTS)
+	rm -rf $(BUILD_DIR)
+	rm -f main.o $(OBJECTS)
