@@ -89,11 +89,31 @@ UDPFlaschenTaschen::UDPFlaschenTaschen(int socket, int width, int height,
     : fd_(socket), width_(width), height_(height),
       pixel_buffer_(new Color [ width_ * height ]),
       max_udp_size_(65507) {
-    SetMaxUDPPacketSize(max_udp_size);
+    // Determine max UDP size using priority order:
+    // 1. Environment variable override (FT_UDP_SIZE)
+    // 2. Socket query (SO_SNDBUF) if socket is valid
+    // 3. Parameter or fallback to 65507
 
-    // Allow override with environment variable.
+    size_t detected_size = max_udp_size;
+
+    // Try socket query if socket is valid
+    if (fd_ >= 0) {
+        socklen_t optlen = sizeof(int);
+        int sndbuf = 0;
+        if (getsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &sndbuf, &optlen) == 0 && sndbuf > 0) {
+            detected_size = sndbuf;
+        }
+    }
+
+    // Apply detected size
+    SetMaxUDPPacketSize(detected_size);
+
+    // Allow environment variable override (highest priority).
     if (getenv("FT_UDP_SIZE")) {
-        SetMaxUDPPacketSize(atoi(getenv("FT_UDP_SIZE")));
+        int env_size = atoi(getenv("FT_UDP_SIZE"));
+        if (env_size > 0) {
+            SetMaxUDPPacketSize(env_size);
+        }
     }
 
     SetOffset(0, 0, 0);
