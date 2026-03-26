@@ -10,6 +10,19 @@ This repository combines:
 - **Client Examples** - Demo applications and utilities (send-text, send-image, send-video, games)
 - **Example Programs** - Additional API usage examples
 
+## Dependencies
+
+**Debian/Ubuntu:**
+```bash
+sudo apt update
+sudo apt install build-essential libgraphicsmagick++1-dev nlohmann-json3-dev
+```
+
+**Required packages:**
+- `build-essential` - C++ compiler, make, and build tools
+- `libgraphicsmagick++1-dev` - GraphicsMagick C++ development headers
+- `nlohmann-json3-dev` - C++ JSON library headers
+
 ## Building
 
 ```bash
