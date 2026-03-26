@@ -348,6 +348,7 @@ void drawMask(
     const std::vector<std::vector<uint8_t>> &mask,
     UDPFlaschenTaschen &canvas
 ) {
+    int pixels_drawn = 0;
     for (int y = 0; y < (int)mask.size(); y++) {
         for (int x = 0; x < (int)mask[y].size(); x++) {
             uint8_t gray_value = mask[y][x];
@@ -370,9 +371,13 @@ void drawMask(
 
             if (screen_x >= 0 && screen_x < display_width && screen_y >= 0 && screen_y < display_height) {
                 canvas.SetPixel(screen_x, screen_y, pixel_color);
+                pixels_drawn++;
             }
         }
     }
+    fprintf(stderr, "Drew %d pixels (color rgb(%d,%d,%d), offset %d,%d, mask size %dx%d, display %dx%d)\n",
+            pixels_drawn, color.r, color.g, color.b, offset_x, offset_y,
+            (int)mask[0].size(), (int)mask.size(), display_width, display_height);
 }
 
 int main(int argc, char *argv[]) {

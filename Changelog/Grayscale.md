@@ -23,3 +23,19 @@
 - `-m <mode>` - positioning mode (default: bounce)
 - `-c <RRGGBB>` - fixed color in hex (default: rainbow palette)
 - Standard display options: geometry, layer, timeout, hostname, delay
+
+## 2026-03-25 (Updated)
+
+### Fixed
+- **UDP packet size detection** — Large canvases (e.g., 64×64) now work correctly on all platforms
+  - **Problem**: Code assumed 65507-byte UDP limit; macOS kernel limit is ~9216 bytes
+  - **Result**: 64×64 canvases failed with "Message too long" error
+  - **Solution**: Detect actual kernel UDP send buffer via `getsockopt(SO_SNDBUF)`
+  - **Implementation**: Updated `UDPFlaschenTaschen` constructor to query socket before sending
+  - **Priority order**: FT_UDP_SIZE env var → getsockopt() → fallback to 65507
+  - **Benefit**: Existing packet chunking in `Send()` now correctly splits large images
+
+### Verification
+- 64×64 checkerboard pattern renders correctly (split into 2 packets: 47+17 rows)
+- Tested on macOS with localhost socket (9216-byte kernel limit detected)
+- Packet chunking confirmed: Packet 0 (9,048 bytes), Packet 1 (3,289 bytes)

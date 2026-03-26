@@ -181,10 +181,14 @@ void UDPFlaschenTaschen::Send(int fd) const {
     const int max_send_height = kMaxDataLen / row_size;
     assert(max_send_height > 0);  // UDP needs to be able to fit at least 1 row
 
+    fprintf(stderr, "UDP Send: max_udp_size=%zu, max_send_height=%d (row_size=%zu), canvas=%dx%d\n",
+            max_udp_size_, max_send_height, row_size, width_, height_);
+
     char header_buffer[kFlaschenTaschenHeaderReserve];
     char *send_buffer = (char*)pixel_buffer_;
     int rows = height_;
     int tile_offset = 0;
+    int packet_num = 0;
     while (rows) {
         const int send_h = (rows < max_send_height) ? rows : max_send_height;
         int header_len = snprintf(header_buffer, sizeof(header_buffer),
@@ -198,6 +202,10 @@ void UDPFlaschenTaschen::Send(int fd) const {
         iov[1].iov_base = send_buffer;
         iov[1].iov_len = send_h * row_size;
 
+        int total_sent = iov[0].iov_len + iov[1].iov_len;
+        fprintf(stderr, "  Packet %d: %d rows, header %d bytes, data %zu bytes, total %d bytes\n",
+                packet_num, send_h, header_len, iov[1].iov_len, total_sent);
+
         if (writev(fd, iov, 2) < 0) {
             perror("Error sending packet.");
         }
@@ -205,6 +213,7 @@ void UDPFlaschenTaschen::Send(int fd) const {
         rows -= send_h;
         tile_offset += send_h;
         send_buffer += send_h * row_size;
+        packet_num++;
     }
 }
 
