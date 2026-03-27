@@ -50,13 +50,29 @@ enum class GrayscaleMode {
     kBottom
 };
 
+enum class RenderMode {
+    kGrayscale,
+    kOriginal
+};
+
 enum class GrayscaleOrientation {
     kHorizontal,
     kVertical
 };
 
+enum class SequenceMode {
+    kForward,
+    kReverse
+};
+
+enum class TransparencyColor {
+    kWhite,
+    kBlack
+};
+
 struct MaskData {
-    std::vector<std::vector<uint8_t>> pixels;
+    std::vector<std::vector<uint8_t>> grayscale_pixels;
+    std::vector<std::vector<Color>> original_colors;
     int width;
     int height;
 };
@@ -74,25 +90,34 @@ int opt_width = DISPLAY_WIDTH;
 int opt_height = DISPLAY_HEIGHT;
 int opt_xoff = 0, opt_yoff = 0;
 int opt_delay = DELAY;
+int opt_frame_duration = -1;  // -1 means not set (use default 200 if animation enabled)
+bool opt_animation_enabled = false;  // True if -D was provided
 std::string opt_filenames;
 GrayscaleMode opt_mode = GrayscaleMode::kBounce;
 GrayscaleOrientation opt_orientation = GrayscaleOrientation::kHorizontal;
+RenderMode opt_render_mode = RenderMode::kGrayscale;
+SequenceMode opt_sequence_mode = SequenceMode::kForward;
+TransparencyColor opt_transparency = TransparencyColor::kWhite;
 Color opt_logo_color;
 bool opt_fixed_color = false;
 
 int usage(const char *progname) {
-    fprintf(stderr, "Grayscale - Render a JSON-defined pixel mask as grayscale\n");
+    fprintf(stderr, "Grayscale - Render JSON-defined pixel masks as grayscale or original colors\n");
     fprintf(stderr, "Usage: %s -f <filepath[,...]> [options]\n", progname);
     fprintf(stderr, "Options:\n"
         "\t-f <filepath[,...]> : One or more JSON files with [[\"RRGGBB\", ...], ...] (required)\n"
-        "\t-o <orientation>    : horizontal (default) or vertical\n"
         "\t-m <mode>           : Positioning mode: bounce, center, left, right, top, bottom\n"
-        "\t-c <RRGGBB>         : Fixed color (default: rainbow palette)\n"
+        "\t-c <RRGGBB>         : Fixed color (default: rainbow palette, ignored in original mode)\n"
+        "\t-r <mode>           : Render mode: grayscale (default) or original\n"
+        "\t-o <orientation>    : horizontal (default) or vertical (ignored if -D is used)\n"
+        "\t-D <ms>             : Frame duration before advancing to next image (enables sequential mode)\n"
+        "\t-y <mode>           : Sequence mode: forward (default) or reverse (only with -D)\n"
+        "\t-T <color>          : Transparency color: white (default) or black\n"
         "\t-g <W>x<H>[+<X>+<Y>] : Output geometry. (default 45x35+0+0)\n"
         "\t-l <layer>          : Layer 0-15. (default 1)\n"
         "\t-t <timeout>        : Timeout exits after given seconds. (default 24hrs)\n"
         "\t-h <host>           : Flaschen-Taschen display hostname. (FT_DISPLAY)\n"
-        "\t-d <delay>          : Delay between frames in milliseconds. (default 40)\n"
+        "\t-d <delay>          : Delay between rendering frames in milliseconds. (default 40)\n"
     );
     return 1;
 }
@@ -108,22 +133,12 @@ bool parseHexColor(const std::string &hex_str, Color &out_color) {
 
 int cmdLine(int argc, char *argv[]) {
     int opt;
-    while ((opt = getopt(argc, argv, "?f:o:m:c:g:l:t:h:d:")) != -1) {
+    while ((opt = getopt(argc, argv, "?f:m:c:r:o:D:y:T:g:l:t:h:d:")) != -1) {
         switch (opt) {
         case '?':  // help
             return usage(argv[0]);
         case 'f':  // filenames
             opt_filenames = optarg;
-            break;
-        case 'o':  // orientation
-            if (strcmp(optarg, "horizontal") == 0) {
-                opt_orientation = GrayscaleOrientation::kHorizontal;
-            } else if (strcmp(optarg, "vertical") == 0) {
-                opt_orientation = GrayscaleOrientation::kVertical;
-            } else {
-                fprintf(stderr, "Error: Unknown orientation '%s'. Valid: horizontal, vertical\n", optarg);
-                return usage(argv[0]);
-            }
             break;
         case 'm':  // mode
             if (strcmp(optarg, "bounce") == 0) {
@@ -148,6 +163,53 @@ int cmdLine(int argc, char *argv[]) {
                 opt_fixed_color = true;
             } else {
                 fprintf(stderr, "Error: Invalid color format\n");
+                return usage(argv[0]);
+            }
+            break;
+        case 'o':  // orientation
+            if (strcmp(optarg, "horizontal") == 0) {
+                opt_orientation = GrayscaleOrientation::kHorizontal;
+            } else if (strcmp(optarg, "vertical") == 0) {
+                opt_orientation = GrayscaleOrientation::kVertical;
+            } else {
+                fprintf(stderr, "Error: Unknown orientation '%s'. Valid: horizontal, vertical\n", optarg);
+                return usage(argv[0]);
+            }
+            break;
+        case 'r':  // render mode
+            if (strcmp(optarg, "grayscale") == 0) {
+                opt_render_mode = RenderMode::kGrayscale;
+            } else if (strcmp(optarg, "original") == 0) {
+                opt_render_mode = RenderMode::kOriginal;
+            } else {
+                fprintf(stderr, "Error: Unknown render mode '%s'. Valid: grayscale, original\n", optarg);
+                return usage(argv[0]);
+            }
+            break;
+        case 'D':  // frame duration (enables animation mode)
+            if (sscanf(optarg, "%d", &opt_frame_duration) != 1 || opt_frame_duration < 1) {
+                fprintf(stderr, "Invalid frame duration '%s'\n", optarg);
+                return usage(argv[0]);
+            }
+            opt_animation_enabled = true;
+            break;
+        case 'y':  // sequence mode
+            if (strcmp(optarg, "forward") == 0) {
+                opt_sequence_mode = SequenceMode::kForward;
+            } else if (strcmp(optarg, "reverse") == 0) {
+                opt_sequence_mode = SequenceMode::kReverse;
+            } else {
+                fprintf(stderr, "Error: Unknown sequence mode '%s'. Valid: forward, reverse\n", optarg);
+                return usage(argv[0]);
+            }
+            break;
+        case 'T':  // transparency color
+            if (strcmp(optarg, "white") == 0) {
+                opt_transparency = TransparencyColor::kWhite;
+            } else if (strcmp(optarg, "black") == 0) {
+                opt_transparency = TransparencyColor::kBlack;
+            } else {
+                fprintf(stderr, "Error: Unknown transparency color '%s'. Valid: white, black\n", optarg);
                 return usage(argv[0]);
             }
             break;
@@ -202,7 +264,7 @@ void colorGradient(int start, int end, int r1, int g1, int b1, int r2, int g2, i
 
 MaskData combineMasks(const std::vector<MaskData> &masks, GrayscaleOrientation orientation) {
     if (masks.empty()) {
-        return MaskData{{}, 0, 0};
+        return MaskData{{}, {}, 0, 0};
     }
     if (masks.size() == 1) {
         return masks[0];
@@ -220,20 +282,22 @@ MaskData combineMasks(const std::vector<MaskData> &masks, GrayscaleOrientation o
         combined_width += (masks.size() - 1) * IMAGE_PADDING;
 
         // Create combined mask
-        std::vector<std::vector<uint8_t>> combined(combined_height, std::vector<uint8_t>(combined_width, 255));
+        std::vector<std::vector<uint8_t>> combined_gray(combined_height, std::vector<uint8_t>(combined_width, 255));
+        std::vector<std::vector<Color>> combined_colors(combined_height, std::vector<Color>(combined_width, Color(255, 255, 255)));
 
         int x_cursor = 0;
         for (const auto &mask : masks) {
             int y_offset = (combined_height - mask.height) / 2;
             for (int y = 0; y < mask.height; y++) {
                 for (int x = 0; x < mask.width; x++) {
-                    combined[y_offset + y][x_cursor + x] = mask.pixels[y][x];
+                    combined_gray[y_offset + y][x_cursor + x] = mask.grayscale_pixels[y][x];
+                    combined_colors[y_offset + y][x_cursor + x] = mask.original_colors[y][x];
                 }
             }
             x_cursor += mask.width + IMAGE_PADDING;
         }
 
-        return MaskData{combined, combined_width, combined_height};
+        return MaskData{combined_gray, combined_colors, combined_width, combined_height};
     } else {  // vertical
         int combined_width = 0;
         int combined_height = 0;
@@ -246,20 +310,22 @@ MaskData combineMasks(const std::vector<MaskData> &masks, GrayscaleOrientation o
         combined_height += (masks.size() - 1) * IMAGE_PADDING;
 
         // Create combined mask
-        std::vector<std::vector<uint8_t>> combined(combined_height, std::vector<uint8_t>(combined_width, 255));
+        std::vector<std::vector<uint8_t>> combined_gray(combined_height, std::vector<uint8_t>(combined_width, 255));
+        std::vector<std::vector<Color>> combined_colors(combined_height, std::vector<Color>(combined_width, Color(255, 255, 255)));
 
         int y_cursor = 0;
         for (const auto &mask : masks) {
             int x_offset = (combined_width - mask.width) / 2;
             for (int y = 0; y < mask.height; y++) {
                 for (int x = 0; x < mask.width; x++) {
-                    combined[y_cursor + y][x_offset + x] = mask.pixels[y][x];
+                    combined_gray[y_cursor + y][x_offset + x] = mask.grayscale_pixels[y][x];
+                    combined_colors[y_cursor + y][x_offset + x] = mask.original_colors[y][x];
                 }
             }
             y_cursor += mask.height + IMAGE_PADDING;
         }
 
-        return MaskData{combined, combined_width, combined_height};
+        return MaskData{combined_gray, combined_colors, combined_width, combined_height};
     }
 }
 
@@ -345,25 +411,38 @@ void drawMask(
     const Color &color,
     int display_width,
     int display_height,
-    const std::vector<std::vector<uint8_t>> &mask,
+    RenderMode render_mode,
+    TransparencyColor transparency_color,
+    const std::vector<std::vector<uint8_t>> &grayscale_mask,
+    const std::vector<std::vector<Color>> &original_colors,
     UDPFlaschenTaschen &canvas
 ) {
     int pixels_drawn = 0;
-    for (int y = 0; y < (int)mask.size(); y++) {
-        for (int x = 0; x < (int)mask[y].size(); x++) {
-            uint8_t gray_value = mask[y][x];
+    for (int y = 0; y < (int)grayscale_mask.size(); y++) {
+        for (int x = 0; x < (int)grayscale_mask[y].size(); x++) {
+            uint8_t gray_value = grayscale_mask[y][x];
 
-            // Skip white pixels (background/transparency)
-            if (gray_value >= 240) continue;
+            // Skip transparent pixels based on transparency color
+            if (transparency_color == TransparencyColor::kWhite) {
+                if (gray_value >= 240) continue;  // Skip bright pixels
+            } else {
+                if (gray_value <= 15) continue;   // Skip dark pixels
+            }
 
-            // Apply color based on grayscale intensity
-            // Dark pixels (low grayscale) get full color, light pixels get darker version
-            float intensity = (255.0f - gray_value) / 255.0f;
-            Color pixel_color(
-                (uint8_t)(color.r * intensity),
-                (uint8_t)(color.g * intensity),
-                (uint8_t)(color.b * intensity)
-            );
+            Color pixel_color;
+            if (render_mode == RenderMode::kOriginal) {
+                // Use original color from JSON
+                pixel_color = original_colors[y][x];
+            } else {
+                // Apply color based on grayscale intensity
+                // Dark pixels (low grayscale) get full color, light pixels get darker version
+                float intensity = (255.0f - gray_value) / 255.0f;
+                pixel_color = Color(
+                    (uint8_t)(color.r * intensity),
+                    (uint8_t)(color.g * intensity),
+                    (uint8_t)(color.b * intensity)
+                );
+            }
 
             // Place pixel on canvas with offset
             int screen_x = offset_x + x;
@@ -377,7 +456,7 @@ void drawMask(
     }
     fprintf(stderr, "Drew %d pixels (color rgb(%d,%d,%d), offset %d,%d, mask size %dx%d, display %dx%d)\n",
             pixels_drawn, color.r, color.g, color.b, offset_x, offset_y,
-            (int)mask[0].size(), (int)mask.size(), display_width, display_height);
+            (int)grayscale_mask[0].size(), (int)grayscale_mask.size(), display_width, display_height);
 }
 
 int main(int argc, char *argv[]) {
@@ -433,10 +512,14 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
 
-            // Convert hex strings to grayscale
-            std::vector<std::vector<uint8_t>> pixels;
+            // Convert hex strings to grayscale and store original colors
+            std::vector<std::vector<uint8_t>> grayscale_pixels;
+            std::vector<std::vector<Color>> original_colors;
+
             for (const auto &row : hex_array) {
                 std::vector<uint8_t> gray_row;
+                std::vector<Color> color_row;
+
                 for (const auto &hex_str : row) {
                     if (!hex_str.is_string()) {
                         fprintf(stderr, "Error: Invalid JSON structure in %s\n", file_path.c_str());
@@ -447,14 +530,19 @@ int main(int argc, char *argv[]) {
                         fprintf(stderr, "Error: Invalid hex color in %s\n", file_path.c_str());
                         return 1;
                     }
+
+                    // Store original color
+                    color_row.push_back(color);
+
                     // Luminance formula: 0.299*R + 0.587*G + 0.114*B
                     uint8_t gray = (uint8_t)(0.299f * color.r + 0.587f * color.g + 0.114f * color.b);
                     gray_row.push_back(gray);
                 }
-                pixels.push_back(gray_row);
+                grayscale_pixels.push_back(gray_row);
+                original_colors.push_back(color_row);
             }
 
-            masks.push_back(MaskData{pixels, width, height});
+            masks.push_back(MaskData{grayscale_pixels, original_colors, width, height});
         } catch (const std::exception &e) {
             fprintf(stderr, "Error: Failed to load or parse JSON file: %s\n", e.what());
             return 1;
@@ -485,54 +573,79 @@ int main(int argc, char *argv[]) {
     colorGradient(192, 223, 255, 127,   0, 255,   0,   0, palette);
     colorGradient(224, 255, 255,   0,   0, 255,   0, 255, palette);
 
-    // Combine masks
-    MaskData combined = combineMasks(masks, opt_orientation);
-    int image_width = combined.width;
-    int image_height = combined.height;
-    auto mask = combined.pixels;
-
-    // For non-bounce modes, pad the combined mask to display geometry
-    if (opt_mode != GrayscaleMode::kBounce && !mask.empty()) {
-        if (image_width < opt_width || image_height < opt_height) {
-            // Pad horizontally if needed
-            if (image_width < opt_width) {
-                int pad_width = opt_width - image_width;
-                int pad_left = pad_width / 2;
-                int pad_right = pad_width - pad_left;
-
-                for (auto &row : mask) {
-                    std::vector<uint8_t> padded_row(pad_left, 255);
-                    padded_row.insert(padded_row.end(), row.begin(), row.end());
-                    padded_row.insert(padded_row.end(), pad_right, 255);
-                    row = padded_row;
-                }
-                image_width = opt_width;
-            }
-
-            // Pad vertically if needed
-            if (image_height < opt_height) {
-                int pad_height = opt_height - image_height;
-                int pad_top = pad_height / 2;
-                int pad_bottom = pad_height - pad_top;
-
-                std::vector<uint8_t> empty_row(image_width, 255);
-                mask.insert(mask.begin(), pad_top, empty_row);
-                mask.insert(mask.end(), pad_bottom, empty_row);
-                image_height = opt_height;
-            }
-        }
-    }
-
     // Handle break
     signal(SIGTERM, InterruptHandler);
     signal(SIGINT, InterruptHandler);
 
+    // Determine mode: animation or combining
+    MaskData display_mask;
+    std::vector<MaskData> animation_masks;
+    int image_width, image_height;
+
+    if (opt_animation_enabled) {
+        // Animation mode: use masks sequentially
+        animation_masks = masks;
+        image_width = masks[0].width;
+        image_height = masks[0].height;
+    } else {
+        // Combining mode: combine masks into single display
+        display_mask = combineMasks(masks, opt_orientation);
+        image_width = display_mask.width;
+        image_height = display_mask.height;
+    }
+
     PositionState pos_state;
+
+    // Initialize bounce mode with random position and direction
+    if (opt_mode == GrayscaleMode::kBounce) {
+        srand((unsigned int)time(NULL));
+
+        // Random position within bounds
+        int max_x = std::max(0, opt_width - image_width);
+        int max_y = std::max(0, opt_height - image_height);
+
+        pos_state.x = max_x > 0 ? rand() % (max_x + 1) : 0;
+        pos_state.y = max_y > 0 ? rand() % (max_y + 1) : 0;
+
+        // Random direction (1 or -1)
+        pos_state.sx = (rand() % 2 == 0) ? 1 : -1;
+        pos_state.sy = (rand() % 2 == 0) ? 1 : -1;
+    }
+
     time_t starttime = time(NULL);
     int color_index = 0;
+    int current_mask_index = 0;
+    int mask_direction = 1;  // 1 for forward, -1 for backward
+    int frame_elapsed = 0;   // Elapsed time in current frame in milliseconds
 
     do {
-        // Get current color (fixed or from palette)
+        // Determine if we should advance to next mask (only in animation mode)
+        if (opt_animation_enabled && frame_elapsed >= opt_frame_duration) {
+            frame_elapsed = 0;
+
+            if (opt_sequence_mode == SequenceMode::kForward) {
+                // Forward: loop from 0 to N-1 then back to 0
+                current_mask_index++;
+                if (current_mask_index >= (int)masks.size()) {
+                    current_mask_index = 0;
+                }
+            } else {
+                // Reverse: bounce 0 -> 1 -> 2 -> 1 -> 0
+                current_mask_index += mask_direction;
+
+                if (current_mask_index >= (int)masks.size()) {
+                    // Hit end, bounce back
+                    mask_direction = -1;
+                    current_mask_index = masks.size() - 2;
+                } else if (current_mask_index < 0) {
+                    // Hit start, bounce forward
+                    mask_direction = 1;
+                    current_mask_index = 1;
+                }
+            }
+        }
+
+        // Get current color (fixed or from palette, ignored in original render mode)
         Color current_color = opt_fixed_color ? opt_logo_color : palette[color_index % 256];
 
         // Determine position based on mode
@@ -546,14 +659,19 @@ int main(int argc, char *argv[]) {
         // Clear canvas
         canvas.Clear();
 
-        // Draw mask at computed offset
-        drawMask(offset_x, offset_y, current_color, opt_width, opt_height, mask, canvas);
+        // Draw current mask at computed offset
+        const MaskData &current_mask = opt_animation_enabled ?
+            animation_masks[current_mask_index] : display_mask;
+        drawMask(offset_x, offset_y, current_color, opt_width, opt_height,
+                 opt_render_mode, opt_transparency, current_mask.grayscale_pixels,
+                 current_mask.original_colors, canvas);
 
         // Send to display
         canvas.SetOffset(opt_xoff + DISPLAY_XOFF, opt_yoff + DISPLAY_YOFF, opt_layer);
         canvas.Send();
         usleep(opt_delay * 1000);
 
+        frame_elapsed += opt_delay;
         color_index++;
     } while ((difftime(time(NULL), starttime) <= opt_timeout) && !interrupt_received);
 
