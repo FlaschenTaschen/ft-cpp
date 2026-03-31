@@ -27,7 +27,7 @@ all : $(ALL_TARGETS)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/send-text: send-text.cc | $(BUILD_DIR)
+$(BUILD_DIR)/send-text: send-text.cc $(FTLIB) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
 $(BUILD_DIR)/send-image : send-image.cc $(FTLIB) | $(BUILD_DIR)
