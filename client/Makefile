@@ -13,8 +13,8 @@ FFMPEG_LDFLAGS=$(shell pkg-config --cflags --libs  libavcodec libavformat libsws
 # ft-detect is Linux-only (requires mDNS/Avahi)
 UNAME_S=$(shell uname -s)
 ifeq ($(UNAME_S),Linux)
-    AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client avahi-common 2>/dev/null)
-    AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client avahi-common 2>/dev/null)
+    AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client 2>/dev/null)
+    AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client 2>/dev/null)
     ALL_TARGETS=$(BUILD_DIR)/send-text $(BUILD_DIR)/send-image $(BUILD_DIR)/send-video $(BUILD_DIR)/ft-detect
 else
     AVAHI_CFLAGS=
