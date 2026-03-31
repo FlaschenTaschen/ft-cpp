@@ -19,6 +19,7 @@
 //
 
 #include "udp-flaschen-taschen.h"
+#include "ft-debug.h"
 #include "config.h"
 
 #include <getopt.h>
@@ -454,20 +455,17 @@ void drawMask(
             }
         }
     }
-    fprintf(stderr, "Drew %d pixels (color rgb(%d,%d,%d), offset %d,%d, mask size %dx%d, display %dx%d)\n",
-            pixels_drawn, color.r, color.g, color.b, offset_x, offset_y,
-            (int)grayscale_mask[0].size(), (int)grayscale_mask.size(), display_width, display_height);
 }
 
 int main(int argc, char *argv[]) {
-    fprintf(stderr, "grayscale: starting, argc=%d\n", argc);
+    DEBUG_LOG("grayscale: starting, argc=%d\n", argc);
 
     // Parse command line
     if (int e = cmdLine(argc, argv)) {
         fprintf(stderr, "grayscale: cmdLine failed with code %d\n", e);
         return e;
     }
-    fprintf(stderr, "grayscale: cmdLine OK, loading JSON from: %s\n", opt_filenames.c_str());
+    DEBUG_LOG("grayscale: cmdLine OK, loading JSON from: %s\n", opt_filenames.c_str());
 
     // Load and parse JSON files
     std::vector<MaskData> masks;
@@ -555,12 +553,12 @@ int main(int argc, char *argv[]) {
     }
 
     // Open socket and create canvas
-    fprintf(stderr, "grayscale: opening socket to %s\n", opt_hostname ? opt_hostname : "(default)");
+    DEBUG_LOG("grayscale: opening socket to %s\n", opt_hostname ? opt_hostname : "(default)");
     const int socket = OpenFlaschenTaschenSocket(opt_hostname);
-    fprintf(stderr, "grayscale: socket=%d, creating %dx%d canvas\n", socket, opt_width, opt_height);
+    DEBUG_LOG("grayscale: socket=%d, creating %dx%d canvas\n", socket, opt_width, opt_height);
     UDPFlaschenTaschen canvas(socket, opt_width, opt_height);
     canvas.Clear();
-    fprintf(stderr, "grayscale: canvas created and cleared\n");
+    DEBUG_LOG("grayscale: canvas created and cleared\n");
 
     // Create rainbow palette
     Color palette[256];
@@ -598,7 +596,7 @@ int main(int argc, char *argv[]) {
 
     // Initialize bounce mode with random position and direction
     if (opt_mode == GrayscaleMode::kBounce) {
-        srand((unsigned int)time(NULL));
+        srand((unsigned int)(time(NULL) + getpid()));
 
         // Random position within bounds
         int max_x = std::max(0, opt_width - image_width);
@@ -613,7 +611,7 @@ int main(int argc, char *argv[]) {
     }
 
     time_t starttime = time(NULL);
-    int color_index = 0;
+    int color_index = rand() % 256;  // Randomize starting color
     int current_mask_index = 0;
     int mask_direction = 1;  // 1 for forward, -1 for backward
     int frame_elapsed = 0;   // Elapsed time in current frame in milliseconds
@@ -678,6 +676,7 @@ int main(int argc, char *argv[]) {
     // Clear canvas on exit
     canvas.Clear();
     canvas.Send();
+    usleep(100); // give the packet a moment to be sent
 
     if (interrupt_received) return 1;
     return 0;
