@@ -315,7 +315,7 @@ int main(int argc, char *argv[]) {
 
 #ifdef __linux__
     // Shutdown service discovery thread gracefully
-    if (discovery_thread != nullptr) {
+    if (discovery_thread != NULL) {
         discovery_thread->Shutdown();
         discovery_thread->WaitStopped();
         delete discovery_thread;
