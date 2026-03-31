@@ -115,7 +115,7 @@ static void print_service_json(const DisplayService& service) {
 
 int main(int argc, char *argv[]) {
     bool list_mode = false;
-    std::string query = "";
+    std::string query("");
     OutputFormat format = FORMAT_TEXT;
     int timeout_ms = 5000;
     bool verbose = false;
@@ -274,7 +274,7 @@ int main(int argc, char *argv[]) {
     for (int i = optind + 1; i < argc; ++i) {
         client_argv[arg_index++] = argv[i];
     }
-    client_argv[arg_index] = nullptr;
+    client_argv[arg_index] = NULL;
 
     if (verbose) {
         fprintf(stderr, "Executing: %s", tool_name);

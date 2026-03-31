@@ -22,8 +22,9 @@
 #include <avahi-common/error.h>
 #include <avahi-common/simple-watch.h>
 
-#include <cstdio>
-#include <cstring>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
 
 ServiceDiscoveryThread::ServiceDiscoveryThread(
     const char* instance_name,
@@ -35,9 +36,9 @@ ServiceDiscoveryThread::ServiceDiscoveryThread(
     const char* backend,
     const char* platform,
     uint16_t features)
-    : simple_poll_(nullptr),
-      client_(nullptr),
-      entry_group_(nullptr),
+    : simple_poll_(NULL),
+      client_(NULL),
+      entry_group_(NULL),
       instance_name_(instance_name),
       port_(port),
       width_(width),
@@ -74,7 +75,7 @@ void ServiceDiscoveryThread::Run() {
         fprintf(stderr, "avahi_client_new() failed: %s\n",
                 avahi_strerror(error));
         avahi_simple_poll_free(simple_poll_);
-        simple_poll_ = nullptr;
+        simple_poll_ = NULL;
         return;
     }
 
@@ -88,12 +89,12 @@ void ServiceDiscoveryThread::Run() {
     // Cleanup
     if (client_) {
         avahi_client_free(client_);
-        client_ = nullptr;
+        client_ = NULL;
     }
 
     if (simple_poll_) {
         avahi_simple_poll_free(simple_poll_);
-        simple_poll_ = nullptr;
+        simple_poll_ = NULL;
     }
 }
 
@@ -184,8 +185,8 @@ void ServiceDiscoveryThread::CreateServices() {
             static_cast<AvahiPublishFlags>(0),
             instance_name_.c_str(),
             "_flaschen-taschen._udp",
-            nullptr,
-            nullptr,
+            NULL,
+            NULL,
             port_,
             width_str,
             height_str,
@@ -194,7 +195,7 @@ void ServiceDiscoveryThread::CreateServices() {
             backend_str.c_str(),
             platform_str.c_str(),
             features_str.c_str(),
-            nullptr);
+            NULL);
     } else {
         error = avahi_entry_group_add_service(
             entry_group_,
@@ -203,8 +204,8 @@ void ServiceDiscoveryThread::CreateServices() {
             static_cast<AvahiPublishFlags>(0),
             instance_name_.c_str(),
             "_flaschen-taschen._udp",
-            nullptr,
-            nullptr,
+            NULL,
+            NULL,
             port_,
             width_str,
             height_str,
@@ -214,7 +215,7 @@ void ServiceDiscoveryThread::CreateServices() {
             platform_str.c_str(),
             features_str.c_str(),
             url_str.c_str(),
-            nullptr);
+            NULL);
     }
 
     if (error < 0) {
@@ -228,7 +229,7 @@ void ServiceDiscoveryThread::CreateServices() {
         fprintf(stderr, "Failed to commit entry group: %s\n",
                 avahi_strerror(error));
         avahi_entry_group_free(entry_group_);
-        entry_group_ = nullptr;
+        entry_group_ = NULL;
         return;
     }
 }

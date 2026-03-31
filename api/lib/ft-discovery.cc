@@ -22,9 +22,10 @@
 #include <avahi-common/simple-watch.h>
 
 #include <algorithm>
-#include <cstdio>
-#include <cstring>
-#include <cctype>
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdint.h>
 
 namespace {
 
@@ -36,7 +37,7 @@ struct DiscoveryContext {
     long start_time_ms;
 
     DiscoveryContext()
-        : simple_poll(nullptr), all_for_now(false), timeout_ms(0), start_time_ms(0) {}
+        : simple_poll(NULL), all_for_now(false), timeout_ms(0), start_time_ms(0) {}
 };
 
 // Case-insensitive substring match
@@ -57,7 +58,7 @@ std::string parse_txt_value(AvahiStringList* txt, const char* key) {
     char key_with_equals[256];
     snprintf(key_with_equals, sizeof(key_with_equals), "%s=", key);
 
-    for (AvahiStringList* item = txt; item != nullptr;
+    for (AvahiStringList* item = txt; item != NULL;
          item = avahi_string_list_get_next(item)) {
         char* str = reinterpret_cast<char*>(item->text);
         if (strncmp(str, key_with_equals, strlen(key_with_equals)) == 0) {
@@ -105,7 +106,7 @@ static void resolve_callback(AvahiServiceResolver* r,
         service.platform = parse_txt_value(txt, "platform");
 
         std::string features_str = parse_txt_value(txt, "features");
-        service.features = static_cast<uint16_t>(std::stoul(features_str, nullptr, 16));
+        service.features = static_cast<uint16_t>(std::stoul(features_str, NULL, 16));
 
         ctx->services.push_back(service);
         break;
@@ -194,7 +195,7 @@ std::vector<DisplayService> discover_displays(int timeout_ms) {
 
     AvahiClient* client = avahi_client_new(avahi_simple_poll_get(simple_poll),
                                            static_cast<AvahiClientFlags>(0),
-                                           nullptr, &ctx, &error);
+                                           NULL, &ctx, &error);
     if (!client) {
         fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
         avahi_simple_poll_free(simple_poll);
@@ -202,7 +203,7 @@ std::vector<DisplayService> discover_displays(int timeout_ms) {
     }
 
     AvahiServiceBrowser* sb = avahi_service_browser_new(
-        client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_flaschen-taschen._udp", nullptr,
+        client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_flaschen-taschen._udp", NULL,
         static_cast<AvahiLookupFlags>(0), browse_callback, &ctx);
 
     if (!sb) {

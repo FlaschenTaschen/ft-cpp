@@ -125,8 +125,8 @@ int main(int argc, char *argv[]) {
     int height = 35;
     int layer_timeout = 15;
     bool mdns_enabled = false;
-    std::string mdns_name = "FlaschenTaschen";
-    std::string mdns_url = "";
+    std::string mdns_name("FlaschenTaschen");
+    std::string mdns_url("");
 #if FT_BACKEND != 2
     bool as_daemon = false;
 #endif
@@ -263,7 +263,7 @@ int main(int argc, char *argv[]) {
 
 #ifdef __linux__
     // Create service discovery thread if enabled (before daemonization)
-    ServiceDiscoveryThread* discovery_thread = nullptr;
+    ServiceDiscoveryThread* discovery_thread = NULL;
     if (mdns_enabled) {
         discovery_thread = new ServiceDiscoveryThread(
             mdns_name.c_str(),
