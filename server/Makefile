@@ -49,8 +49,8 @@ BUILD_DIR=../build/server
 UNAME_S=$(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o service-discovery.o
-    AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client avahi-common 2>/dev/null)
-    AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client avahi-common 2>/dev/null)
+    AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client 2>/dev/null)
+    AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client 2>/dev/null)
 else
     OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o
     AVAHI_CFLAGS=
