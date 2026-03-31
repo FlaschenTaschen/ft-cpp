@@ -43,8 +43,19 @@ RGB_LIBRARY=$(RGB_LIBDIR)/lib$(RGB_LIBRARY_NAME).a
 RGB_LDFLAGS=-lrt -lm -lpthread
 
 INCLUDES=-I../api/include
-OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o
 BUILD_DIR=../build/server
+
+# mDNS service discovery is Linux-only
+UNAME_S=$(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+    OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o service-discovery.o
+    AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client avahi-common 2>/dev/null)
+    AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client avahi-common 2>/dev/null)
+else
+    OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o
+    AVAHI_CFLAGS=
+    AVAHI_LDFLAGS=
+endif
 
 # Nested if/else are very awkward, so we just compare each possible outcome
 ifeq ($(FT_BACKEND), ft)
@@ -67,9 +78,9 @@ ifeq ($(FT_BACKEND), terminal)
    OBJECTS+=terminal-flaschen-taschen.o hd-terminal-flaschen-taschen.o
 endif
 
-CFLAGS=-Wall -O3 $(INCLUDES) $(DEFINES)
+CFLAGS=-Wall -O3 $(INCLUDES) $(DEFINES) $(AVAHI_CFLAGS)
 CXXFLAGS=$(CFLAGS) -std=c++03
-LDFLAGS+=-lpthread
+LDFLAGS+=-lpthread $(AVAHI_LDFLAGS)
 
 all : $(BUILD_DIR)/ft-server
 
