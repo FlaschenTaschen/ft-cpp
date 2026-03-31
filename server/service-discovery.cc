@@ -20,6 +20,7 @@
 #include <avahi-client/publish.h>
 #include <avahi-common/alternative.h>
 #include <avahi-common/error.h>
+#include <avahi-common/malloc.h>
 #include <avahi-common/simple-watch.h>
 
 #include <stdio.h>
@@ -194,7 +195,7 @@ void ServiceDiscoveryThread::CreateServices() {
             version_str.c_str(),
             backend_str.c_str(),
             platform_str.c_str(),
-            features_str.c_str(),
+            features_str,
             NULL);
     } else {
         error = avahi_entry_group_add_service(
@@ -213,7 +214,7 @@ void ServiceDiscoveryThread::CreateServices() {
             version_str.c_str(),
             backend_str.c_str(),
             platform_str.c_str(),
-            features_str.c_str(),
+            features_str,
             url_str.c_str(),
             NULL);
     }
@@ -268,10 +269,10 @@ void ServiceDiscoveryThread::HandleEntryGroupState(AvahiEntryGroupState state) {
         shutdown_requested_ = true;
         break;
 
-    case AVAHI_ENTRY_GROUP_UNCOMMITTED:
+    case AVAHI_ENTRY_GROUP_UNCOMMITED:
     case AVAHI_ENTRY_GROUP_REGISTERING:
         break;
     }
 }
 
-#endif // __APPLE__
+#endif // __linux__
