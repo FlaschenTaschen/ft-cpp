@@ -117,9 +117,17 @@ void ServiceDiscoveryThread::HandleClientState(AvahiClientState state) {
     case AVAHI_CLIENT_S_RUNNING:
         // Server has startup successfully and registered its host
         // name on the network, so it's time to create our services
-        fprintf(stderr, "Avahi client running, creating services\n");
+        fprintf(stderr, "Avahi client running, creating services (client_=%p, entry_group_=%p)\n",
+                (void*)client_, (void*)entry_group_);
+        fflush(stderr);
         if (client_ && !entry_group_) {
+            fprintf(stderr, "Calling CreateServices\n");
+            fflush(stderr);
             CreateServices();
+        } else {
+            fprintf(stderr, "Skipping CreateServices: client_=%p, entry_group_=%p\n",
+                    (void*)client_, (void*)entry_group_);
+            fflush(stderr);
         }
         break;
 
@@ -154,16 +162,19 @@ void ServiceDiscoveryThread::CreateServices() {
     int error;
 
     fprintf(stderr, "CreateServices called\n");
+    fflush(stderr);
 
     // If this is the first time we're called, let's create a new
     // entry group if necessary
     if (!entry_group_) {
         fprintf(stderr, "Creating new entry group\n");
+        fflush(stderr);
         if (!(entry_group_ = avahi_entry_group_new(client_,
                                                      EntryGroupCallback,
                                                      this))) {
             fprintf(stderr, "avahi_entry_group_new() failed: %s\n",
                     avahi_strerror(avahi_client_errno(client_)));
+            fflush(stderr);
             return;
         }
     }
@@ -229,19 +240,23 @@ void ServiceDiscoveryThread::CreateServices() {
     if (error < 0) {
         fprintf(stderr, "Failed to add service: %s\n",
                 avahi_strerror(error));
+        fflush(stderr);
         return;
     }
 
     fprintf(stderr, "Service added successfully, committing\n");
+    fflush(stderr);
     error = avahi_entry_group_commit(entry_group_);
     if (error < 0) {
         fprintf(stderr, "Failed to commit entry group: %s\n",
                 avahi_strerror(error));
+        fflush(stderr);
         avahi_entry_group_free(entry_group_);
         entry_group_ = NULL;
         return;
     }
     fprintf(stderr, "Service committed successfully\n");
+    fflush(stderr);
 }
 
 void ServiceDiscoveryThread::EntryGroupCallback(AvahiEntryGroup* g,
