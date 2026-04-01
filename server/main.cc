@@ -279,6 +279,10 @@ int main(int argc, char *argv[]) {
 
     display->Send();  // Clear screen.
 
+    // Get actual display dimensions from the display object (in case they were -1)
+    width = display->width();
+    height = display->height();
+
     ft::Mutex mutex;
 
     // The display we expose to the user provides composite layering which can
