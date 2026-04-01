@@ -89,8 +89,13 @@ static void resolve_callback(AvahiServiceResolver* r,
                              void* userdata) {
     DiscoveryContext* ctx = static_cast<DiscoveryContext*>(userdata);
 
+    fprintf(stderr, "[resolve_callback] event=%d, name=%s\n", event, name ? name : "(null)");
+    fflush(stderr);
+
     switch (event) {
     case AVAHI_RESOLVER_FOUND: {
+        fprintf(stderr, "[resolve_callback] RESOLVER_FOUND for '%s' at %s:%d\n", name, host_name, port);
+        fflush(stderr);
         DisplayService service;
         service.instance_name = name;
         service.hostname = host_name;
@@ -138,8 +143,13 @@ static void browse_callback(AvahiServiceBrowser* b,
     AvahiClient* c = avahi_service_browser_get_client(b);
     DiscoveryContext* ctx = static_cast<DiscoveryContext*>(userdata);
 
+    fprintf(stderr, "[browse_callback] event=%d, name=%s\n", event, name ? name : "(null)");
+    fflush(stderr);
+
     switch (event) {
     case AVAHI_BROWSER_NEW: {
+        fprintf(stderr, "[browse_callback] BROWSER_NEW: discovering service '%s'\n", name);
+        fflush(stderr);
         // Resolve the service
         AvahiServiceResolver* resolver =
             avahi_service_resolver_new(c, interface, protocol, name, type, domain,
@@ -148,25 +158,33 @@ static void browse_callback(AvahiServiceBrowser* b,
         if (!resolver) {
             fprintf(stderr, "Failed to create resolver: %s\n",
                     avahi_strerror(avahi_client_errno(c)));
+            fflush(stderr);
         }
         break;
     }
 
     case AVAHI_BROWSER_REMOVE:
+        fprintf(stderr, "[browse_callback] BROWSER_REMOVE\n");
+        fflush(stderr);
         // A service was removed - we could track this, but for now just ignore
         break;
 
     case AVAHI_BROWSER_CACHE_EXHAUSTED:
+        fprintf(stderr, "[browse_callback] CACHE_EXHAUSTED, setting all_for_now\n");
+        fflush(stderr);
         ctx->all_for_now = true;
         break;
 
     case AVAHI_BROWSER_ALL_FOR_NOW:
+        fprintf(stderr, "[browse_callback] ALL_FOR_NOW, setting all_for_now\n");
+        fflush(stderr);
         ctx->all_for_now = true;
         break;
 
     case AVAHI_BROWSER_FAILURE:
         fprintf(stderr, "Browse failure: %s\n",
                 avahi_strerror(avahi_client_errno(c)));
+        fflush(stderr);
         ctx->all_for_now = true;
         break;
     }
@@ -186,6 +204,9 @@ long get_time_ms() {
 }  // namespace
 
 std::vector<DisplayService> discover_displays(int timeout_ms) {
+    fprintf(stderr, "[discover_displays] Starting discovery with timeout=%dms\n", timeout_ms);
+    fflush(stderr);
+
     DiscoveryContext ctx;
     ctx.timeout_ms = timeout_ms;
     ctx.start_time_ms = get_time_ms();
@@ -194,6 +215,7 @@ std::vector<DisplayService> discover_displays(int timeout_ms) {
     AvahiSimplePoll* simple_poll = avahi_simple_poll_new();
     if (!simple_poll) {
         fprintf(stderr, "Failed to create simple poll\n");
+        fflush(stderr);
         return ctx.services;
     }
     ctx.simple_poll = simple_poll;
@@ -203,6 +225,7 @@ std::vector<DisplayService> discover_displays(int timeout_ms) {
                                            NULL, &ctx, &error);
     if (!client) {
         fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
+        fflush(stderr);
         avahi_simple_poll_free(simple_poll);
         return ctx.services;
     }
@@ -214,23 +237,34 @@ std::vector<DisplayService> discover_displays(int timeout_ms) {
     if (!sb) {
         fprintf(stderr, "Failed to create service browser: %s\n",
                 avahi_strerror(avahi_client_errno(client)));
+        fflush(stderr);
         avahi_client_free(client);
         avahi_simple_poll_free(simple_poll);
         return ctx.services;
     }
 
+    fprintf(stderr, "[discover_displays] Service browser created, running event loop\n");
+    fflush(stderr);
+
     // Run the event loop with timeout
     while (!ctx.all_for_now) {
         long elapsed = get_time_ms() - ctx.start_time_ms;
         if (elapsed > timeout_ms) {
+            fprintf(stderr, "[discover_displays] Timeout reached after %ldms\n", elapsed);
+            fflush(stderr);
             break;
         }
 
         int remaining = timeout_ms - elapsed;
         if (avahi_simple_poll_iterate(simple_poll, remaining) != 0) {
+            fprintf(stderr, "[discover_displays] Event loop iteration failed\n");
+            fflush(stderr);
             break;
         }
     }
+
+    fprintf(stderr, "[discover_displays] Discovery complete, found %zu services\n", ctx.services.size());
+    fflush(stderr);
 
     avahi_service_browser_free(sb);
     avahi_client_free(client);
