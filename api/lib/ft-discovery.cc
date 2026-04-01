@@ -48,15 +48,18 @@ bool case_insensitive_contains(const std::string& haystack,
     std::string h_lower = haystack;
     std::string n_lower = needle;
 
-    for (auto& c : h_lower) c = std::tolower(c);
-    for (auto& c : n_lower) c = std::tolower(c);
+    for (size_t i = 0; i < h_lower.length(); ++i) {
+        h_lower[i] = std::tolower(h_lower[i]);
+    }
+    for (size_t i = 0; i < n_lower.length(); ++i) {
+        n_lower[i] = std::tolower(n_lower[i]);
+    }
 
     return h_lower.find(n_lower) != std::string::npos;
 }
 
 // Parse TXT record value for a given key
 std::string parse_txt_value(AvahiStringList* txt, const char* key) {
-    size_t key_len = strlen(key);
     char key_with_equals[256];
     snprintf(key_with_equals, sizeof(key_with_equals), "%s=", key);
 
