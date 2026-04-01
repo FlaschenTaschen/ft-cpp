@@ -170,9 +170,9 @@ static void browse_callback(AvahiServiceBrowser* b,
         break;
 
     case AVAHI_BROWSER_CACHE_EXHAUSTED:
-        fprintf(stderr, "[browse_callback] CACHE_EXHAUSTED, setting all_for_now\n");
+        fprintf(stderr, "[browse_callback] CACHE_EXHAUSTED (not yet all_for_now, waiting for resolvers)\n");
         fflush(stderr);
-        ctx->all_for_now = true;
+        // Don't exit yet - resolvers may still be running
         break;
 
     case AVAHI_BROWSER_ALL_FOR_NOW:
