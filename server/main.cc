@@ -262,24 +262,7 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef __linux__
-    // Create service discovery thread if enabled (before daemonization)
     ServiceDiscoveryThread* discovery_thread = NULL;
-    if (mdns_enabled) {
-        discovery_thread = new ServiceDiscoveryThread(
-            mdns_name.c_str(),
-            1337,
-            width,
-            height,
-            mdns_url.empty() ? "" : mdns_url.c_str(),
-            FT_VERSION,
-            g_backend_name,
-            g_platform_name,
-            0x000F  // features: all currently-defined capabilities
-        );
-        discovery_thread->Start(0, 0);  // 0 priority = not real-time, 0 affinity = any CPU
-        fprintf(stderr, "Service discovery: %s (%dx%d) port 1337 [%s/%s]\n",
-                mdns_name.c_str(), width, height, g_backend_name, g_platform_name);
-    }
 #endif
 
 #if FT_BACKEND != 2  // terminal thing can not run in background.
@@ -302,6 +285,27 @@ int main(int argc, char *argv[]) {
     // be used by the UDP server.
     CompositeFlaschenTaschen layered_display(display, 16);
     layered_display.StartLayerGarbageCollection(&mutex, layer_timeout);
+
+#ifdef __linux__
+    // Create service discovery thread if enabled (after hardware is initialized
+    // so we have the correct width/height from the display)
+    if (mdns_enabled) {
+        discovery_thread = new ServiceDiscoveryThread(
+            mdns_name.c_str(),
+            1337,
+            width,
+            height,
+            mdns_url.empty() ? "" : mdns_url.c_str(),
+            FT_VERSION,
+            g_backend_name,
+            g_platform_name,
+            0x000F  // features: all currently-defined capabilities
+        );
+        discovery_thread->Start(0, 0);  // 0 priority = not real-time, 0 affinity = any CPU
+        fprintf(stderr, "Service discovery: %s (%dx%d) port 1337 [%s/%s]\n",
+                mdns_name.c_str(), width, height, g_backend_name, g_platform_name);
+    }
+#endif
 
 #ifdef __linux__
     // After hardware is set up, all servers are listening and all
