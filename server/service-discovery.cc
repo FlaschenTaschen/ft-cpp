@@ -107,6 +107,10 @@ void ServiceDiscoveryThread::ClientCallback(AvahiClient* c,
                                            AvahiClientState state,
                                            void* userdata) {
     ServiceDiscoveryThread* self = static_cast<ServiceDiscoveryThread*>(userdata);
+    // Store the client pointer in case it's not set yet (callback can fire synchronously)
+    if (!self->client_) {
+        self->client_ = c;
+    }
     self->HandleClientState(state);
 }
 
