@@ -26,6 +26,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <time.h>
 
 namespace {
 
@@ -106,7 +108,7 @@ static void resolve_callback(AvahiServiceResolver* r,
         service.platform = parse_txt_value(txt, "platform");
 
         std::string features_str = parse_txt_value(txt, "features");
-        service.features = static_cast<uint16_t>(std::stoul(features_str, NULL, 16));
+        service.features = static_cast<uint16_t>(strtoul(features_str.c_str(), NULL, 16));
 
         ctx->services.push_back(service);
         break;
@@ -238,7 +240,8 @@ DisplayService discover_display(const std::string& query, int timeout_ms) {
     std::vector<DisplayService> all_services = discover_displays(timeout_ms);
 
     // Find first service matching query (case-insensitive substring match)
-    for (const auto& service : all_services) {
+    for (size_t i = 0; i < all_services.size(); ++i) {
+        const DisplayService& service = all_services[i];
         if (case_insensitive_contains(service.name, query) ||
             case_insensitive_contains(service.instance_name, query)) {
             return service;
