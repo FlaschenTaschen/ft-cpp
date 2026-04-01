@@ -89,13 +89,8 @@ static void resolve_callback(AvahiServiceResolver* r,
                              void* userdata) {
     DiscoveryContext* ctx = static_cast<DiscoveryContext*>(userdata);
 
-    fprintf(stderr, "[resolve_callback] event=%d, name=%s\n", event, name ? name : "(null)");
-    fflush(stderr);
-
     switch (event) {
     case AVAHI_RESOLVER_FOUND: {
-        fprintf(stderr, "[resolve_callback] RESOLVER_FOUND for '%s' at %s:%d\n", name, host_name, port);
-        fflush(stderr);
         DisplayService service;
         service.instance_name = name;
         service.hostname = host_name;
@@ -143,13 +138,8 @@ static void browse_callback(AvahiServiceBrowser* b,
     AvahiClient* c = avahi_service_browser_get_client(b);
     DiscoveryContext* ctx = static_cast<DiscoveryContext*>(userdata);
 
-    fprintf(stderr, "[browse_callback] event=%d, name=%s\n", event, name ? name : "(null)");
-    fflush(stderr);
-
     switch (event) {
     case AVAHI_BROWSER_NEW: {
-        fprintf(stderr, "[browse_callback] BROWSER_NEW: discovering service '%s'\n", name);
-        fflush(stderr);
         // Resolve the service
         AvahiServiceResolver* resolver =
             avahi_service_resolver_new(c, interface, protocol, name, type, domain,
@@ -164,20 +154,14 @@ static void browse_callback(AvahiServiceBrowser* b,
     }
 
     case AVAHI_BROWSER_REMOVE:
-        fprintf(stderr, "[browse_callback] BROWSER_REMOVE\n");
-        fflush(stderr);
         // A service was removed - we could track this, but for now just ignore
         break;
 
     case AVAHI_BROWSER_CACHE_EXHAUSTED:
-        fprintf(stderr, "[browse_callback] CACHE_EXHAUSTED (not yet all_for_now, waiting for resolvers)\n");
-        fflush(stderr);
         // Don't exit yet - resolvers may still be running
         break;
 
     case AVAHI_BROWSER_ALL_FOR_NOW:
-        fprintf(stderr, "[browse_callback] ALL_FOR_NOW, setting all_for_now\n");
-        fflush(stderr);
         ctx->all_for_now = true;
         break;
 
@@ -204,9 +188,6 @@ long get_time_ms() {
 }  // namespace
 
 std::vector<DisplayService> discover_displays(int timeout_ms) {
-    fprintf(stderr, "[discover_displays] Starting discovery with timeout=%dms\n", timeout_ms);
-    fflush(stderr);
-
     DiscoveryContext ctx;
     ctx.timeout_ms = timeout_ms;
     ctx.start_time_ms = get_time_ms();
@@ -243,34 +224,50 @@ std::vector<DisplayService> discover_displays(int timeout_ms) {
         return ctx.services;
     }
 
-    fprintf(stderr, "[discover_displays] Service browser created, running event loop\n");
-    fflush(stderr);
-
     // Run the event loop with timeout
     while (!ctx.all_for_now) {
         long elapsed = get_time_ms() - ctx.start_time_ms;
         if (elapsed > timeout_ms) {
-            fprintf(stderr, "[discover_displays] Timeout reached after %ldms\n", elapsed);
-            fflush(stderr);
             break;
         }
 
         int remaining = timeout_ms - elapsed;
         if (avahi_simple_poll_iterate(simple_poll, remaining) != 0) {
-            fprintf(stderr, "[discover_displays] Event loop iteration failed\n");
-            fflush(stderr);
             break;
         }
     }
-
-    fprintf(stderr, "[discover_displays] Discovery complete, found %zu services\n", ctx.services.size());
-    fflush(stderr);
 
     avahi_service_browser_free(sb);
     avahi_client_free(client);
     avahi_simple_poll_free(simple_poll);
 
-    return ctx.services;
+    // Deduplicate by instance name, keeping only publicly reachable addresses
+    // (prefer IPv4, skip IPv6 and localhost)
+    std::vector<DisplayService> filtered;
+    for (size_t i = 0; i < ctx.services.size(); ++i) {
+        const DisplayService& service = ctx.services[i];
+
+        // Skip localhost and IPv6 addresses
+        if (service.address == "127.0.0.1" ||
+            service.address.find(':') != std::string::npos) {
+            continue;
+        }
+
+        // Check if we already have this instance
+        bool found = false;
+        for (size_t j = 0; j < filtered.size(); ++j) {
+            if (filtered[j].instance_name == service.instance_name) {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            filtered.push_back(service);
+        }
+    }
+
+    return filtered;
 }
 
 DisplayService discover_display(const std::string& query, int timeout_ms) {
