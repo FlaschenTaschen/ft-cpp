@@ -117,18 +117,20 @@ void ServiceDiscoveryThread::HandleClientState(AvahiClientState state) {
     case AVAHI_CLIENT_S_RUNNING:
         // Server has startup successfully and registered its host
         // name on the network, so it's time to create our services
+        fprintf(stderr, "Avahi client running, creating services\n");
         if (client_ && !entry_group_) {
             CreateServices();
         }
         break;
 
     case AVAHI_CLIENT_FAILURE:
-        fprintf(stderr, "Client failure: %s\n",
+        fprintf(stderr, "Avahi client failure: %s\n",
                 avahi_strerror(avahi_client_errno(client_)));
         shutdown_requested_ = true;
         break;
 
     case AVAHI_CLIENT_S_COLLISION:
+        fprintf(stderr, "Avahi collision, resetting entry group\n");
         // Let's drop our registered services. When the server is back
         // in AVAHI_SERVER_RUNNING state we will register them again.
         if (entry_group_) {
@@ -137,11 +139,13 @@ void ServiceDiscoveryThread::HandleClientState(AvahiClientState state) {
         break;
 
     case AVAHI_CLIENT_S_REGISTERING:
+        fprintf(stderr, "Avahi registering\n");
         // The server records are now being established. This
         // might result in a routable local service.
         break;
 
     case AVAHI_CLIENT_CONNECTING:
+        fprintf(stderr, "Avahi connecting\n");
         break;
     }
 }
@@ -149,9 +153,12 @@ void ServiceDiscoveryThread::HandleClientState(AvahiClientState state) {
 void ServiceDiscoveryThread::CreateServices() {
     int error;
 
+    fprintf(stderr, "CreateServices called\n");
+
     // If this is the first time we're called, let's create a new
     // entry group if necessary
     if (!entry_group_) {
+        fprintf(stderr, "Creating new entry group\n");
         if (!(entry_group_ = avahi_entry_group_new(client_,
                                                      EntryGroupCallback,
                                                      this))) {
@@ -225,6 +232,7 @@ void ServiceDiscoveryThread::CreateServices() {
         return;
     }
 
+    fprintf(stderr, "Service added successfully, committing\n");
     error = avahi_entry_group_commit(entry_group_);
     if (error < 0) {
         fprintf(stderr, "Failed to commit entry group: %s\n",
@@ -233,6 +241,7 @@ void ServiceDiscoveryThread::CreateServices() {
         entry_group_ = NULL;
         return;
     }
+    fprintf(stderr, "Service committed successfully\n");
 }
 
 void ServiceDiscoveryThread::EntryGroupCallback(AvahiEntryGroup* g,
@@ -246,6 +255,7 @@ void ServiceDiscoveryThread::HandleEntryGroupState(AvahiEntryGroupState state) {
     switch (state) {
     case AVAHI_ENTRY_GROUP_ESTABLISHED:
         // The entry group has been established successfully
+        fprintf(stderr, "Service successfully published\n");
         break;
 
     case AVAHI_ENTRY_GROUP_COLLISION:
@@ -270,7 +280,10 @@ void ServiceDiscoveryThread::HandleEntryGroupState(AvahiEntryGroupState state) {
         break;
 
     case AVAHI_ENTRY_GROUP_UNCOMMITED:
+        fprintf(stderr, "Entry group uncommitted\n");
+        break;
     case AVAHI_ENTRY_GROUP_REGISTERING:
+        fprintf(stderr, "Entry group registering\n");
         break;
     }
 }
