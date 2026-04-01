@@ -20,10 +20,12 @@
 #include <avahi-client/publish.h>
 #include <avahi-common/alternative.h>
 #include <avahi-common/error.h>
+#include <avahi-common/malloc.h>
 #include <avahi-common/simple-watch.h>
 
-#include <cstdio>
-#include <cstring>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
 
 ServiceDiscoveryThread::ServiceDiscoveryThread(
     const char* instance_name,
@@ -35,9 +37,9 @@ ServiceDiscoveryThread::ServiceDiscoveryThread(
     const char* backend,
     const char* platform,
     uint16_t features)
-    : simple_poll_(nullptr),
-      client_(nullptr),
-      entry_group_(nullptr),
+    : simple_poll_(NULL),
+      client_(NULL),
+      entry_group_(NULL),
       instance_name_(instance_name),
       port_(port),
       width_(width),
@@ -74,7 +76,7 @@ void ServiceDiscoveryThread::Run() {
         fprintf(stderr, "avahi_client_new() failed: %s\n",
                 avahi_strerror(error));
         avahi_simple_poll_free(simple_poll_);
-        simple_poll_ = nullptr;
+        simple_poll_ = NULL;
         return;
     }
 
@@ -88,12 +90,12 @@ void ServiceDiscoveryThread::Run() {
     // Cleanup
     if (client_) {
         avahi_client_free(client_);
-        client_ = nullptr;
+        client_ = NULL;
     }
 
     if (simple_poll_) {
         avahi_simple_poll_free(simple_poll_);
-        simple_poll_ = nullptr;
+        simple_poll_ = NULL;
     }
 }
 
@@ -105,6 +107,10 @@ void ServiceDiscoveryThread::ClientCallback(AvahiClient* c,
                                            AvahiClientState state,
                                            void* userdata) {
     ServiceDiscoveryThread* self = static_cast<ServiceDiscoveryThread*>(userdata);
+    // Store the client pointer in case it's not set yet (callback can fire synchronously)
+    if (!self->client_) {
+        self->client_ = c;
+    }
     self->HandleClientState(state);
 }
 
@@ -115,18 +121,28 @@ void ServiceDiscoveryThread::HandleClientState(AvahiClientState state) {
     case AVAHI_CLIENT_S_RUNNING:
         // Server has startup successfully and registered its host
         // name on the network, so it's time to create our services
-        if (!entry_group_) {
+        fprintf(stderr, "Avahi client running, creating services (client_=%p, entry_group_=%p)\n",
+                (void*)client_, (void*)entry_group_);
+        fflush(stderr);
+        if (client_ && !entry_group_) {
+            fprintf(stderr, "Calling CreateServices\n");
+            fflush(stderr);
             CreateServices();
+        } else {
+            fprintf(stderr, "Skipping CreateServices: client_=%p, entry_group_=%p\n",
+                    (void*)client_, (void*)entry_group_);
+            fflush(stderr);
         }
         break;
 
     case AVAHI_CLIENT_FAILURE:
-        fprintf(stderr, "Client failure: %s\n",
+        fprintf(stderr, "Avahi client failure: %s\n",
                 avahi_strerror(avahi_client_errno(client_)));
         shutdown_requested_ = true;
         break;
 
     case AVAHI_CLIENT_S_COLLISION:
+        fprintf(stderr, "Avahi collision, resetting entry group\n");
         // Let's drop our registered services. When the server is back
         // in AVAHI_SERVER_RUNNING state we will register them again.
         if (entry_group_) {
@@ -135,11 +151,13 @@ void ServiceDiscoveryThread::HandleClientState(AvahiClientState state) {
         break;
 
     case AVAHI_CLIENT_S_REGISTERING:
+        fprintf(stderr, "Avahi registering\n");
         // The server records are now being established. This
         // might result in a routable local service.
         break;
 
     case AVAHI_CLIENT_CONNECTING:
+        fprintf(stderr, "Avahi connecting\n");
         break;
     }
 }
@@ -147,14 +165,20 @@ void ServiceDiscoveryThread::HandleClientState(AvahiClientState state) {
 void ServiceDiscoveryThread::CreateServices() {
     int error;
 
+    fprintf(stderr, "CreateServices called\n");
+    fflush(stderr);
+
     // If this is the first time we're called, let's create a new
     // entry group if necessary
     if (!entry_group_) {
+        fprintf(stderr, "Creating new entry group\n");
+        fflush(stderr);
         if (!(entry_group_ = avahi_entry_group_new(client_,
                                                      EntryGroupCallback,
                                                      this))) {
             fprintf(stderr, "avahi_entry_group_new() failed: %s\n",
                     avahi_strerror(avahi_client_errno(client_)));
+            fflush(stderr);
             return;
         }
     }
@@ -184,8 +208,8 @@ void ServiceDiscoveryThread::CreateServices() {
             static_cast<AvahiPublishFlags>(0),
             instance_name_.c_str(),
             "_flaschen-taschen._udp",
-            nullptr,
-            nullptr,
+            NULL,
+            NULL,
             port_,
             width_str,
             height_str,
@@ -193,8 +217,8 @@ void ServiceDiscoveryThread::CreateServices() {
             version_str.c_str(),
             backend_str.c_str(),
             platform_str.c_str(),
-            features_str.c_str(),
-            nullptr);
+            features_str,
+            NULL);
     } else {
         error = avahi_entry_group_add_service(
             entry_group_,
@@ -203,8 +227,8 @@ void ServiceDiscoveryThread::CreateServices() {
             static_cast<AvahiPublishFlags>(0),
             instance_name_.c_str(),
             "_flaschen-taschen._udp",
-            nullptr,
-            nullptr,
+            NULL,
+            NULL,
             port_,
             width_str,
             height_str,
@@ -212,25 +236,31 @@ void ServiceDiscoveryThread::CreateServices() {
             version_str.c_str(),
             backend_str.c_str(),
             platform_str.c_str(),
-            features_str.c_str(),
+            features_str,
             url_str.c_str(),
-            nullptr);
+            NULL);
     }
 
     if (error < 0) {
         fprintf(stderr, "Failed to add service: %s\n",
                 avahi_strerror(error));
+        fflush(stderr);
         return;
     }
 
+    fprintf(stderr, "Service added successfully, committing\n");
+    fflush(stderr);
     error = avahi_entry_group_commit(entry_group_);
     if (error < 0) {
         fprintf(stderr, "Failed to commit entry group: %s\n",
                 avahi_strerror(error));
+        fflush(stderr);
         avahi_entry_group_free(entry_group_);
-        entry_group_ = nullptr;
+        entry_group_ = NULL;
         return;
     }
+    fprintf(stderr, "Service committed successfully\n");
+    fflush(stderr);
 }
 
 void ServiceDiscoveryThread::EntryGroupCallback(AvahiEntryGroup* g,
@@ -244,6 +274,7 @@ void ServiceDiscoveryThread::HandleEntryGroupState(AvahiEntryGroupState state) {
     switch (state) {
     case AVAHI_ENTRY_GROUP_ESTABLISHED:
         // The entry group has been established successfully
+        fprintf(stderr, "Service successfully published\n");
         break;
 
     case AVAHI_ENTRY_GROUP_COLLISION:
@@ -267,10 +298,13 @@ void ServiceDiscoveryThread::HandleEntryGroupState(AvahiEntryGroupState state) {
         shutdown_requested_ = true;
         break;
 
-    case AVAHI_ENTRY_GROUP_UNCOMMITTED:
+    case AVAHI_ENTRY_GROUP_UNCOMMITED:
+        fprintf(stderr, "Entry group uncommitted\n");
+        break;
     case AVAHI_ENTRY_GROUP_REGISTERING:
+        fprintf(stderr, "Entry group registering\n");
         break;
     }
 }
 
-#endif // __APPLE__
+#endif // __linux__

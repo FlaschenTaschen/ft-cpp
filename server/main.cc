@@ -125,8 +125,8 @@ int main(int argc, char *argv[]) {
     int height = 35;
     int layer_timeout = 15;
     bool mdns_enabled = false;
-    std::string mdns_name = "FlaschenTaschen";
-    std::string mdns_url = "";
+    std::string mdns_name("FlaschenTaschen");
+    std::string mdns_url("");
 #if FT_BACKEND != 2
     bool as_daemon = false;
 #endif
@@ -262,8 +262,37 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef __linux__
-    // Create service discovery thread if enabled (before daemonization)
-    ServiceDiscoveryThread* discovery_thread = nullptr;
+    ServiceDiscoveryThread* discovery_thread = NULL;
+#endif
+
+#if FT_BACKEND != 2  // terminal thing can not run in background.
+    // Commandline parsed, immediate errors reported. Time to become daemon.
+    if (as_daemon && daemon(0, 0) != 0) {  // Become daemon.
+        perror("Failed to become daemon");
+    }
+#endif
+
+    // Only after we have become a daemon, we can do all the things that
+    // require starting threads. These can be various realtime priorities,
+    // we so need to stay root until all threads are set up.
+    display->PostDaemonInit();
+
+    display->Send();  // Clear screen.
+
+    // Get actual display dimensions from the display object (in case they were -1)
+    width = display->width();
+    height = display->height();
+
+    ft::Mutex mutex;
+
+    // The display we expose to the user provides composite layering which can
+    // be used by the UDP server.
+    CompositeFlaschenTaschen layered_display(display, 16);
+    layered_display.StartLayerGarbageCollection(&mutex, layer_timeout);
+
+#ifdef __linux__
+    // Create service discovery thread if enabled (after hardware is initialized
+    // so we have the correct width/height from the display)
     if (mdns_enabled) {
         discovery_thread = new ServiceDiscoveryThread(
             mdns_name.c_str(),
@@ -282,27 +311,6 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-#if FT_BACKEND != 2  // terminal thing can not run in background.
-    // Commandline parsed, immediate errors reported. Time to become daemon.
-    if (as_daemon && daemon(0, 0) != 0) {  // Become daemon.
-        perror("Failed to become daemon");
-    }
-#endif
-
-    // Only after we have become a daemon, we can do all the things that
-    // require starting threads. These can be various realtime priorities,
-    // we so need to stay root until all threads are set up.
-    display->PostDaemonInit();
-
-    display->Send();  // Clear screen.
-
-    ft::Mutex mutex;
-
-    // The display we expose to the user provides composite layering which can
-    // be used by the UDP server.
-    CompositeFlaschenTaschen layered_display(display, 16);
-    layered_display.StartLayerGarbageCollection(&mutex, layer_timeout);
-
 #ifdef __linux__
     // After hardware is set up, all servers are listening and all
     // threads are started with their respective priorities, we can drop
@@ -315,7 +323,7 @@ int main(int argc, char *argv[]) {
 
 #ifdef __linux__
     // Shutdown service discovery thread gracefully
-    if (discovery_thread != nullptr) {
+    if (discovery_thread != NULL) {
         discovery_thread->Shutdown();
         discovery_thread->WaitStopped();
         delete discovery_thread;

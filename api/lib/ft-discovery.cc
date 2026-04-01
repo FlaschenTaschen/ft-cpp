@@ -22,9 +22,12 @@
 #include <avahi-common/simple-watch.h>
 
 #include <algorithm>
-#include <cstdio>
-#include <cstring>
-#include <cctype>
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <time.h>
 
 namespace {
 
@@ -36,7 +39,7 @@ struct DiscoveryContext {
     long start_time_ms;
 
     DiscoveryContext()
-        : simple_poll(nullptr), all_for_now(false), timeout_ms(0), start_time_ms(0) {}
+        : simple_poll(NULL), all_for_now(false), timeout_ms(0), start_time_ms(0) {}
 };
 
 // Case-insensitive substring match
@@ -45,19 +48,22 @@ bool case_insensitive_contains(const std::string& haystack,
     std::string h_lower = haystack;
     std::string n_lower = needle;
 
-    for (auto& c : h_lower) c = std::tolower(c);
-    for (auto& c : n_lower) c = std::tolower(c);
+    for (size_t i = 0; i < h_lower.length(); ++i) {
+        h_lower[i] = std::tolower(h_lower[i]);
+    }
+    for (size_t i = 0; i < n_lower.length(); ++i) {
+        n_lower[i] = std::tolower(n_lower[i]);
+    }
 
     return h_lower.find(n_lower) != std::string::npos;
 }
 
 // Parse TXT record value for a given key
 std::string parse_txt_value(AvahiStringList* txt, const char* key) {
-    size_t key_len = strlen(key);
     char key_with_equals[256];
     snprintf(key_with_equals, sizeof(key_with_equals), "%s=", key);
 
-    for (AvahiStringList* item = txt; item != nullptr;
+    for (AvahiStringList* item = txt; item != NULL;
          item = avahi_string_list_get_next(item)) {
         char* str = reinterpret_cast<char*>(item->text);
         if (strncmp(str, key_with_equals, strlen(key_with_equals)) == 0) {
@@ -105,7 +111,7 @@ static void resolve_callback(AvahiServiceResolver* r,
         service.platform = parse_txt_value(txt, "platform");
 
         std::string features_str = parse_txt_value(txt, "features");
-        service.features = static_cast<uint16_t>(std::stoul(features_str, nullptr, 16));
+        service.features = static_cast<uint16_t>(strtoul(features_str.c_str(), NULL, 16));
 
         ctx->services.push_back(service);
         break;
@@ -142,6 +148,7 @@ static void browse_callback(AvahiServiceBrowser* b,
         if (!resolver) {
             fprintf(stderr, "Failed to create resolver: %s\n",
                     avahi_strerror(avahi_client_errno(c)));
+            fflush(stderr);
         }
         break;
     }
@@ -151,7 +158,7 @@ static void browse_callback(AvahiServiceBrowser* b,
         break;
 
     case AVAHI_BROWSER_CACHE_EXHAUSTED:
-        ctx->all_for_now = true;
+        // Don't exit yet - resolvers may still be running
         break;
 
     case AVAHI_BROWSER_ALL_FOR_NOW:
@@ -161,6 +168,7 @@ static void browse_callback(AvahiServiceBrowser* b,
     case AVAHI_BROWSER_FAILURE:
         fprintf(stderr, "Browse failure: %s\n",
                 avahi_strerror(avahi_client_errno(c)));
+        fflush(stderr);
         ctx->all_for_now = true;
         break;
     }
@@ -188,26 +196,29 @@ std::vector<DisplayService> discover_displays(int timeout_ms) {
     AvahiSimplePoll* simple_poll = avahi_simple_poll_new();
     if (!simple_poll) {
         fprintf(stderr, "Failed to create simple poll\n");
+        fflush(stderr);
         return ctx.services;
     }
     ctx.simple_poll = simple_poll;
 
     AvahiClient* client = avahi_client_new(avahi_simple_poll_get(simple_poll),
                                            static_cast<AvahiClientFlags>(0),
-                                           nullptr, &ctx, &error);
+                                           NULL, &ctx, &error);
     if (!client) {
         fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
+        fflush(stderr);
         avahi_simple_poll_free(simple_poll);
         return ctx.services;
     }
 
     AvahiServiceBrowser* sb = avahi_service_browser_new(
-        client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_flaschen-taschen._udp", nullptr,
+        client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_flaschen-taschen._udp", NULL,
         static_cast<AvahiLookupFlags>(0), browse_callback, &ctx);
 
     if (!sb) {
         fprintf(stderr, "Failed to create service browser: %s\n",
                 avahi_strerror(avahi_client_errno(client)));
+        fflush(stderr);
         avahi_client_free(client);
         avahi_simple_poll_free(simple_poll);
         return ctx.services;
@@ -230,14 +241,41 @@ std::vector<DisplayService> discover_displays(int timeout_ms) {
     avahi_client_free(client);
     avahi_simple_poll_free(simple_poll);
 
-    return ctx.services;
+    // Deduplicate by instance name, keeping only publicly reachable addresses
+    // (prefer IPv4, skip IPv6 and localhost)
+    std::vector<DisplayService> filtered;
+    for (size_t i = 0; i < ctx.services.size(); ++i) {
+        const DisplayService& service = ctx.services[i];
+
+        // Skip localhost and IPv6 addresses
+        if (service.address == "127.0.0.1" ||
+            service.address.find(':') != std::string::npos) {
+            continue;
+        }
+
+        // Check if we already have this instance
+        bool found = false;
+        for (size_t j = 0; j < filtered.size(); ++j) {
+            if (filtered[j].instance_name == service.instance_name) {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            filtered.push_back(service);
+        }
+    }
+
+    return filtered;
 }
 
 DisplayService discover_display(const std::string& query, int timeout_ms) {
     std::vector<DisplayService> all_services = discover_displays(timeout_ms);
 
     // Find first service matching query (case-insensitive substring match)
-    for (const auto& service : all_services) {
+    for (size_t i = 0; i < all_services.size(); ++i) {
+        const DisplayService& service = all_services[i];
         if (case_insensitive_contains(service.name, query) ||
             case_insensitive_contains(service.instance_name, query)) {
             return service;

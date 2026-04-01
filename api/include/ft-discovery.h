@@ -17,7 +17,7 @@
 // mDNS service discovery is Linux-only (Avahi-based)
 #ifdef __linux__
 
-#include <cstdint>
+#include <stdint.h>
 #include <string>
 #include <vector>
 
