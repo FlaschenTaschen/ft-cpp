@@ -117,7 +117,7 @@ void ServiceDiscoveryThread::HandleClientState(AvahiClientState state) {
     case AVAHI_CLIENT_S_RUNNING:
         // Server has startup successfully and registered its host
         // name on the network, so it's time to create our services
-        if (!entry_group_) {
+        if (client_ && !entry_group_) {
             CreateServices();
         }
         break;
