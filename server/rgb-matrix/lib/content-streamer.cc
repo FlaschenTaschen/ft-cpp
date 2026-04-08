@@ -51,7 +51,9 @@ STATIC_ASSERT(file_header_size_changed, sizeof(FrameHeader) == 32);
 }
 
 FileStreamIO::FileStreamIO(int fd) : fd_(fd) {
+#ifdef __linux__
   posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
 }
 FileStreamIO::~FileStreamIO() { close(fd_); }
 
