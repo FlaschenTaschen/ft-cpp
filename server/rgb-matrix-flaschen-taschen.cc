@@ -40,8 +40,8 @@ void RGBMatrixFlaschenTaschen::SetPixel(int x, int y, const Color &col) {
 }
 
 void RGBMatrixFlaschenTaschen::PostDaemonInit() {
-    matrix_->StartRefresh();  // Starts thread.
     back_buffer_ = matrix_->CreateFrameCanvas();
+    matrix_->StartRefresh();  // Starts thread.
 }
 
 void RGBMatrixFlaschenTaschen::Send() {
