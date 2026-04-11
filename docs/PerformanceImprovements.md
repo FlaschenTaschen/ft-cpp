@@ -4,22 +4,33 @@
 
 ---
 
-### 1. Frame Tearing / Flickering — Double Buffering (HIGH IMPACT)
+### 1. Frame Tearing / Flickering — Double Buffering (HIGH IMPACT) ✅ IMPLEMENTED
 
 **Root Cause:**  
 `RGBMatrixFlaschenTaschen::SetPixel` writes directly to the live framebuffer while the `UpdateThread` continuously reads the same buffer to drive GPIO. Pixel writes race with frame scans, causing partial frames to flash on the panels. `Send()` is currently a no-op.
 
-**Fix:**  
-Add `FrameCanvas *back_buffer_` to `RGBMatrixFlaschenTaschen`. Write all pixels to the back buffer, then call `matrix_->SwapOnVSync(back_buffer_)` in `Send()` to atomically present the completed frame at the next vsync.
+**Fix (Committed):**  
+Added `FrameCanvas *back_buffer_` to `RGBMatrixFlaschenTaschen`. Write all pixels to the back buffer, then call `matrix_->SwapOnVSync(back_buffer_)` in `Send()` to atomically present the completed frame at the next vsync.
 
-**Files changed:** `server/led-flaschen-taschen.h`, `server/rgb-matrix-flaschen-taschen.cc`
+Additionally, `CompositeFlaschenTaschen::Send()` was updated to re-render the complete composited scene from the z-buffer and layer screen buffers before each swap. This ensures the back buffer always contains the full composite of all visible layers, eliminating flicker when multiple layers are active.
 
-**Estimated improvement:**
+**Files changed:** 
+- `server/led-flaschen-taschen.h`, `server/rgb-matrix-flaschen-taschen.cc` (initial double-buffering)
+- `server/composite-flaschen-taschen.cc` (layer composite fix, commit `70f991e`)
+
+**Verified Results (see `DOUBLE_BUFFERING_PERF_ANALYSIS.md`):**
+- **Process context switches:** 5x reduction over 3-minute plasma load (3,940 → 785)
+- **CPU efficiency:** Similar per-process CPU, achieved with fewer lock/wait cycles
+- **Multi-layer rendering:** No flicker when plasma runs on layer 0 and send-text displays on higher layers
+- **Stability:** No crashes, clean startup, normal thermal operation
+
+**Performance Achieved:**
 - Flickering/tearing: effectively eliminated — panels only update at vsync boundaries, never mid-frame
-- CPU: no net reduction (same pixel encoding work), but `SwapOnVSync` lets the `UpdateThread` run with a stable buffer, reducing cache thrashing from concurrent reads/writes on the bitplane buffer
-- Latency added per frame: ~1 display refresh period (≈7ms at 140Hz, ≈16ms at 60Hz) for the vsync wait — acceptable for display use
+- CPU: 5x reduction in process context switches under sustained multi-layer load
+- Latency: ~1 display refresh period (≈7ms at 140Hz) vsync wait — acceptable for display use
+- Multi-layer support: full composite of all visible layers guaranteed before each frame swap
 
-**Confidence:** High. This is the standard approach documented in the rpi-rgb-led-matrix library. The library explicitly warns that `matrix_->SetPixel()` "might result in tearing."
+**Confidence:** High — verified on hardware under sustained load with measurable performance metrics.
 
 ---
 
