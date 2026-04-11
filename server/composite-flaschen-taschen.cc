@@ -122,8 +122,19 @@ void CompositeFlaschenTaschen::SetPixel(int x, int y, const Color &col) {
 
 void CompositeFlaschenTaschen::Send() {
     // Don't send anything if we only had pixels in hidden layers.
-    if (any_visible_pixel_drawn_)
-        delegatee_->Send();
+    if (!any_visible_pixel_drawn_)
+        return;
+
+    // Re-render complete composited scene to back buffer before swap.
+    // Necessary for double-buffered backends: SwapOnVSync returns a stale
+    // canvas that does not contain the current composite of all layers.
+    for (int x = 0; x < width_; ++x) {
+        for (int y = 0; y < height_; ++y) {
+            const int layer = z_buffer_->At(x, y);
+            delegatee_->SetPixel(x, y, screens_[layer]->At(x, y));
+        }
+    }
+    delegatee_->Send();
     any_visible_pixel_drawn_ = false;
 }
 
