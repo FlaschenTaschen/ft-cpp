@@ -40,21 +40,22 @@ RGB_INCDIR=rgb-matrix/include
 RGB_LIBDIR=rgb-matrix/lib
 RGB_LIBRARY_NAME=rgbmatrix
 RGB_LIBRARY=$(RGB_LIBDIR)/lib$(RGB_LIBRARY_NAME).a
-RGB_LDFLAGS=-lrt -lm -lpthread
 
 INCLUDES=-I../api/include
 BUILD_DIR=../build/server
 
-# mDNS service discovery is Linux-only
+# mDNS service discovery is Linux-only; librt also Linux-only
 UNAME_S=$(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o service-discovery.o
     AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client 2>/dev/null)
     AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client 2>/dev/null)
+    RGB_LDFLAGS=-lrt -lm -lpthread
 else
     OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o
     AVAHI_CFLAGS=
     AVAHI_LDFLAGS=
+    RGB_LDFLAGS=-lm -lpthread
 endif
 
 # Nested if/else are very awkward, so we just compare each possible outcome

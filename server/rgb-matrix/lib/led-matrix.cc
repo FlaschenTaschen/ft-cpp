@@ -609,6 +609,7 @@ bool RGBMatrix::Impl::ApplyPixelMapper(const PixelMapper *mapper) {
 
 // -- Public interface of RGBMatrix. Delegate everything to impl_
 
+#ifdef __linux__
 static bool drop_privs(const char *priv_user, const char *priv_group) {
   uid_t ruid, euid, suid;
   if (getresuid(&ruid, &euid, &suid) >= 0) {
@@ -648,6 +649,12 @@ static bool drop_privs(const char *priv_user, const char *priv_group) {
   }
   return true;
 }
+#else
+static bool drop_privs(const char *, const char *) {
+  // Privilege dropping not supported on non-Linux systems
+  return true;
+}
+#endif
 
 RGBMatrix *RGBMatrix::CreateFromOptions(const RGBMatrix::Options &options,
                                         const RuntimeOptions &runtime_options) {

@@ -85,6 +85,7 @@ private:
 // -- FlaschenTaschen implementation using rpi-rgb-led-matrix
 namespace rgb_matrix {
 class RGBMatrix;
+class FrameCanvas;
 }
 
 class RGBMatrixFlaschenTaschen : public ServerFlaschenTaschen {
@@ -99,10 +100,11 @@ public:
     int height() const { return height_; }
 
     void SetPixel(int x, int y, const Color &col);
-    void Send() { /* update directly */ }
+    void Send();
 
 private:
     rgb_matrix::RGBMatrix *const matrix_;
+    rgb_matrix::FrameCanvas *back_buffer_;
 
     int width_;
     int height_;

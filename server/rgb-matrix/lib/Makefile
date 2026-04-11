@@ -175,7 +175,12 @@ INCDIR=../include
 CFLAGS=-W -Wall -Wextra -Wno-unused-parameter -O3 -g -fPIC $(DEFINES) -march=native
 CXXFLAGS=$(CFLAGS) -fno-exceptions -std=c++11
 
-all : $(TARGET).a $(TARGET).so.1
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+    all : $(TARGET).a $(TARGET).so.1
+else
+    all : $(TARGET).a
+endif
 
 $(TARGET).a : $(OBJECTS)
 	$(AR) rcs $@ $^

@@ -20,7 +20,8 @@
 #include <stdlib.h>
 
 RGBMatrixFlaschenTaschen::RGBMatrixFlaschenTaschen(
-    rgb_matrix::RGBMatrix *matrix, int width, int height) : matrix_(matrix) {
+    rgb_matrix::RGBMatrix *matrix, int width, int height)
+    : matrix_(matrix), back_buffer_(NULL) {
     if (matrix_ == NULL) {
         fprintf(stderr, "Couldn't initialize RGB matrix.\n");
         exit(1);
@@ -35,9 +36,14 @@ RGBMatrixFlaschenTaschen::~RGBMatrixFlaschenTaschen() {
 }
 
 void RGBMatrixFlaschenTaschen::SetPixel(int x, int y, const Color &col) {
-    matrix_->SetPixel(x, y, col.r, col.g, col.b);
+    back_buffer_->SetPixel(x, y, col.r, col.g, col.b);
 }
 
 void RGBMatrixFlaschenTaschen::PostDaemonInit() {
+    back_buffer_ = matrix_->CreateFrameCanvas();
     matrix_->StartRefresh();  // Starts thread.
+}
+
+void RGBMatrixFlaschenTaschen::Send() {
+    back_buffer_ = matrix_->SwapOnVSync(back_buffer_);
 }

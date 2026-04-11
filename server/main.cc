@@ -287,48 +287,50 @@ int main(int argc, char *argv[]) {
 
     // The display we expose to the user provides composite layering which can
     // be used by the UDP server.
-    CompositeFlaschenTaschen layered_display(display, 16);
-    layered_display.StartLayerGarbageCollection(&mutex, layer_timeout);
+    {
+        CompositeFlaschenTaschen layered_display(display, 16);
+        layered_display.StartLayerGarbageCollection(&mutex, layer_timeout);
 
 #ifdef __linux__
-    // Create service discovery thread if enabled (after hardware is initialized
-    // so we have the correct width/height from the display)
-    if (mdns_enabled) {
-        discovery_thread = new ServiceDiscoveryThread(
-            mdns_name.c_str(),
-            1337,
-            width,
-            height,
-            mdns_url.empty() ? "" : mdns_url.c_str(),
-            FT_VERSION,
-            g_backend_name,
-            g_platform_name,
-            0x000F  // features: all currently-defined capabilities
-        );
-        discovery_thread->Start(0, 0);  // 0 priority = not real-time, 0 affinity = any CPU
-        fprintf(stderr, "Service discovery: %s (%dx%d) port 1337 [%s/%s]\n",
-                mdns_name.c_str(), width, height, g_backend_name, g_platform_name);
-    }
+        // Create service discovery thread if enabled (after hardware is initialized
+        // so we have the correct width/height from the display)
+        if (mdns_enabled) {
+            discovery_thread = new ServiceDiscoveryThread(
+                mdns_name.c_str(),
+                1337,
+                width,
+                height,
+                mdns_url.empty() ? "" : mdns_url.c_str(),
+                FT_VERSION,
+                g_backend_name,
+                g_platform_name,
+                0x000F  // features: all currently-defined capabilities
+            );
+            discovery_thread->Start(0, 0);  // 0 priority = not real-time, 0 affinity = any CPU
+            fprintf(stderr, "Service discovery: %s (%dx%d) port 1337 [%s/%s]\n",
+                    mdns_name.c_str(), width, height, g_backend_name, g_platform_name);
+        }
 #endif
 
 #ifdef __linux__
-    // After hardware is set up, all servers are listening and all
-    // threads are started with their respective priorities, we can drop
-    // privileges.
-    if (!drop_privs(DROP_PRIV_USER, DROP_PRIV_GROUP))
-        return 1;
+        // After hardware is set up, all servers are listening and all
+        // threads are started with their respective priorities, we can drop
+        // privileges.
+        if (!drop_privs(DROP_PRIV_USER, DROP_PRIV_GROUP))
+            return 1;
 #endif
 
-    udp_server_run_blocking(&layered_display, &mutex);  // last server blocks.
+        udp_server_run_blocking(&layered_display, &mutex);  // last server blocks.
 
 #ifdef __linux__
-    // Shutdown service discovery thread gracefully
-    if (discovery_thread != NULL) {
-        discovery_thread->Shutdown();
-        discovery_thread->WaitStopped();
-        delete discovery_thread;
-    }
+        // Shutdown service discovery thread gracefully
+        if (discovery_thread != NULL) {
+            discovery_thread->Shutdown();
+            discovery_thread->WaitStopped();
+            delete discovery_thread;
+        }
 #endif
+    }   // layered_display destructor runs here, stopping the GC thread
 
     delete display;
 }
