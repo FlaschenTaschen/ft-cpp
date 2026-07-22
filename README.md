@@ -12,16 +12,27 @@ This repository combines:
 
 ## Dependencies
 
-**Debian/Ubuntu:**
+**Debian/Ubuntu (including Raspberry Pi OS):**
 ```bash
 sudo apt update
-sudo apt install build-essential libgraphicsmagick++1-dev nlohmann-json3-dev
+sudo apt install build-essential pkg-config libgraphicsmagick++1-dev nlohmann-json3-dev \
+    libavahi-client-dev libavahi-common-dev
+```
+
+**macOS:**
+```bash
+brew install pkg-config graphicsmagick nlohmann-json
 ```
 
 **Required packages:**
 - `build-essential` - C++ compiler, make, and build tools
-- `libgraphicsmagick++1-dev` - GraphicsMagick C++ development headers
-- `nlohmann-json3-dev` - C++ JSON library headers
+- `pkg-config` - Used by the Makefiles to locate optional libraries
+- `libgraphicsmagick++1-dev` / `graphicsmagick` - GraphicsMagick C++ development headers (send-image, pixelate)
+
+**Optional packages** (features are skipped with a notice if missing):
+- `nlohmann-json3-dev` / `nlohmann-json` - C++ JSON library headers (grayscale demo)
+- `libavahi-client-dev`, `libavahi-common-dev` - mDNS service discovery for `ft-server` and `ft-detect` (Linux only). At runtime the Pi also needs the daemon: `sudo apt install avahi-daemon && sudo systemctl enable --now avahi-daemon`. See [docs/mDNS.md](docs/mDNS.md).
+- FFmpeg dev libraries (`libavcodec-dev libavformat-dev libswscale-dev libavutil-dev libavdevice-dev` / `brew install ffmpeg`) - required for `send-video`
 
 ## Building
 

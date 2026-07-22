@@ -44,17 +44,24 @@ RGB_LIBRARY=$(RGB_LIBDIR)/lib$(RGB_LIBRARY_NAME).a
 INCLUDES=-I../api/include
 BUILD_DIR=../build/server
 
-# mDNS service discovery is Linux-only; librt also Linux-only
+# mDNS service discovery is Linux-only and requires avahi-client
+# (Debian/Ubuntu: sudo apt install libavahi-client-dev pkg-config).
+# If avahi is not available, the server builds without mDNS support.
+OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o
+AVAHI_CFLAGS=
+AVAHI_LDFLAGS=
 UNAME_S=$(shell uname -s)
 ifeq ($(UNAME_S),Linux)
-    OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o service-discovery.o
-    AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client 2>/dev/null)
-    AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client 2>/dev/null)
     RGB_LDFLAGS=-lrt -lm -lpthread
+    HAVE_AVAHI=$(shell pkg-config --exists avahi-client 2>/dev/null && echo yes || echo no)
+    ifeq ($(HAVE_AVAHI),yes)
+        OBJECTS+=service-discovery.o
+        AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client) -DHAVE_MDNS
+        AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client)
+    else
+        $(info NOTE: avahi-client not found; building ft-server without mDNS service discovery. Install libavahi-client-dev and pkg-config to enable it.)
+    endif
 else
-    OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o
-    AVAHI_CFLAGS=
-    AVAHI_LDFLAGS=
     RGB_LDFLAGS=-lm -lpthread
 endif
 

@@ -11,16 +11,22 @@ MAGICK_LDFLAGS=$(shell GraphicsMagick++-config --ldflags --libs) -L/opt/homebrew
 FFMPEG_LDFLAGS=$(shell pkg-config --cflags --libs libavcodec libavformat libswscale libavutil libavdevice 2>/dev/null)
 HAVE_FFMPEG=$(shell pkg-config --exists libavcodec libavformat libswscale libavutil libavdevice 2>/dev/null && echo yes || echo no)
 
-# ft-detect is Linux-only (requires mDNS/Avahi)
+# ft-detect is Linux-only (requires mDNS/Avahi).
+# It is only built when avahi-client is available
+# (Debian/Ubuntu: sudo apt install libavahi-client-dev pkg-config).
+COMMON_TARGETS=$(BUILD_DIR)/send-text $(BUILD_DIR)/send-image
+AVAHI_CFLAGS=
+AVAHI_LDFLAGS=
 UNAME_S=$(shell uname -s)
 ifeq ($(UNAME_S),Linux)
-    AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client 2>/dev/null)
-    AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client 2>/dev/null)
-    COMMON_TARGETS=$(BUILD_DIR)/send-text $(BUILD_DIR)/send-image $(BUILD_DIR)/ft-detect
-else
-    AVAHI_CFLAGS=
-    AVAHI_LDFLAGS=
-    COMMON_TARGETS=$(BUILD_DIR)/send-text $(BUILD_DIR)/send-image
+    HAVE_AVAHI=$(shell pkg-config --exists avahi-client 2>/dev/null && echo yes || echo no)
+    ifeq ($(HAVE_AVAHI),yes)
+        AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client)
+        AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client)
+        COMMON_TARGETS+=$(BUILD_DIR)/ft-detect
+    else
+        $(info NOTE: avahi-client not found; skipping ft-detect. Install libavahi-client-dev and pkg-config to enable it.)
+    endif
 endif
 
 ifeq ($(HAVE_FFMPEG),yes)
