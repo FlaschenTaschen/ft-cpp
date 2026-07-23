@@ -231,19 +231,20 @@ int main(int argc, char *argv[]) {
 #define MAKE_COLUMN(port) new CrateColumnFlaschenTaschen(CreateWS2801Strip(spi, port, kLedsPerCol))
 
     // Looking from the back of the display: leftmost column first.
+    // Updated 3/30/24 by Jade to match the numbering scheme we used during
+    // Reboot 2024 troubleshooting (1-9 left to right, viewed from the screen,
+    // so 9-1 left to right viewed from the back)
+    display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P9));
     display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P8));
     display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P7));
     display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P6));
     display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P5));
-
-    // Center column. Connected to front part
-    display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P13));
-
-    // Rest: continue on the back part
     display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P4));
     display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P3));
     display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P2));
-    display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P1));
+    // P1 isn't working on our Pi/hat (not sure why yet) so we're using
+    // P10 instead :shrug:
+    display->AddColumn(MAKE_COLUMN(MultiSPI::SPI_P10));
 #undef MAKE_COLUMN
 #elif FT_BACKEND == 1
     ServerFlaschenTaschen *display
