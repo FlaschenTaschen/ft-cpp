@@ -125,15 +125,11 @@ void CompositeFlaschenTaschen::Send() {
     if (!any_visible_pixel_drawn_)
         return;
 
-    // Re-render complete composited scene to back buffer before swap.
-    // Necessary for double-buffered backends: SwapOnVSync returns a stale
-    // canvas that does not contain the current composite of all layers.
-    for (int x = 0; x < width_; ++x) {
-        for (int y = 0; y < height_; ++y) {
-            const int layer = z_buffer_->At(x, y);
-            delegatee_->SetPixel(x, y, screens_[layer]->At(x, y));
-        }
-    }
+    // Note: double-buffered backends used to re-render the whole composite
+    // here, because SwapOnVSync() returns a stale canvas. That cost ~10ms of
+    // the ~14ms frame budget on a Pi 3, which pushed each swap past the next
+    // vsync and halved the server's frame intake. Keeping the spare canvas in
+    // sync is the backend's job now (see RGBMatrixFlaschenTaschen::Send).
     delegatee_->Send();
     any_visible_pixel_drawn_ = false;
 }

@@ -45,5 +45,16 @@ void RGBMatrixFlaschenTaschen::PostDaemonInit() {
 }
 
 void RGBMatrixFlaschenTaschen::Send() {
-    back_buffer_ = matrix_->SwapOnVSync(back_buffer_);
+    // SwapOnVSync() hands back the canvas that was on screen before, which is
+    // two frames stale. Since FlaschenTaschen applies incremental updates (a
+    // writer only sets the pixels it sent), the spare has to be brought back in
+    // sync with what is now displayed, or successive frames would alternate
+    // between two different partial composites.
+    //
+    // CopyFrom() is a memcpy of the internal bitplane representation (~450 KiB
+    // here, well under a millisecond) as opposed to re-encoding every pixel
+    // through the CIE1931 lookup and the per-bitplane scatter.
+    rgb_matrix::FrameCanvas *previous = matrix_->SwapOnVSync(back_buffer_);
+    previous->CopyFrom(*back_buffer_);
+    back_buffer_ = previous;
 }
