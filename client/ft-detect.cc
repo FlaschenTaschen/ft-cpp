@@ -159,8 +159,8 @@ int main(int argc, char *argv[]) {
             usage(argv[0]);
             return 0;
         default:
-            usage(argv[0]);
-            return 1;
+            list_mode = true;
+            break;
         }
     }
 
