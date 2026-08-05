@@ -13,6 +13,8 @@ Run:  python3 tunnel.py --host 127.0.0.1
       python3 tunnel.py --texture checker --palette magma --roll -0.3
 """
 
+import sys
+
 import numpy as np
 
 import demoscene as ds
@@ -34,8 +36,7 @@ def make_texture(kind, lut):
     return lut[idx.astype(np.uint8)]
 
 
-def main():
-    ap = ds.parser(__doc__.split("\n", 1)[0])
+def add_arguments(ap):
     ds.palette_argument(ap, "magma")
     ap.add_argument("--texture", default="xor", choices=["xor", "checker", "rings"])
     ap.add_argument("--speed", type=float, default=60.0, help="forward texels/sec")
@@ -49,7 +50,9 @@ def main():
     # range for the vanishing point to actually go dark.
     ap.add_argument("--fog-scale", type=float, default=35.0,
                     help="depth at which the walls are half faded")
-    args = ap.parse_args()
+
+
+def build(args):
 
     W, H = args.width, args.height
     lut = ds.named_palette(args.palette)
@@ -77,7 +80,11 @@ def main():
         v = (angle0 + int(t * args.roll * TEX)) & (TEX - 1)
         return ds.shade(tex[u, v], fog)
 
-    ds.run(render, args)
+    return render
+
+
+def main():
+    ds.standalone(sys.modules[__name__], __doc__.split("\n", 1)[0])
 
 
 if __name__ == "__main__":

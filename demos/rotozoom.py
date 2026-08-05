@@ -14,6 +14,8 @@ Run:  python3 rotozoom.py --host 127.0.0.1
       python3 rotozoom.py --texture plasma --spin 0.35 --zoom-min 0.4
 """
 
+import sys
+
 import numpy as np
 
 import demoscene as ds
@@ -41,8 +43,7 @@ def make_texture(kind, lut):
     return lut[np.clip(idx, 0, 255).astype(np.uint8)]
 
 
-def main():
-    ap = ds.parser(__doc__.split("\n", 1)[0])
+def add_arguments(ap):
     ds.palette_argument(ap, "rainbow")
     ap.add_argument("--texture", default="plasma",
                     choices=["plasma", "xor", "checker", "grid"])
@@ -53,7 +54,9 @@ def main():
                     help="zoom cycles/sec")
     ap.add_argument("--drift", type=float, default=14.0,
                     help="texels/sec the plane slides sideways")
-    args = ap.parse_args()
+
+
+def build(args):
 
     W, H = args.width, args.height
     lut = ds.named_palette(args.palette)
@@ -80,7 +83,11 @@ def main():
         v = (sa * cx + ca * cy + oy).astype(np.int32) & (TEX - 1)
         return tex[v, u]
 
-    ds.run(render, args)
+    return render
+
+
+def main():
+    ds.standalone(sys.modules[__name__], __doc__.split("\n", 1)[0])
 
 
 if __name__ == "__main__":

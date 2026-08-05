@@ -5,15 +5,26 @@ can, then hand a `render(t, frame) -> (H, W, 3)` callback to a fixed-rate loop
 that pushes frames with api/python's send_array_banded(). This module holds
 that common part so each demo file is just its effect.
 
-  import demoscene as ds
+A demo module implements two functions:
 
-  ap = ds.parser("Bouncing dot")
-  ap.add_argument("--radius", type=float, default=6.0)
-  args = ap.parse_args()
+  def add_arguments(ap):        # optional: its own options
+      ap.add_argument("--radius", type=float, default=6.0)
 
-  def render(t, frame):
-      ...
-  ds.run(render, args)
+  def build(args):              # required: precompute, return the callback
+      def render(t, frame):
+          ...                   # -> (H, W, 3) uint8
+      return render
+
+and a `main()` that wires them to run(). Keeping the setup in build() rather
+than in main() is what lets megademo.py sequence effects: it can construct a
+render callback without running anyone's frame loop. Anything expensive
+belongs in build(), which is called once; render() is called every frame.
+
+render() may return a buffer it reuses between calls, which several of these
+do rather than allocate per frame. A caller must therefore use the frame
+before calling that same render again, and copy it if it needs to keep it.
+Blending the output of two *different* effects is fine, since each owns its
+own buffer.
 
 The colour helpers matter more than they look on an LED wall: an effect that
 computes a scalar field per pixel and maps it through a palette is both far
@@ -115,6 +126,70 @@ def run(render, args):
         clear()
         if not args.quiet:
             print("\nbye — cleared display")
+
+
+def standalone(module, description, **parser_kw):
+    """Run a demo module as a script: parse argv, build, loop."""
+    ap = parser(description, **parser_kw)
+    if hasattr(module, "add_arguments"):
+        module.add_arguments(ap)
+    args = ap.parse_args()
+    run(module.build(args), args)
+
+
+def options(module, **overrides):
+    """The defaults a demo module would get with no command line.
+
+    Parsing an empty argv is how a sequencer gets a fully populated options
+    object without duplicating any demo's defaults, which would then rot.
+    """
+    ap = parser(getattr(module, "__name__", "demo"))
+    if hasattr(module, "add_arguments"):
+        module.add_arguments(ap)
+    args = ap.parse_args([])
+    for key, value in overrides.items():
+        if not hasattr(args, key):
+            raise KeyError("%s has no option %r" % (args, key))
+        setattr(args, key, value)
+    return args
+
+
+def build(module, **overrides):
+    """Construct a render callback from a demo module. See options()."""
+    return module.build(options(module, **overrides))
+
+
+# --------------------------------------------------------------------------
+# Transitions, for sequencing effects into one show.
+# --------------------------------------------------------------------------
+
+def crossfade(a, b, k):
+    """Blend two frames. k runs 0 (all a) to 1 (all b)."""
+    k = float(np.clip(k, 0.0, 1.0))
+    return (a.astype(np.float32) * (1.0 - k)
+            + b.astype(np.float32) * k).astype(np.uint8)
+
+
+def fade_black(a, k):
+    """Fade a frame towards black. k runs 0 (unchanged) to 1 (black)."""
+    return (a.astype(np.float32) * (1.0 - float(np.clip(k, 0.0, 1.0)))).astype(np.uint8)
+
+
+def wipe(a, b, k, softness=24):
+    """Sweep b over a from the left, with a soft edge.
+
+    A hard edge on a 320 wide panel crosses in a couple of frames and reads as
+    a glitch, so the boundary is a ramp rather than a step.
+    """
+    w = a.shape[1]
+    k = float(np.clip(k, 0.0, 1.0))
+    # The edge has to travel a full softness past the last column, or at k=1
+    # the rightmost pixels are still part way through the ramp and the outgoing
+    # frame never fully clears.
+    edge = k * (w + softness)
+    ramp = np.clip((edge - np.arange(w, dtype=f32)) / max(softness, 1e-6), 0.0, 1.0)
+    return (a.astype(np.float32) * (1.0 - ramp)[None, :, None]
+            + b.astype(np.float32) * ramp[None, :, None]).astype(np.uint8)
 
 
 # --------------------------------------------------------------------------

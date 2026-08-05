@@ -13,13 +13,14 @@ Run:  python3 fire.py --host 127.0.0.1
       python3 fire.py --palette ice --wind -0.4 --cool 4
 """
 
+import sys
+
 import numpy as np
 
 import demoscene as ds
 
 
-def main():
-    ap = ds.parser(__doc__.split("\n", 1)[0])
+def add_arguments(ap):
     ds.palette_argument(ap, "fire")
     # The classic effect is tuned for a ~170 row screen. Over 64 rows the heat
     # has to fall roughly three times faster or it never reaches the top and
@@ -33,7 +34,9 @@ def main():
     ap.add_argument("--flicker", type=float, default=0.55,
                     help="how much the fuel varies along the width, 0..1")
     ap.add_argument("--seed", type=int, default=0, help="0 picks one at random")
-    args = ap.parse_args()
+
+
+def build(args):
 
     W, H = args.width, args.height
     rng = np.random.default_rng(args.seed or None)
@@ -74,7 +77,11 @@ def main():
 
         return lut[heat.clip(0, 255)]
 
-    ds.run(render, args)
+    return render
+
+
+def main():
+    ds.standalone(sys.modules[__name__], __doc__.split("\n", 1)[0])
 
 
 if __name__ == "__main__":

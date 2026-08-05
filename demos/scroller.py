@@ -22,6 +22,8 @@ Run:  python3 scroller.py --host 127.0.0.1                 # on the Pi
 
 import os
 
+import sys
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -96,8 +98,7 @@ def bake_plasma_loop(H, W, n_frames, brightness):
 
 
 
-def main():
-    ap = ds.parser(__doc__.split("\n", 1)[0])
+def add_arguments(ap):
     ap.add_argument("--text", default=(
         "FLASCHENTASCHEN LIVES  ✦  GREETZ TO ALL PIXEL PUSHERS  ✦     "),
         help="message to scroll; trailing spaces set the gap before it repeats")
@@ -111,7 +112,9 @@ def main():
     ap.add_argument("--plasma-frames", type=int, default=150,
                     help="length of the precomputed plasma loop; fewer = faster startup")
     ap.add_argument("--brightness", type=float, default=0.5, help="plasma brightness 0..1")
-    args = ap.parse_args()
+
+
+def build(args):
 
     W, H = args.width, args.height
     ext, SW = bake_text(args.text, args.font, H, W)
@@ -140,7 +143,11 @@ def main():
             return bounced
         return np.maximum(plasma[i % P], bounced)                   # text over plasma
 
-    ds.run(render, args)
+    return render
+
+
+def main():
+    ds.standalone(sys.modules[__name__], __doc__.split("\n", 1)[0])
 
 
 if __name__ == "__main__":

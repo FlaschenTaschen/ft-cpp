@@ -14,15 +14,14 @@ Run:  python3 starfield.py --host 127.0.0.1
       python3 starfield.py --stars 800 --speed 1.6 --warp 6 --palette ice
 """
 
+import sys
+
 import numpy as np
 
 import demoscene as ds
 
 
-def main():
-    ap = ds.parser(__doc__.split("\n", 1)[0])
-    # Fewer but brighter reads far better than a dense dim field, which on a
-    # small panel is indistinguishable from static.
+def add_arguments(ap):
     ap.add_argument("--stars", type=int, default=260)
     ap.add_argument("--speed", type=float, default=1.1, help="depth units/sec")
     ap.add_argument("--warp", type=int, default=4,
@@ -35,7 +34,9 @@ def main():
                     choices=["none", "ice", "fire", "toxic", "magma", "rainbow"],
                     help="colour stars from a palette instead of white")
     ap.add_argument("--seed", type=int, default=0, help="0 picks one at random")
-    args = ap.parse_args()
+
+
+def build(args):
 
     W, H = args.width, args.height
     rng = np.random.default_rng(args.seed or None)
@@ -110,7 +111,11 @@ def main():
 
         return frame_rgb
 
-    ds.run(render, args)
+    return render
+
+
+def main():
+    ds.standalone(sys.modules[__name__], __doc__.split("\n", 1)[0])
 
 
 if __name__ == "__main__":

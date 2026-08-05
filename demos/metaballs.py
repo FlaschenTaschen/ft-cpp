@@ -14,13 +14,14 @@ Run:  python3 metaballs.py --host 127.0.0.1
       python3 metaballs.py --balls 8 --palette toxic --contour 6
 """
 
+import sys
+
 import numpy as np
 
 import demoscene as ds
 
 
-def main():
-    ap = ds.parser(__doc__.split("\n", 1)[0])
+def add_arguments(ap):
     ds.palette_argument(ap, "ice")
     ap.add_argument("--balls", type=int, default=6)
     ap.add_argument("--size", type=float, default=13.0, help="ball radius in px")
@@ -30,7 +31,9 @@ def main():
     ap.add_argument("--contour", type=int, default=0,
                     help="if >1, quantize into this many bands for a contour look")
     ap.add_argument("--seed", type=int, default=0, help="0 picks one at random")
-    args = ap.parse_args()
+
+
+def build(args):
 
     W, H = args.width, args.height
     rng = np.random.default_rng(args.seed or None)
@@ -72,7 +75,11 @@ def main():
             v = np.floor(v / step) * step
         return lut[np.clip(v, 0, 255).astype(np.uint8)]
 
-    ds.run(render, args)
+    return render
+
+
+def main():
+    ds.standalone(sys.modules[__name__], __doc__.split("\n", 1)[0])
 
 
 if __name__ == "__main__":
