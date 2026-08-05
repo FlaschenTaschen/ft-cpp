@@ -211,11 +211,15 @@ def hsv_to_rgb(h, s, v):
     return np.stack([r, g, b], axis=-1)
 
 
-def gradient(stops, size=256):
+def gradient(stops, size=256, dtype=np.uint8):
     """Build a lookup table by interpolating between colour stops.
 
     stops: [(position 0..1, (r, g, b)), ...] in increasing position.
-    Returns (size, 3) uint8, indexable by a 0..size-1 scalar field.
+    Returns (size, 3), indexable by a 0..size-1 scalar field.
+
+    Pass dtype=f32 if the result will be dithered. The default uint8 has
+    already been rounded, and ordered dithering an integer does nothing but
+    add noise -- see dither(). Two demos independently lost time to that.
     """
     pos = np.array([p for p, _ in stops], f32)
     cols = np.array([c for _, c in stops], f32)
@@ -223,14 +227,52 @@ def gradient(stops, size=256):
     out = np.empty((size, 3), f32)
     for ch in range(3):
         out[:, ch] = np.interp(x, pos, cols[:, ch])
-    return np.clip(out, 0, 255).astype(np.uint8)
+    out = np.clip(out, 0, 255)
+    return out if dtype == f32 else out.astype(dtype)
 
 
-def rainbow(size=256, saturation=0.9, value=1.0):
-    """A full hue sweep as a lookup table."""
+def rainbow(size=256, saturation=0.9, value=1.0, dtype=np.uint8):
+    """A full hue sweep as a lookup table. See gradient() on dtype."""
     h = np.linspace(0.0, 1.0, size, endpoint=False, dtype=f32)
-    rgb = hsv_to_rgb(h, f32(saturation), f32(value))
-    return np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+    rgb = np.clip(hsv_to_rgb(h, f32(saturation), f32(value)) * 255.0, 0, 255)
+    return rgb if dtype == f32 else rgb.astype(dtype)
+
+
+# 8x8 ordered dither, the classic Bayer sequence scaled to [0, 1).
+#
+# The range matters and is easy to get wrong: astype(uint8) truncates rather
+# than rounds, so an offset of [0, 1) before truncation reproduces correct
+# rounding on average and leaves the mean intact. Centring the offset on zero
+# instead -- which looks more principled -- biases every pixel half a level
+# dark, which on a panel whose whole dark end is already compressed is exactly
+# where you would not want to lose brightness.
+_BAYER8 = np.array([
+    [0, 32, 8, 40, 2, 34, 10, 42], [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38], [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41], [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37], [63, 31, 55, 23, 61, 29, 53, 21],
+], f32) / 64.0
+
+
+def dither(rgb_float):
+    """Quantise a float (H, W, 3) image to uint8 with ordered dithering.
+
+    The panel drives 8 PWM bits, so a smooth ramp across many rows lands on
+    the same output value for a long stretch and then steps -- visible as
+    contour bands, worst in the dark end where the demos spend most of their
+    range. Offsetting each pixel by less than half a step before rounding
+    turns those hard edges into stipple, which reads as smooth from any normal
+    viewing distance.
+
+    The input must be float and must NOT have been through a uint8 palette on
+    the way here; dithering an already-rounded value only adds noise. Build
+    ramps with gradient(..., dtype=ds.f32).
+    """
+    h, w = rgb_float.shape[:2]
+    # np.tile, not np.resize: resize flattens first and would scramble the
+    # matrix, which still dithers but with a pattern that crawls.
+    tile = np.tile(_BAYER8, (-(-h // 8), -(-w // 8)))[:h, :w]
+    return np.clip(rgb_float + tile[:, :, None], 0, 255).astype(np.uint8)
 
 
 def shade(rgb, amount):
