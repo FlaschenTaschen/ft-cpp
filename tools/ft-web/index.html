@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlaschenTaschen — web preview</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14181d;
+    --line: #232a32;
+    --text: #d8dee6;
+    --dim: #7d8894;
+    --accent: #6ee7a8;
+    --warn: #f0a95c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .04em; }
+  h1 .dim { color: var(--dim); font-weight: 400; }
+  label { color: var(--dim); display: inline-flex; align-items: center; gap: 6px; }
+  input[type=range] { width: 120px; vertical-align: middle; }
+  #status { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+  #dot.up { background: var(--accent); }
+
+  main {
+    flex: 1; display: grid; place-items: center; padding: 20px; overflow: auto;
+  }
+  #stage { position: relative; line-height: 0; }
+  canvas#screen {
+    image-rendering: pixelated; image-rendering: crisp-edges;
+    background: #000; display: block;
+    box-shadow: 0 0 0 1px var(--line), 0 12px 48px rgba(0,0,0,.6);
+  }
+  #grid { position: absolute; inset: 0; pointer-events: none; display: none; }
+  #grid.on { display: block; }
+
+  footer {
+    border-top: 1px solid var(--line); background: var(--panel);
+    padding: 10px 14px; display: flex; gap: 26px; flex-wrap: wrap; align-items: flex-start;
+  }
+  .stat { min-width: 88px; }
+  .stat .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .stat .v { font-size: 17px; font-variant-numeric: tabular-nums; }
+  .stat .v.bad { color: var(--warn); }
+  #jitter { border: 1px solid var(--line); background: #0e1216; display: block; }
+  .jl { color: var(--dim); font-size: 11px; margin-bottom: 3px;
+        text-transform: uppercase; letter-spacing: .06em; }
+  #layers { display: flex; gap: 3px; margin-top: 4px; }
+  #layers i {
+    width: 11px; height: 14px; background: #1d242c; border-radius: 2px;
+    font-style: normal; font-size: 8px; color: #4a5560; text-align: center;
+    line-height: 14px;
+  }
+  #layers i.on { background: var(--accent); color: #07130d; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>FlaschenTaschen <span class="dim" id="dims">—</span></h1>
+  <label>zoom <input type="range" id="zoom" min="1" max="16" step="1" value="4">
+    <span id="zoomv" style="color:var(--text)">4x</span></label>
+  <label><input type="checkbox" id="ledgrid"> LED grid</label>
+  <label><input type="checkbox" id="freeze"> freeze</label>
+  <div id="status"><span id="dot"></span><span id="statustext">connecting…</span></div>
+</header>
+
+<main>
+  <div id="stage">
+    <canvas id="screen" width="1" height="1"></canvas>
+    <canvas id="grid"></canvas>
+  </div>
+</main>
+
+<footer>
+  <div class="stat"><div class="k">render</div><div class="v" id="s_render">—</div></div>
+  <div class="stat"><div class="k">frames in</div><div class="v" id="s_frames">—</div></div>
+  <div class="stat"><div class="k">datagrams</div><div class="v" id="s_dgram">—</div></div>
+  <div class="stat"><div class="k">wire</div><div class="v" id="s_mbit">—</div></div>
+  <div class="stat"><div class="k">interval p50 / p99 / max</div><div class="v" id="s_jit">—</div></div>
+  <div class="stat"><div class="k">bad packets</div><div class="v" id="s_bad">0</div></div>
+  <div>
+    <div class="jl">frame interval (ms)</div>
+    <canvas id="jitter" width="320" height="46"></canvas>
+    <div id="layers" title="layers that currently hold pixels"></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var screenCv = document.getElementById("screen");
+  var screenCx = screenCv.getContext("2d", { alpha: false });
+  var gridCv   = document.getElementById("grid");
+  var jitCv    = document.getElementById("jitter");
+  var jitCx    = jitCv.getContext("2d");
+
+  var zoomEl = document.getElementById("zoom");
+  var zoomV  = document.getElementById("zoomv");
+  var ledEl  = document.getElementById("ledgrid");
+  var freezeEl = document.getElementById("freeze");
+  var dot = document.getElementById("dot");
+  var statusText = document.getElementById("statustext");
+
+  var W = 0, H = 0;
+  var imgData = null;      // W x H RGBA, refilled from each binary frame
+  var srcCv = document.createElement("canvas");
+  var srcCx = null;
+
+  // Frame arrival intervals, for the jitter trace. This is the number that
+  // actually predicts visible flicker: a stall shows up here as a spike long
+  // before it moves the average.
+  var MAXSAMP = 320;
+  var intervals = [];
+  var lastFrameAt = 0;
+
+  function setSize(w, h) {
+    W = w; H = h;
+    document.getElementById("dims").textContent = w + " x " + h;
+    srcCv.width = w; srcCv.height = h;
+    srcCx = srcCv.getContext("2d", { alpha: false });
+    imgData = srcCx.createImageData(w, h);
+    // Alpha is constant; fill it once rather than every frame.
+    var d = imgData.data;
+    for (var i = 3; i < d.length; i += 4) d[i] = 255;
+    applyZoom();
+  }
+
+  function applyZoom() {
+    if (!W) return;
+    var z = parseInt(zoomEl.value, 10);
+    zoomV.textContent = z + "x";
+    screenCv.width = W * z;
+    screenCv.height = H * z;
+    gridCv.width = W * z;
+    gridCv.height = H * z;
+    screenCx.imageSmoothingEnabled = false;
+    drawGrid(z);
+    blit();
+  }
+
+  function drawGrid(z) {
+    var cx = gridCv.getContext("2d");
+    cx.clearRect(0, 0, gridCv.width, gridCv.height);
+    if (z < 3) return;                    // no room for a gap
+    cx.fillStyle = "rgba(0,0,0,0.55)";
+    var gap = Math.max(1, Math.floor(z / 4));
+    for (var x = 0; x < W; x++) cx.fillRect(x * z + z - gap, 0, gap, gridCv.height);
+    for (var y = 0; y < H; y++) cx.fillRect(0, y * z + z - gap, gridCv.width, gap);
+  }
+
+  function blit() {
+    if (!imgData) return;
+    srcCx.putImageData(imgData, 0, 0);
+    screenCx.imageSmoothingEnabled = false;
+    screenCx.drawImage(srcCv, 0, 0, screenCv.width, screenCv.height);
+  }
+
+  function onFrame(buf) {
+    var rgb = new Uint8Array(buf);
+    var d = imgData.data;
+    var n = W * H;
+    if (rgb.length < n * 3) return;
+    for (var i = 0, j = 0, k = 0; i < n; i++) {
+      d[k++] = rgb[j++];
+      d[k++] = rgb[j++];
+      d[k++] = rgb[j++];
+      k++;                                 // alpha already 255
+    }
+    var now = performance.now();
+    if (lastFrameAt) {
+      intervals.push(now - lastFrameAt);
+      if (intervals.length > MAXSAMP) intervals.shift();
+    }
+    lastFrameAt = now;
+    if (!freezeEl.checked) blit();
+  }
+
+  function pct(sorted, p) {
+    if (!sorted.length) return 0;
+    var i = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
+    return sorted[i];
+  }
+
+  function drawJitter() {
+    var w = jitCv.width, h = jitCv.height;
+    jitCx.clearRect(0, 0, w, h);
+    if (intervals.length < 2) return;
+
+    var sorted = intervals.slice().sort(function (a, b) { return a - b; });
+    var p50 = pct(sorted, 0.5), p99 = pct(sorted, 0.99);
+    var max = sorted[sorted.length - 1];
+    document.getElementById("s_jit").textContent =
+      p50.toFixed(1) + " / " + p99.toFixed(1) + " / " + max.toFixed(1);
+
+    // Scale to the worst sample so stalls stay on screen, with a sane floor.
+    var top = Math.max(max, 20);
+
+    // Median reference line.
+    jitCx.strokeStyle = "#2c353f";
+    jitCx.beginPath();
+    var my = h - (p50 / top) * h;
+    jitCx.moveTo(0, my); jitCx.lineTo(w, my); jitCx.stroke();
+
+    jitCx.beginPath();
+    jitCx.strokeStyle = "#6ee7a8";
+    jitCx.lineWidth = 1;
+    var step = w / MAXSAMP;
+    var off = MAXSAMP - intervals.length;
+    for (var i = 0; i < intervals.length; i++) {
+      var x = (off + i) * step;
+      var y = h - Math.min(1, intervals[i] / top) * h;
+      if (i === 0) jitCx.moveTo(x, y); else jitCx.lineTo(x, y);
+    }
+    jitCx.stroke();
+  }
+
+  var layersEl = document.getElementById("layers");
+  function setLayers(flags) {
+    if (layersEl.children.length !== flags.length) {
+      layersEl.innerHTML = "";
+      for (var i = 0; i < flags.length; i++) {
+        var el = document.createElement("i");
+        el.textContent = i.toString(16);
+        el.title = "layer " + i;
+        layersEl.appendChild(el);
+      }
+    }
+    for (var j = 0; j < flags.length; j++)
+      layersEl.children[j].className = flags[j] ? "on" : "";
+  }
+
+  function onStats(s) {
+    document.getElementById("s_render").textContent = s.pushed_per_s.toFixed(1) + " fps";
+    document.getElementById("s_frames").textContent = s.frames_per_s.toFixed(1) + " fps";
+    document.getElementById("s_dgram").textContent = s.dgrams_per_s.toFixed(0) + "/s";
+    document.getElementById("s_mbit").textContent = s.mbit_per_s.toFixed(1) + " Mbit/s";
+    var bad = document.getElementById("s_bad");
+    bad.textContent = s.bad;
+    bad.className = "v" + (s.bad ? " bad" : "");
+    setLayers(s.layers);
+  }
+
+  var ws = null, retry = null;
+  function connect() {
+    var url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+    ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = function () {
+      dot.className = "up";
+      statusText.textContent = "connected";
+    };
+    ws.onmessage = function (ev) {
+      if (typeof ev.data === "string") {
+        var msg = JSON.parse(ev.data);
+        if (msg.type === "hello") setSize(msg.width, msg.height);
+        else if (msg.type === "stats") onStats(msg);
+      } else {
+        onFrame(ev.data);
+      }
+    };
+    ws.onclose = function () {
+      dot.className = "";
+      statusText.textContent = "disconnected — retrying";
+      intervals = []; lastFrameAt = 0;
+      if (!retry) retry = setTimeout(function () { retry = null; connect(); }, 1000);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+
+  zoomEl.addEventListener("input", applyZoom);
+  ledEl.addEventListener("change", function () {
+    gridCv.className = ledEl.checked ? "on" : "";
+  });
+
+  setInterval(drawJitter, 250);
+  connect();
+})();
+</script>
+</body>
+</html>
