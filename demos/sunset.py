@@ -171,10 +171,28 @@ def scale_sprite(rows, height):
     """
     src = np.array([[c != ' ' for c in r] for r in rows], bool)
     sh, sw = src.shape
-    height = max(4, min(height, sh))
+    height = max(4, height)
     width = max(3, int(round(sw * height / float(sh))))
     if width % 2 == 0:                 # odd, so the centre prong stays centred
         width += 1
+    if height > sh:
+        # Larger than the source art, for panels with more than 64 rows. Until
+        # this existed the height was silently clamped to the sprite's own 20
+        # rows, so --tower-h above about 0.7 did nothing at all on a 64 row
+        # panel.
+        #
+        # Do not reach for it to make Sutro more legible here -- that was
+        # tried, both ways, and both are worse. Drawing it large and letting
+        # the spires run off the top crops away the three prongs, which are
+        # the entire identity of the thing; what is left reads as a water
+        # tower. And upscaling a one-pixel lattice by nearest neighbour
+        # doubles the width of every member, so it gets chunkier rather than
+        # bigger, losing the delicacy that reads as Sutro at a glance. A
+        # genuinely larger tower needs source art with more rows, not a scale
+        # factor. The default deliberately stays under 1.0.
+        ri = np.minimum((np.arange(height) * sh) // height, sh - 1)
+        ci = np.minimum((np.arange(width) * sw) // width, sw - 1)
+        return src[ri][:, ci]
     ri = (np.arange(sh) * height) // sh
     ci = (np.arange(sw) * width) // sw
     out = np.zeros((height, width), bool)
@@ -226,8 +244,17 @@ def make_backdrop(W, sky_rows, sun_x, args, rng):
 
     if args.tower:
         spr = scale_sprite(SUTRO, int(round(args.tower_h * sky_rows)))
+        th_full = spr.shape[0]
+        # Anchor the base on the ridge and let the top leave the frame, rather
+        # than shrinking to fit. Clamping y0 up to 0 would pin the *tip* to the
+        # top of the panel and cut the legs off instead, which reads as a
+        # floating aerial.
+        y0 = int(round(top[int(cx) % W])) + 1 - th_full
+        crop = max(0, -y0)
+        if crop:
+            spr = spr[crop:]
+        y0 = max(0, min(y0 + crop, sky_rows - spr.shape[0]))
         th, tw = spr.shape
-        y0 = max(0, min(int(round(top[int(cx) % W])) + 1 - th, sky_rows - th))
         cols = (np.arange(tw) + int(cx) - tw // 2) % W
         sub = a[y0:y0 + th]
         sub[:, cols] = np.maximum(sub[:, cols], spr.astype(f32))
@@ -249,8 +276,12 @@ def make_backdrop(W, sky_rows, sun_x, args, rng):
         # One light on the tip, one on each end of the top platform -- and on
         # a small panel only the tip. Four red pixels on a seven-pixel-wide
         # tower stop being warning lights and become the whole object.
-        for r in (BEACON_ROWS if th >= 14 else BEACON_ROWS[:1]):
-            ry = min(th - 1, (r * th) // len(SUTRO))
+        # Beacon rows are positions in the *uncropped* sprite, so shift them by
+        # the crop and drop any that went off the top with the spires.
+        for r in (BEACON_ROWS if th_full >= 14 else BEACON_ROWS[:1]):
+            ry = min(th_full - 1, (r * th_full) // len(SUTRO)) - crop
+            if ry < 0 or ry >= th:
+                continue
             lit = np.nonzero(spr[ry])[0]
             if not len(lit):
                 continue
