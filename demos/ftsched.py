@@ -442,6 +442,15 @@ class Show(mega.Show):
                 self.count.pop(old, None)
             self.start += dur
             dur = self._dur(self.index)
+            # An effect's clock is normally started by the transition that
+            # brings it in, a couple of seconds before its segment does. A
+            # segment entered by a *cut* never had that transition -- which is
+            # every solo effect, and every jump into one -- so its clock has to
+            # be started here or the first frame asks self.clock for a key that
+            # was never set and the segment is skipped.
+            if self.index not in self.clock:
+                self.clock[self.index] = self.start
+                self.count[self.index] = 0
             entry = self.b.entry_at(self.index)
             self.warn_fn("now playing %s" % (entry.name if entry else "?"))
 
@@ -614,7 +623,8 @@ class Scheduler(object):
             try:
                 frame = self._frame(t)
             except Exception as exc:
-                self.warn("render failed (%s); skipping the segment" % exc)
+                self.warn("render failed (%s: %s); skipping the segment"
+                          % (type(exc).__name__, exc))
                 self.show.skip(t)
                 frame = None
             if frame is not None:
