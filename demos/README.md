@@ -109,6 +109,198 @@ the effect was cheap enough for hardware that could not multiply quickly.
 $ python3 rotozoom.py --texture xor --spin 0.35 --zoom-min 0.4
 ```
 
+### laser
+
+![laser](screenshots/laser.png)
+
+A laser cutter working through a job: a searing head tracing a vector path,
+the kerf cooling behind it, and the piece dropping out when the outline
+closes.
+
+One scalar heat field carries all of it — the head writes 1.0 along the arc it
+covered this frame, the field decays, and a black→red→orange→white ramp turns
+it into kerf, trail and head bloom together. Cooling is a half-life in
+*seconds* rather than a per-frame factor, so the trail is the same length in
+wall time whether the demo runs at 8 fps or 30.
+
+Paths are generated — gears, finger-jointed panels, filigree, slot lettering —
+cut holes first, outline last, with dark rapid moves between contours and the
+head stepping in arc length so corners do not speed up.
+
+Heat alone cannot tell what belongs to the part, since lettering cut ten
+seconds ago has already decayed out of the ramp, so a per-job cut mask relights
+the whole piece for the second it takes to fall.
+
+```console
+$ python3 laser.py --cool 2.0 --shapes gear,filigree
+```
+
+### printer
+
+![printer](screenshots/printer.png)
+
+A 3D printer seen side-on: gantry climbing a row per layer, nozzle glowing,
+part rising with visible infill — and sometimes failing into spaghetti.
+
+Silhouettes are functions of normalised coordinates rather than sprites, so
+they rasterise to whatever height the panel gives. Each layer is classified
+into perimeter, skin and infill, and only the infill stencil is drawn, which is
+why the cross-section is a lattice rather than a filled outline.
+
+Failure is two independent draws per print — whether, and then independently
+where, anywhere from 8% to 94% of the way up. Over 148 prints that gave 29.7%
+failures spread evenly across the height; an early failure leaves nothing but
+nest, a late one leaves a near-complete part with strands draped over it.
+
+The spaghetti took three attempts. The coil phase has to come off one clock
+shared by the whole strand: sampled per point it is confetti, and tied to
+emission rate it is a smooth rope. Only the shared clock gives loose curling
+filament.
+
+```console
+$ python3 printer.py --fail-rate 0.15 --speed 1.4
+```
+
+### knit
+
+![knit](screenshots/knit.png)
+
+An Aran cable sweater worked stitch by stitch. A knitting chart is already a
+pixel grid — colourwork and cable charts are low-resolution raster art — so
+stitches are 5x5 sprites blitted from source data, never drawn as curves.
+
+What sells it is that the work is visibly *happening*: the row advances a
+stitch at a time with jitter and hesitations, needles meet at the live stitch
+with loops hanging from them, and rows alternate direction the way hand
+knitting actually does. Cable crossings animate as the cable-needle move — the
+front pair lifts clear leaving a shadowed hole, the other pair slides through,
+the held pair drops into the vacated columns.
+
+The chart is generated: counting cable ropes to the left of a stitch identifies
+its rhombus, and the parity of that count is a checkerboard over the lattice,
+which is what alternates seed-filled diamonds with reverse stockinette.
+
+```console
+$ python3 knit.py --diamond 14 --stitch-rate 9
+```
+
+### wheel
+
+![wheel](screenshots/wheel.png)
+
+A bicycle drivetrain: three-cross laced wheel, chainring and cranks, chain
+tracking both sprockets. Gear ratio is derived rather than tuned — both
+sprockets share a chain pitch, so pitch radii follow from tooth counts and the
+ratio falls out.
+
+All spokes of a flange are tangent to one circle about the hub, so the tangent
+angle for a pixel at `(r, a)` is `a ∓ arccos(d/r)`. That is baked once; a frame
+reduces it modulo the spoke spacing, with no loop over spokes.
+
+The moiré is the point, not an artifact. Thin spokes crossing a discrete pixel
+grid genuinely strobe, and `--sweep` walks the rotation rate through the speeds
+where the pattern stalls, crawls and reverses. The rim reflector cannot alias,
+so it keeps sweeping while the spokes stand still — which is what makes the
+illusion read as an illusion rather than a paused demo.
+
+```console
+$ python3 wheel.py --speed 5.0 --sweep 0 --spokes 32
+```
+
+### sunset
+
+![sunset](screenshots/sunset.png)
+
+Driving west into a San Francisco sunset: sliced sun low over the Pacific,
+glitter on the water, road running to the vanishing point, Sutro Tower on a
+headland, Karl rolling in.
+
+The sun is sliced with horizontal gaps that widen downward — the retro
+treatment, and also the right call for a panel that bands in the dark end,
+since deliberate horizontal structure reads as intentional where accidental
+contouring does not.
+
+Two things that only showed up by looking: distance haze on a gentle ramp
+smeared the sky's reflection over the whole plane and the ocean read as wet
+tarmac, fixed by confining it to a hard band a few rows deep at the horizon;
+and a depth-scrolled water texture cannot win at this size — tight enough for
+foreground crests, it aliases to hash across the mid field — so the swell is
+one sine of each row's depth instead.
+
+```console
+$ python3 sunset.py --sun 0.8 --fog 0.4 --no-tower
+```
+
+### grove
+
+![grove](screenshots/grove.png)
+
+Drifting through a sequoia grove: trunks running off the top of the frame,
+warm shafts angling between them, fog in the gaps. You see a slice, not whole
+trees, which is what standing in a grove actually looks like.
+
+Bark is sampled at `arcsin(x/half)` — the true angle around the cylinder — so
+fibres crowd toward the silhouette and the trunk reads as round rather than as
+a flat bar. Depths are spaced geometrically, because linear spacing puts
+everything in the middle distance where the parallax rates are indistinguishable.
+
+Shafts carry a depth too, so occlusion is free: a nearer trunk blitted
+afterwards interrupts the beam, and that interruption is what makes the light
+feel three-dimensional. Nothing is blurred at run time — softness is baked into
+the sprites.
+
+```console
+$ python3 grove.py --speed 6 --shafts 3 --fog 1.4
+```
+
+### goldengate
+
+![goldengate](screenshots/goldengate.png)
+
+The bridge standing out of the fog. Geometry comes from the real thing in feet
+— 4200 ft main span, 526 ft of tower over a 220 ft deck — at one pixels-per-foot
+scale that happens to serve both axes of a 320x64 panel.
+
+The detail that stops it reading as a generic suspension bridge is that the
+main cable's vertex sits *on* the deck at midspan. Stepped Art Deco setbacks,
+portal braces whose openings shorten going up, and single-pixel suspenders
+every 6 px do the rest.
+
+Fog is two tileable noise tiles scrolled across each other, windowed by a
+rolling edge and a travelling bank envelope, with density tied to bank height
+so a high bank is a thick one. The level clamps at both ends rather than
+wandering mid-range — otherwise you get permanent haze instead of weather, and
+never the frame where only the tower tops show.
+
+```console
+$ python3 goldengate.py --time-of-day 6 --day-cycle 0 --fog 0.8
+```
+
+### karl
+
+![karl](screenshots/karl.png)
+
+Karl the Fog over the Twin Peaks ridgeline, swallowing Sutro Tower and letting
+it go again. The calmest thing here — a full cycle from clear to buried takes
+minutes.
+
+Two noise textures scrolled at different rates and weighted differently by row,
+with the detail layer's sample position displaced by the coarse layer. That
+domain warping is what makes it curl rather than slide, and it costs a gather
+rather than a simulation.
+
+Density comes off the clock as three sines at incommensurate periods, saturated
+at the ends so it *dwells* buried and then dwells clear instead of passing
+through both.
+
+Worth knowing if you touch the compositing: on this hardware, broadcasting an
+`(H,W,1)` against an `(H,W,3)` is about four times slower than doing the same
+arithmetic three times on contiguous planes.
+
+```console
+$ python3 karl.py --density 1.3 --speed 0.6 --no-tower
+```
+
 ### slime
 
 ![slime](screenshots/slime.png)

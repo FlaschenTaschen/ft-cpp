@@ -117,14 +117,21 @@ def _grass(W, H, rng):
             + 0.022 * H * np.sin(x * 0.091 + 2.1)
             + 0.015 * H * np.sin(x * 0.213 + 4.4))
     height = np.maximum(base, 1.0)
-    for _ in range(max(3, W // 14)):          # blades standing proud of the mass
+    # Blades standing proud of the mass. They have to be short and numerous.
+    # It was tried the other way first: about W/14 of them reaching a third of
+    # the way up the panel. At 64 rows a two-pixel-wide, nineteen-pixel-tall
+    # black column does not read as a blade of grass, it reads as a fault in
+    # the display -- which is exactly how it was reported from the wall. What
+    # does read is a dense ragged fringe, so there are now four times as many
+    # at half the height, capped under a fifth of the panel.
+    for _ in range(max(8, W // 4)):
         c = int(rng.integers(0, W))
-        tall = float(rng.uniform(0.14, 0.30)) * H
+        tall = float(rng.uniform(0.07, 0.15)) * H
         span = int(rng.integers(0, 2))
         for d in range(-span, span + 1):
             height[(c + d) % W] = max(height[(c + d) % W],
                                       tall * (1.0 - 0.35 * abs(d)))
-    return np.minimum(height, 0.34 * H).astype(np.int32)
+    return np.minimum(height, 0.19 * H).astype(np.int32)
 
 
 def build(args):
