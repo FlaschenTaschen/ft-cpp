@@ -109,6 +109,29 @@ the effect was cheap enough for hardware that could not multiply quickly.
 $ python3 rotozoom.py --texture xor --spin 0.35 --zoom-min 0.4
 ```
 
+### nyancat
+
+![nyancat](screenshots/nyancat.png)
+
+The pop-tart cat, trailing a rainbow through twinkling stars. The sprite lives
+in the source as rows of characters with a palette per character, so it can be
+edited in a diff rather than shipped as an image; moving parts (four tail
+poses, the paws) are separate grids composed into the six loop frames at
+startup and scaled with `np.repeat`.
+
+The sprite animates on its own clock (`--cat-fps`, default 10) rather than the
+display rate — the original is much slower than a display refresh, and tying
+the two together makes it look wrong at any frame rate but one. The trail is
+baked a whole square-wave period wider than the panel, so scrolling it is a
+slice at an offset.
+
+A 320x64 panel is close to the ideal shape for this: the cat sits right of
+centre and the rainbow reaches the far edge.
+
+```console
+$ python3 nyancat.py --cat-x 0.4 --speed 40 --no-stars
+```
+
 ### floor
 
 ![floor](screenshots/floor.png)
