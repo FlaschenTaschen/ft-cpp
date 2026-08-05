@@ -1,0 +1,543 @@
+{
+  "rotation": [
+    {
+      "kind": "py",
+      "name": "starfield",
+      "seconds": 45.0,
+      "fps": 50,
+      "enabled": true,
+      "ms": 9.9,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "sf-tree",
+      "seconds": 30,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/bin/grayscale",
+        "-h",
+        "localhost",
+        "-g320x64",
+        "-t",
+        "30",
+        "-l",
+        "2",
+        "-m",
+        "center",
+        "-f",
+        "/home/pi/pixelart/sf-tree.json"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "sunset",
+      "seconds": 70.0,
+      "fps": 24,
+      "enabled": true,
+      "ms": 30.0,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "knit",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 4.5,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "space-invaders",
+      "seconds": 30,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/bin/grayscale",
+        "-h",
+        "localhost",
+        "-g320x64",
+        "-t",
+        "30",
+        "-l",
+        "2",
+        "-f",
+        "/home/pi/pixelart/space-invaders-1.json,/home/pi/pixelart/space-invaders-2.json,/home/pi/pixelart/space-invaders-3.json,/home/pi/pixelart/space-invaders-4.json"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "karl",
+      "seconds": 45.0,
+      "fps": 24,
+      "enabled": true,
+      "ms": 32.7,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "cycle",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 2.2,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "life",
+      "seconds": 30,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/ft-demos/life",
+        "-g320x64",
+        "-l",
+        "2",
+        "-t30",
+        "-h",
+        "localhost",
+        "-n",
+        "10"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "water",
+      "seconds": 45.0,
+      "fps": 20,
+      "enabled": true,
+      "ms": 45.8,
+      "solo": false,
+      "options": {
+        "drops": 4
+      }
+    },
+    {
+      "kind": "py",
+      "name": "boing",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 2.0,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "wifi-joke",
+      "seconds": 6,
+      "solo": true,
+      "wait": false,
+      "clears": [
+        5
+      ],
+      "argv": [
+        "/home/pi/bin/send-text",
+        "-s0",
+        "-h",
+        "localhost",
+        "-g",
+        "320x32+5+0",
+        "-l",
+        "5",
+        "-c",
+        "ff00ff",
+        "-f",
+        "/home/pi/fonts/5x5.bdf",
+        "WiFi.begin(\"SequoiaFabrica\", \"********\");"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "laser",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 11.9,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "mario",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 6.4,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "pacman",
+      "seconds": 30,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/bin/grayscale",
+        "-h",
+        "localhost",
+        "-g320x64",
+        "-t",
+        "30",
+        "-l",
+        "2",
+        "-r",
+        "original",
+        "-y",
+        "reverse",
+        "-m",
+        "center",
+        "-T",
+        "black",
+        "-d",
+        "20",
+        "-D",
+        "50",
+        "-f",
+        "/home/pi/pixelart/pacman-32x32-1.json,/home/pi/pixelart/pacman-32x32-2.json,/home/pi/pixelart/pacman-32x32-3.json,/home/pi/pixelart/pacman-32x32-4.json,/home/pi/pixelart/pacman-32x32-5.json,/home/pi/pixelart/pacman-32x32-6.json"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "goldengate",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 19.2,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "nyancat",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 8.2,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "maze",
+      "seconds": 30,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/ft-demos/maze",
+        "-g320x64",
+        "-l",
+        "2",
+        "-t30",
+        "-h",
+        "localhost"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "printer",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 16.9,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "splitflap",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 6.2,
+      "solo": false,
+      "options": {
+        "messages": "SEQUOIA FABRICA|DEPARTURES {TIME};FLASCHEN TASCHEN|320 X 64 PIXELS;WELCOME|MAKE SOMETHING TODAY"
+      }
+    },
+    {
+      "kind": "exec",
+      "name": "sewing",
+      "seconds": 30,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/bin/grayscale",
+        "-h",
+        "localhost",
+        "-g320x64",
+        "-t",
+        "30",
+        "-l",
+        "2",
+        "-m",
+        "center",
+        "-D",
+        "120",
+        "-f",
+        "/home/pi/pixelart/sew1.json,/home/pi/pixelart/sew2.json,/home/pi/pixelart/sew3.json,/home/pi/pixelart/sew4.json,/home/pi/pixelart/sew5.json,/home/pi/pixelart/sew6.json,/home/pi/pixelart/sew7.json,/home/pi/pixelart/sew8.json"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "grove",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 18.7,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "blink-joke",
+      "seconds": 6,
+      "solo": true,
+      "wait": false,
+      "clears": [
+        5
+      ],
+      "argv": [
+        "/home/pi/bin/send-text",
+        "-s0",
+        "-h",
+        "localhost",
+        "-g",
+        "320x32+5+0",
+        "-l",
+        "5",
+        "-c",
+        "ff00ff",
+        "-f",
+        "/home/pi/fonts/5x5.bdf",
+        "while (1) { blink(); }"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "daliclock",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 20.1,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "fire",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 18.8,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "pacman-ghosts",
+      "seconds": 25,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/bin/grayscale",
+        "-h",
+        "localhost",
+        "-g320x64",
+        "-t",
+        "25",
+        "-l",
+        "2",
+        "-r",
+        "original",
+        "-m",
+        "center",
+        "-T",
+        "black",
+        "-f",
+        "/home/pi/pixelart/pac-man-ghosts.json"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "wheel",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 13.1,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "tunnel",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 13.5,
+      "solo": false,
+      "options": {
+        "palette": "ice"
+      }
+    },
+    {
+      "kind": "exec",
+      "name": "sf-tree-bounce",
+      "seconds": 30,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/bin/grayscale",
+        "-h",
+        "localhost",
+        "-g320x64",
+        "-t",
+        "30",
+        "-l",
+        "2",
+        "-m",
+        "bounce",
+        "-f",
+        "/home/pi/pixelart/sf-tree.json,/home/pi/pixelart/sf-tree.json,/home/pi/pixelart/sf-tree.json,/home/pi/pixelart/sf-tree.json,/home/pi/pixelart/sf-tree.json,/home/pi/pixelart/sf-tree.json,/home/pi/pixelart/sf-tree.json"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "fireworks",
+      "seconds": 45.0,
+      "fps": 24,
+      "enabled": true,
+      "ms": 33.7,
+      "solo": false,
+      "options": {
+        "rate": 3
+      }
+    },
+    {
+      "kind": "py",
+      "name": "floor",
+      "seconds": 45.0,
+      "fps": 50,
+      "enabled": true,
+      "ms": 10.3,
+      "solo": false
+    },
+    {
+      "kind": "exec",
+      "name": "serial-joke",
+      "seconds": 6,
+      "solo": true,
+      "wait": false,
+      "clears": [
+        5
+      ],
+      "argv": [
+        "/home/pi/bin/send-text",
+        "-s0",
+        "-h",
+        "localhost",
+        "-g",
+        "320x32+5+0",
+        "-l",
+        "5",
+        "-c",
+        "ff00ff",
+        "-f",
+        "/home/pi/fonts/5x5.bdf",
+        "Serial.println(\"Hello Sequoia Fabrica!\");"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "metaballs",
+      "seconds": 45.0,
+      "fps": 24,
+      "enabled": true,
+      "ms": 29.0,
+      "solo": false,
+      "options": {
+        "palette": "magma"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "rotozoom",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 12.6,
+      "solo": false,
+      "options": {
+        "palette": "rainbow"
+      }
+    },
+    {
+      "kind": "exec",
+      "name": "full-moon",
+      "seconds": 25,
+      "solo": true,
+      "clears": [
+        2
+      ],
+      "argv": [
+        "/home/pi/bin/grayscale",
+        "-h",
+        "localhost",
+        "-g320x64",
+        "-t",
+        "25",
+        "-l",
+        "2",
+        "-m",
+        "center",
+        "-f",
+        "/home/pi/pixelart/full-moon.json"
+      ]
+    },
+    {
+      "kind": "py",
+      "name": "slime",
+      "seconds": 60.0,
+      "fps": 8,
+      "enabled": true,
+      "ms": 81.5,
+      "solo": true,
+      "options": {
+        "agents": 6000,
+        "warmup": 60
+      }
+    },
+    {
+      "kind": "py",
+      "name": "fireflies",
+      "seconds": 60.0,
+      "fps": 12,
+      "enabled": true,
+      "ms": 61.3,
+      "solo": true
+    },
+    {
+      "kind": "py",
+      "name": "scroller",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 12.0,
+      "solo": false,
+      "options": {
+        "plasma_frames": 60,
+        "text": "SEQUOIA FABRICA  ✦  FLASCHENTASCHEN LIVES  ✦  320 X 64 OF PURE PHOTONS  ✦     "
+      }
+    }
+  ]
+}

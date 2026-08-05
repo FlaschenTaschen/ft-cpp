@@ -148,12 +148,20 @@ class Entry(object):
     """One slot in the rotation. Plain data, and the unit the UI operates on."""
 
     def __init__(self, kind, name, seconds, fps=0, options=None, ms=0.0,
-                 solo=False, argv=None, enabled=True):
+                 solo=False, argv=None, enabled=True, clears=None, wait=True):
         self.kind = kind                     # "py" or "exec"
         self.name = name
         self.seconds = float(seconds)
         self.fps = int(fps or 0)             # 0 = take the daemon's --fps
         self.options = options or {}
+        # exec only. `clears` are the layers the child draws on, blanked when
+        # its slot ends -- the C++ tools set a layer with a timeout of their
+        # own and it would otherwise sit on top of the next effect for the
+        # remainder of that timeout. `wait` is whether the child exiting ends
+        # the slot: true for the ones that run for their whole -t duration,
+        # false for send-text, which sets a layer and returns immediately.
+        self.clears = list(clears or [])
+        self.wait = bool(wait)
         self.ms = float(ms)                  # measured p95, 0 if unknown
         self.solo = bool(solo) or kind == "exec"
         self.argv = list(argv or [])
@@ -167,6 +175,10 @@ class Entry(object):
             d["options"] = self.options
         if self.argv:
             d["argv"] = self.argv
+        if self.clears:
+            d["clears"] = self.clears
+        if not self.wait:
+            d["wait"] = False
         return d
 
     @staticmethod
@@ -174,7 +186,8 @@ class Entry(object):
         return Entry(d.get("kind", "py"), d["name"],
                      d.get("seconds", DEFAULT_SECONDS), d.get("fps", 0),
                      d.get("options"), d.get("ms", 0.0), d.get("solo", False),
-                     d.get("argv"), d.get("enabled", True))
+                     d.get("argv"), d.get("enabled", True), d.get("clears"),
+                     d.get("wait", True))
 
 
 def default_rotation():
@@ -501,6 +514,7 @@ class Scheduler(object):
         self.black = np.zeros((args.height, args.width, 3), np.uint8)
         self.child = None                    # a running exec segment
         self.child_entry = None
+        self.ft = None                       # the client, once run() has it
         self.builder = None
         self.show = None
         # Running totals rather than a list, so uptime does not grow memory.
@@ -558,34 +572,51 @@ class Scheduler(object):
 
     # -- exec segments ----------------------------------------------------
 
+    def _blank(self, layer):
+        """Push black onto a layer, repeated so a lost datagram cannot leave a
+        stale frame sitting there for the rest of its timeout."""
+        for _ in range(3):
+            self.ft.send_array_banded(self.black, (0, 0, layer), self.args.band)
+            time.sleep(0.01)
+
     def _supervise(self, entry, t):
         """Hand the wall to an external command until it exits or runs out."""
         if self.child_entry is not entry:
             self._reap()
+            # Our own layer has to go black before the child draws, or the
+            # last frame of the outgoing effect shows through wherever the
+            # child's layer is black -- which for pixel art is most of it.
+            self._blank(self.args.layer)
             self.warn("exec %s: %s" % (entry.name, " ".join(entry.argv)))
+            self.child_entry = entry
             try:
                 self.child = subprocess.Popen(entry.argv)
-                self.child_entry = entry
             except OSError as exc:
                 self.warn("exec %s failed: %s" % (entry.name, exc))
                 self.show.skip(t)
-                return
-        if self.child.poll() is not None:    # finished early: end the slot
-            self._reap()
-            self.show.skip(t)
+            return
+        if self.child is not None and self.child.poll() is not None:
+            self.child = None
+            # send-text and friends set a layer and return at once; their slot
+            # is meant to hold that image for its full length, so only the
+            # long-running children end their own slot by exiting.
+            if entry.wait:
+                self.show.skip(t)
 
     def _reap(self):
-        if self.child is None:
-            return
-        if self.child.poll() is None:
-            self.child.terminate()
-            try:
-                self.child.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                self.child.kill()
-                self.child.wait()
-        self.child = None
-        self.child_entry = None
+        """End the current exec slot: stop the child, clear what it drew."""
+        entry, self.child_entry = self.child_entry, None
+        if self.child is not None:
+            if self.child.poll() is None:
+                self.child.terminate()
+                try:
+                    self.child.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    self.child.kill()
+                    self.child.wait()
+            self.child = None
+        for layer in (entry.clears if entry else ()):
+            self._blank(layer)
 
     # -- the frame loop ---------------------------------------------------
 
@@ -596,8 +627,8 @@ class Scheduler(object):
         except ImportError:
             sys.path.insert(0, os.path.join(_HERE, "..", "api", "python"))
             import flaschen
-        ft = flaschen.Flaschen(args.host, args.port, args.width, args.height,
-                               transparent=True)
+        ft = self.ft = flaschen.Flaschen(args.host, args.port, args.width,
+                                         args.height, transparent=True)
         offset = (0, 0, args.layer)
 
         self.builder = Builder(self.rot, args, args.lead, self.warn, self.black)
