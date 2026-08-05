@@ -14,9 +14,9 @@ Description=Flaschen Taschen demo rotation
 Documentation=https://github.com/hzeller/flaschen-taschen
 # The wall itself. Without this the first few seconds of every boot are spent
 # sending frames at a server that is not listening yet.
-After=network-online.target ft-server.service
+After=network-online.target ft_server.service
 Wants=network-online.target
-BindsTo=ft-server.service
+BindsTo=ft_server.service
 # Never both at once: they would each drive layer 0.
 Conflicts=ft_demos.service
 
