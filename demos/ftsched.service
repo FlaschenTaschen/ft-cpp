@@ -1,0 +1,63 @@
+# The demo rotation, as a supervised daemon. Install on betelgeuse with:
+#
+#   sudo cp demos/ftsched.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl disable --now ft_demos.service     # the old shell rotation
+#   sudo systemctl enable --now ftsched.service
+#
+# Rolling back is the same two lines the other way round. ftsched and the old
+# ft_demos.service both drive layer 0 of the same wall, so exactly one of them
+# should ever be enabled -- run both and they fight, frame by frame.
+
+[Unit]
+Description=Flaschen Taschen demo rotation
+Documentation=https://github.com/hzeller/flaschen-taschen
+# The wall itself. Without this the first few seconds of every boot are spent
+# sending frames at a server that is not listening yet.
+After=network-online.target ft-server.service
+Wants=network-online.target
+BindsTo=ft-server.service
+# Never both at once: they would each drive layer 0.
+Conflicts=ft_demos.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ft-cpp/demos
+ExecStart=/usr/bin/python3 /home/pi/ft-cpp/demos/ftsched.py \
+    --host localhost --fps 20 --quiet \
+    --listen 0.0.0.0:8081 \
+    --state-file /var/lib/ftsched/state.json
+
+# The daemon clears the wall on SIGTERM, which takes about a tenth of a second.
+# Give it room to do that rather than killing it and leaving a frozen frame.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=always
+RestartSec=3
+
+# One niceness step up. The render loop wants the CPU on schedule but it is
+# not worth pre-empting anything of the system's, and the wall is more
+# forgiving of a late frame than the Pi is of a starved kernel thread.
+Nice=-2
+
+StateDirectory=ftsched
+StateDirectoryMode=0755
+
+# It renders to a UDP socket and reads its own checkout. It has no business
+# writing anywhere else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/ftsched
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

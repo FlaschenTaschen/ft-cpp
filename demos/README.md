@@ -42,6 +42,85 @@ $ python3 megademo.py --playlist "fire:20,tunnel:15:wipe,water:12+drops=4"
 $ python3 megademo.py --no-banner --segment 25 --transition 3
 ```
 
+## ftsched
+
+![the control panel](screenshots/ftsched-ui.png)
+
+The installation's rotation, as a daemon rather than a shell script, with a
+control panel you can open from a phone in the room.
+
+```console
+$ python3 ftsched.py --host 127.0.0.1 --listen 0.0.0.0:8081
+```
+
+The rotation used to be a `bash` loop launching `python3 demo.py --duration
+45` per segment, which cost a fresh interpreter and a fresh `import numpy`
+every 45 seconds — about 1.4 s of black wall each time on a Pi 3, so roughly
+3% of the show was the rotation booting. It also made every segment change a
+hard cut, because two effects cannot be alive at once across a process
+boundary, and there was nothing to ask what was playing or to skip it.
+
+`ftsched` keeps the modules imported, builds ahead on a worker thread the same
+way `megademo` does, blends between segments, and serves a JSON API and the
+page above. Three threads: render, build, http. The HTTP side only reads a
+snapshot the render loop publishes once a second, and pushes commands onto a
+queue drained at the top of the next frame, so a slow client cannot stall the
+wall.
+
+**Steering.** Tap a card to jump straight to it, the switch to drop an effect
+from the rotation. A jump is implemented as the current segment ending early,
+so it rides the ordinary transition rather than cutting. What is switched off
+persists across restarts via `--state-file`; the running order itself does
+not, since that belongs in the rotation file, where it gets reviewed.
+
+**Cost.** Each card shows that effect's measured p95 render time on the Pi.
+These matter in pairs, not singly: a transition renders *both* neighbours in
+one frame, so what has to fit the 50 ms budget at 20 fps is the sum of two
+neighbours. `pair_check()` says so at startup. Anything that cannot fit a
+frame on its own — `slime` at 81.5 ms, `fireflies` at 61.3 — is marked `solo`
+and gets a cut on either side instead.
+
+**Previews.** The GIFs in `previews/` are 16 frames at 8 fps, committed rather
+than generated at runtime: baking two dozen of them costs every demo's
+`build()` and would steal the CPU the render loop needs. Rebuild after
+changing a demo:
+
+```console
+$ python3 scripts/make-previews.py --force knit sunset
+```
+
+A still cannot show what most of these are — `splitflap` is *entirely* motion,
+and `slime` looks like noise until it moves.
+
+**Segments** are `py` (a demoscene module, rendered in-process) or `exec` (an
+external command that draws on the wall itself, for the C++ tools). The
+scheduler stops sending for an `exec` slot and supervises the child, killing
+it if it outruns its time. Transitions cannot cross a process boundary, so
+those always cut.
+
+```console
+$ python3 ftsched.py --dump-rotation > rotation.json   # then edit, and:
+$ python3 ftsched.py --rotation rotation.json
+```
+
+The API is a handful of verbs — `jump`, `toggle`, `next`, `pause`/`resume`,
+`restart` — POSTed as JSON to `/api/command`, with `/api/state` returning
+everything the page renders:
+
+```console
+$ curl -s localhost:8081/api/state | jq '.now, .health'
+$ curl -sX POST localhost:8081/api/command -d '{"op":"jump","index":12}'
+```
+
+There is no authentication: it is a wall in a makerspace, and the worst anyone
+on the shop wifi can do is change what is on it. Bind it to the LAN or to a
+Tailscale address, not to the internet.
+
+Deployment is [`ftsched.service`](ftsched.service), which `Conflicts=` with
+the old `ft_demos.service` so the two can never both drive layer 0.
+
+<img src="screenshots/ftsched-ui-mobile.png" width="300" alt="the same panel on a phone">
+
 ## The effects
 
 ### fire
