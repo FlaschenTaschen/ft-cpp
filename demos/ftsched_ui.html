@@ -264,8 +264,9 @@ function paint(s) {
     if (document.activeElement !== c.box) c.box.checked = e.enabled;
     c.badge.textContent = live ? "ON AIR"
       : e.enabled ? "#" + (e.position + 1) : "off";
-    const cost = e.ms ? e.ms.toFixed(1) + " ms" : "";
-    c.meta.innerHTML = [fmtTime(e.seconds), cost,
+    c.meta.innerHTML = [fmtTime(e.seconds),
+                        e.fps ? e.fps + " fps" : "",
+                        e.ms ? e.ms.toFixed(1) + " ms" : "",
                         e.solo ? '<span class="solo">solo</span>' : ""]
                        .filter(Boolean).join(" &middot; ");
   }

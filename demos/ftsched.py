@@ -82,6 +82,11 @@ f32 = ds.f32
 
 DEFAULT_SECONDS = 45.0
 
+# Fraction of the frame a transition is allowed to spend rendering its two
+# effects. The rest is the send, the blend and the scheduler's own overhead;
+# at 0.8 a pair measured at 40 ms is paced to 20 fps rather than 25.
+TRANSITION_HEADROOM = 0.8
+
 
 # --------------------------------------------------------------------------
 # The rotation, as data.
@@ -99,48 +104,55 @@ DEFAULT_SECONDS = 45.0
 # their own lower --fps keeps them inside their slot.
 #
 # The order alternates expensive against cheap for the same reason.
+# `fps` is per entry, not global. The shell rotation this replaces ran each
+# demo as its own process at its own frame rate, so the cheap ones ran at 60
+# and only the expensive ones crawled; a single flat rate for the whole show
+# would make boing and cycle visibly choppier than they are today for no gain.
+# Each is set to leave roughly 40% headroom over the measured cost, which is
+# what absorbs a transition without the pacing slipping.
 ROTATION = [
-    # (name, seconds, {options}, ms_p95, solo)
-    ("starfield",  45, {}, 9.9, False),
-    ("sunset",     70, {}, 30.0, False),      # 58 s is one full lap of the drive
-    ("knit",       45, {}, 4.5, False),
-    ("karl",       45, {"fps": 24}, 32.7, False),
-    ("cycle",      45, {}, 2.2, False),
+    # (name, seconds, fps, {options}, ms_p95, solo)
+    ("starfield",  45, 50, {}, 9.9, False),
+    ("sunset",     70, 24, {}, 30.0, False),   # 58 s is one full lap of the drive
+    ("knit",       45, 60, {}, 4.5, False),
+    ("karl",       45, 24, {}, 32.7, False),
+    ("cycle",      45, 60, {}, 2.2, False),
     # water is the most expensive effect that still fits a frame on its own,
     # so it is bracketed by the two cheapest things in the show. knit next to
-    # it came to 50.3 ms, which is over the 50 ms frame by just enough to drop
-    # a frame in the middle of every transition into it.
-    ("water",      45, {"drops": 4}, 45.8, False),
-    ("boing",      45, {}, 2.0, False),
-    ("laser",      45, {}, 11.9, False),
-    ("mario",      45, {}, 6.4, False),
-    ("goldengate", 45, {}, 19.2, False),
-    ("nyancat",    45, {}, 8.2, False),
-    ("printer",    45, {}, 16.9, False),
-    ("splitflap",  45, {}, 6.2, False),
-    ("grove",      45, {}, 18.7, False),
-    ("daliclock",  45, {}, 20.1, False),
-    ("fire",       45, {}, 18.8, False),
-    ("wheel",      45, {}, 13.1, False),
-    ("tunnel",     45, {"palette": "ice"}, 13.5, False),
-    ("fireworks",  45, {"rate": 3}, 33.7, False),
-    ("floor",      45, {}, 10.3, False),
-    ("metaballs",  45, {"palette": "magma"}, 29.0, False),
-    ("rotozoom",   45, {"palette": "rainbow"}, 12.6, False),
-    ("slime",      60, {"agents": 6000, "warmup": 60, "fps": 8}, 81.5, True),
-    ("fireflies",  60, {"fps": 12}, 61.3, True),
-    ("scroller",   45, {"plasma_frames": 60}, 12.0, False),
+    # it summed to 50.3 ms, over the 50 ms frame by just enough to drop a frame
+    # in the middle of every transition into it.
+    ("water",      45, 20, {"drops": 4}, 45.8, False),
+    ("boing",      45, 60, {}, 2.0, False),
+    ("laser",      45, 40, {}, 11.9, False),
+    ("mario",      45, 60, {}, 6.4, False),
+    ("goldengate", 45, 30, {}, 19.2, False),
+    ("nyancat",    45, 60, {}, 8.2, False),
+    ("printer",    45, 30, {}, 16.9, False),
+    ("splitflap",  45, 30, {}, 6.2, False),    # a flap board has nothing to gain
+    ("grove",      45, 30, {}, 18.7, False),
+    ("daliclock",  45, 30, {}, 20.1, False),
+    ("fire",       45, 30, {}, 18.8, False),
+    ("wheel",      45, 40, {}, 13.1, False),
+    ("tunnel",     45, 40, {"palette": "ice"}, 13.5, False),
+    ("fireworks",  45, 24, {"rate": 3}, 33.7, False),
+    ("floor",      45, 50, {}, 10.3, False),
+    ("metaballs",  45, 24, {"palette": "magma"}, 29.0, False),
+    ("rotozoom",   45, 40, {"palette": "rainbow"}, 12.6, False),
+    ("slime",      60,  8, {"agents": 6000, "warmup": 60}, 81.5, True),
+    ("fireflies",  60, 12, {}, 61.3, True),
+    ("scroller",   45, 40, {"plasma_frames": 60}, 12.0, False),
 ]
 
 
 class Entry(object):
     """One slot in the rotation. Plain data, and the unit the UI operates on."""
 
-    def __init__(self, kind, name, seconds, options=None, ms=0.0, solo=False,
-                 argv=None, enabled=True):
+    def __init__(self, kind, name, seconds, fps=0, options=None, ms=0.0,
+                 solo=False, argv=None, enabled=True):
         self.kind = kind                     # "py" or "exec"
         self.name = name
         self.seconds = float(seconds)
+        self.fps = int(fps or 0)             # 0 = take the daemon's --fps
         self.options = options or {}
         self.ms = float(ms)                  # measured p95, 0 if unknown
         self.solo = bool(solo) or kind == "exec"
@@ -149,7 +161,8 @@ class Entry(object):
 
     def to_json(self):
         d = {"kind": self.kind, "name": self.name, "seconds": self.seconds,
-             "enabled": self.enabled, "ms": self.ms, "solo": self.solo}
+             "fps": self.fps, "enabled": self.enabled, "ms": self.ms,
+             "solo": self.solo}
         if self.options:
             d["options"] = self.options
         if self.argv:
@@ -159,14 +172,14 @@ class Entry(object):
     @staticmethod
     def from_json(d):
         return Entry(d.get("kind", "py"), d["name"],
-                     d.get("seconds", DEFAULT_SECONDS), d.get("options"),
-                     d.get("ms", 0.0), d.get("solo", False), d.get("argv"),
-                     d.get("enabled", True))
+                     d.get("seconds", DEFAULT_SECONDS), d.get("fps", 0),
+                     d.get("options"), d.get("ms", 0.0), d.get("solo", False),
+                     d.get("argv"), d.get("enabled", True))
 
 
 def default_rotation():
-    return [Entry("py", name, secs, dict(opts), ms, solo)
-            for name, secs, opts, ms, solo in ROTATION]
+    return [Entry("py", name, secs, fps, dict(opts), ms, solo)
+            for name, secs, fps, opts, ms, solo in ROTATION]
 
 
 def load_rotation(path):
@@ -175,21 +188,23 @@ def load_rotation(path):
 
 
 def pair_check(entries, fps, warn):
-    """Warn where two neighbours cannot both render inside one frame.
+    """Report neighbours whose transition has to be paced down to fit.
 
-    Advisory only -- a blown pair drops frames during the two second
-    transition and nothing else -- but it is the easiest thing to get wrong
-    when reordering, and it is invisible until you are in front of the wall.
+    Not a problem -- _rate() handles it, and two seconds at a lower rate does
+    not read -- but a pair that drags the transition a long way below both of
+    its neighbours usually means the running order could be better, and that
+    is invisible until you are standing in front of the wall.
     """
     live = [e for e in entries if e.enabled and not e.solo and e.ms]
     if len(live) < 2:
         return
-    budget = 1000.0 / fps
     for a, b in zip(live, live[1:] + live[:1]):
-        if a.ms + b.ms > budget:
-            warn("%s (%.1f ms) into %s (%.1f ms) exceeds the %.1f ms frame at "
-                 "%d fps; that transition will drop frames"
-                 % (a.name, a.ms, b.name, b.ms, budget, fps))
+        own = min(a.fps or fps, b.fps or fps)
+        paced = min(own, int(TRANSITION_HEADROOM * 1000.0 / (a.ms + b.ms)))
+        # Only worth mentioning if it is a real drop, not a rounding step.
+        if paced < own * 0.75:
+            warn("%s (%.1f ms) into %s (%.1f ms): transition paced at %d fps, "
+                 "down from %d" % (a.name, a.ms, b.name, b.ms, paced, own))
 
 
 # --------------------------------------------------------------------------
@@ -296,8 +311,14 @@ class Builder(mega.Builder):
     def segment_for(self, entry):
         seg = self._segcache.get(entry)
         if seg is None:
+            overrides = dict(entry.options)
+            # The demo has to be built for the rate it will actually be driven
+            # at: several of them scale motion per frame off args.fps, so
+            # building at 20 and running at 60 plays them three times too fast.
+            if entry.fps:
+                overrides["fps"] = entry.fps
             seg = mega.Segment(entry.name, __import__(entry.name), entry.seconds,
-                               dict(entry.options), "cut")
+                               overrides, "cut")
             self._segcache[entry] = seg
         seg.seconds = entry.seconds
         return seg
@@ -479,6 +500,8 @@ class Scheduler(object):
         self.late = 0
         self.worst = 0.0
         self.started = time.monotonic()
+        self._pub_at = self.started          # last snapshot, for the rate window
+        self._pub_frames = 0
 
     # -- commands, from the HTTP thread -----------------------------------
 
@@ -577,14 +600,14 @@ class Scheduler(object):
         gc.collect()
         gc.freeze()
 
-        dt = 1.0 / args.fps
         t0 = time.monotonic()
-        i = 0
-        self.warn("up at %d fps, %d entries, %.0f s cycle"
-                  % (args.fps, len(self.rot.all), self.rot.cycle_seconds()))
+        due = t0
+        self.warn("up, %d entries, %.0f s cycle"
+                  % (len(self.rot.all), self.rot.cycle_seconds()))
         while not self.stop.is_set():
             t = time.monotonic() - t0
             self._drain(t)
+            dt = 1.0 / self._rate()
             if self.show.paused:
                 self.show.hold(dt)           # the effect runs on; the slot never ends
             began = time.monotonic()
@@ -600,20 +623,50 @@ class Scheduler(object):
             self.frames += 1
             self.busy += busy
             self.worst = max(self.worst, busy)
-            i += 1
             self._publish(t, ft)
-            slack = t0 + i * dt - time.monotonic()
+            # A deadline that accumulates, rather than t0 + i*dt: the interval
+            # changes from segment to segment, so there is no single i*dt to
+            # count in.
+            due += dt
+            slack = due - time.monotonic()
             if slack > 0:
                 time.sleep(slack)
             else:
                 self.late += 1
-                # Never try to catch up. A burst of back-to-back frames after
-                # a slow one looks worse than the slow one did, so once we are
-                # more than a frame behind, re-base the clock and carry on.
+                # Never try to catch up. A burst of back-to-back frames after a
+                # slow one looks worse than the slow one did, so once we are
+                # more than a frame behind, give up the lost time and re-base.
                 if -slack > dt:
-                    i += 1
-                    t0 = time.monotonic() - t - dt
+                    due = time.monotonic()
         self._shutdown(ft, offset)
+
+    def _rate(self):
+        """Frames per second for the frame about to be rendered.
+
+        Per segment, because the effects differ by an order of magnitude in
+        cost and the cheap ones should not be held down to the pace of water.
+        Through a transition both neighbours render into the same frame, so it
+        runs at the slower of the two and steps up (or down) once the outgoing
+        effect is gone.
+        """
+        show, args = self.show, self.args
+        cur = self.builder.entry_at(show.index)
+        rate = (cur.fps or args.fps) if cur else args.fps
+        if show.in_transition:
+            nxt = self.builder.entry_at(show.index + 1)
+            if nxt is not None:
+                rate = min(rate, nxt.fps or args.fps)
+                # Both effects render into the same frame here, so the pair can
+                # cost more than either one's own rate allows -- grove into
+                # daliclock is 38.8 ms against a 33.3 ms frame at 30 fps. Pace
+                # the transition to what the pair actually costs rather than
+                # letting it run late for two seconds. It is two seconds, both
+                # effects are moving, and a dip during a crossfade does not
+                # read; frames arriving late do.
+                if cur is not None and cur.ms and nxt.ms:
+                    rate = min(rate, int(TRANSITION_HEADROOM * 1000.0
+                                         / (cur.ms + nxt.ms)))
+        return max(1, rate)
 
     def _build_opening(self):
         """Build the first effect inline. This is the one build nothing can
@@ -650,8 +703,15 @@ class Scheduler(object):
 
     def _publish(self, t, ft):
         """Rebuild the served snapshot once a second, not once a frame."""
-        if self.frames > 1 and self.frames % max(1, self.args.fps):
+        now = time.monotonic()
+        if self.frames > 1 and now - self._pub_at < 1.0:
             return
+        # Frames per second over the last interval, not over all of uptime:
+        # the target rate changes per segment, so a lifetime average would
+        # only ever report the mixture and never whether we are keeping up.
+        window = now - self._pub_at
+        recent = (self.frames - self._pub_frames) / window if window > 0 else 0.0
+        self._pub_at, self._pub_frames = now, self.frames
         show = self.show
         entry = self.builder.entry_at(show.index)
         nxt = self.builder.entry_at(show.index + 1)
@@ -676,9 +736,9 @@ class Scheduler(object):
             "cycle_seconds": round(self.rot.cycle_seconds()),
             "rotation": self.rot.snapshot(),
             "health": {
-                "uptime": round(time.monotonic() - self.started),
-                "target_fps": self.args.fps,
-                "actual_fps": round(self.frames / max(t, 1e-6), 1),
+                "uptime": round(now - self.started),
+                "target_fps": self._rate(),
+                "actual_fps": round(recent, 1),
                 "ms_per_frame": round(per * 1e3, 2),
                 "worst_ms": round(self.worst * 1e3, 2),
                 "late_frames": self.late,

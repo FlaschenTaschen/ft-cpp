@@ -73,12 +73,23 @@ so it rides the ordinary transition rather than cutting. What is switched off
 persists across restarts via `--state-file`; the running order itself does
 not, since that belongs in the rotation file, where it gets reviewed.
 
-**Cost.** Each card shows that effect's measured p95 render time on the Pi.
-These matter in pairs, not singly: a transition renders *both* neighbours in
-one frame, so what has to fit the 50 ms budget at 20 fps is the sum of two
-neighbours. `pair_check()` says so at startup. Anything that cannot fit a
-frame on its own — `slime` at 81.5 ms, `fireflies` at 61.3 — is marked `solo`
-and gets a cut on either side instead.
+**Frame rate is per segment**, as it was when each demo ran as its own
+process: `boing` costs 2 ms and runs at 60, `water` costs 45.8 and runs at 20.
+Holding the whole show to one rate would make the cheap effects choppier than
+they are today for no gain. Each rate leaves roughly 40% headroom over the
+measured cost. The demo is *built* at the rate it will be driven at, because
+several of them scale motion per frame off `args.fps`.
+
+**Cost.** Each card shows that effect's measured p95 on the Pi. These matter
+in pairs, not singly: a transition renders *both* neighbours into one frame,
+so a pair can cost more than either one's own rate allows — `grove` into
+`daliclock` is 38.8 ms against the 33.3 ms frame they both run at. The
+transition is therefore paced to what the pair actually costs and steps back
+up afterwards; two seconds at a lower rate during a crossfade does not read,
+whereas frames arriving late do. `pair_check()` reports the ones that get
+paced down a long way, since that usually means the running order could be
+better. Anything that cannot fit a frame even alone — `slime` at 81.5 ms,
+`fireflies` at 61.3 — is marked `solo` and gets a cut on either side instead.
 
 **Previews.** The GIFs in `previews/` are 16 frames at 8 fps, committed rather
 than generated at runtime: baking two dozen of them costs every demo's
