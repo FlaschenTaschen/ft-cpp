@@ -184,6 +184,30 @@ class TestCompositing(unittest.TestCase):
         self.assertEqual(self.d.snapshot_counters()[3], 1, "should count as bad")
 
 
+class TestHandshake(unittest.TestCase):
+    """The accept value must be checked against an external reference.
+
+    Everything else in this file validates the server against itself, which
+    cannot catch a wrong protocol constant: a bad GUID produces a stable,
+    self-consistent accept value that only a real client rejects. Chrome
+    reported "Incorrect 'Sec-WebSocket-Accept' header value" against a GUID
+    that had one hex digit moved from one end of the last group to the other.
+    """
+
+    def accept_for(self, key):
+        return base64.b64encode(
+            __import__("hashlib").sha1(key.encode("ascii") + ftweb._WS_GUID)
+            .digest()).decode("ascii")
+
+    def test_rfc6455_example(self):
+        # RFC 6455 section 1.3.
+        self.assertEqual(self.accept_for("dGhlIHNhbXBsZSBub25jZQ=="),
+                         "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+
+    def test_guid_is_the_rfc_constant(self):
+        self.assertEqual(ftweb._WS_GUID, b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+
+
 class TestWebSocketFraming(unittest.TestCase):
 
     def test_short_frame(self):
@@ -252,7 +276,13 @@ class TestEndToEnd(unittest.TestCase):
             self.assertTrue(chunk, "server closed during handshake")
             buf += chunk
         self.assertIn(b"101 Switching Protocols", buf)
-        self.assertIn(b"Sec-WebSocket-Accept:", buf)
+        # Computed here from the RFC constant, not from the server's own, so a
+        # wrong GUID in the server fails this instead of agreeing with itself.
+        import hashlib
+        want = base64.b64encode(hashlib.sha1(
+            key.encode("ascii") + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        ).digest()).decode("ascii")
+        self.assertIn(("Sec-WebSocket-Accept: " + want).encode("ascii"), buf)
         self.rest = buf.split(b"\r\n\r\n", 1)[1]
         return s
 

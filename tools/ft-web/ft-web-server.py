@@ -46,7 +46,7 @@ LAYER_TIMEOUT = 15       # main.cc: layer_timeout default
 MAX_DATAGRAM = 65535     # udp-server.cc: kBufferSize
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_WS_GUID = b"258EAFA5-E914-47DA-95CA-5AB0DC85B11D"
+_WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"   # RFC 6455 section 1.3
 
 
 # --------------------------------------------------------------------------
@@ -282,6 +282,8 @@ class Client(object):
         self.sock = sock
         self.lock = threading.Lock()
         self.alive = True
+        self.sent = 0
+        self.skipped = 0
         # Bound how long a stalled browser can hold up the broadcaster.
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO,
                         struct.pack("ll", 2, 0))
@@ -296,11 +298,15 @@ class Client(object):
         if not self.alive:
             return False
         if not self.lock.acquire(False):
-            return False                        # still writing, skip this one
+            self.skipped += 1                   # still writing, skip this one
+            return False
         try:
             self.sock.sendall(ws_frame(payload, opcode))
+            self.sent += 1
             return True
-        except OSError:
+        except OSError as e:
+            sys.stderr.write("ws: send failed after %d frames: %r\n"
+                             % (self.sent, e))
             self.alive = False
             return False
         finally:
@@ -345,19 +351,21 @@ class Hub(object):
             return len(self.clients)
 
 
-def ws_read_loop(client):
+def ws_read_loop(client, reader):
     """Read client frames until close, so we notice disconnects promptly.
 
     Browsers send almost nothing on this direction -- a close frame, and pings
     if configured -- but reading gives us a clean disconnect signal and keeps
     the receive buffer drained.
-    """
-    sock = client.sock
 
+    `reader` is the handler's buffered rfile rather than the raw socket: the
+    HTTP layer may already have pulled bytes past the request into its buffer,
+    and reading the socket directly would skip them.
+    """
     def recv_exact(n):
         chunks = []
         while n:
-            b = sock.recv(n)
+            b = reader.read(n)
             if not b:
                 return None
             chunks.append(b)
@@ -368,6 +376,7 @@ def ws_read_loop(client):
         try:
             head = recv_exact(2)
             if head is None:
+                sys.stderr.write("ws: client closed the connection (EOF)\n")
                 break
             opcode = head[0] & 0x0F
             masked = head[1] & 0x80
@@ -389,10 +398,14 @@ def ws_read_loop(client):
             if key:
                 body = bytes(b ^ key[i % 4] for i, b in enumerate(body))
             if opcode == 0x8:                    # close
+                code = struct.unpack("!H", body[:2])[0] if len(body) >= 2 else 0
+                sys.stderr.write("ws: client sent close, code=%d reason=%r\n"
+                                 % (code, body[2:]))
                 break
             if opcode == 0x9:                    # ping
                 client.send(body, 0xA)
-        except OSError:
+        except OSError as e:
+            sys.stderr.write("ws: read error: %r\n" % (e,))
             break
     client.alive = False
 
@@ -408,9 +421,11 @@ class Handler(BaseHTTPRequestHandler):
     # Injected by make_server().
     hub = None
     display = None
+    verbose = False
 
     def log_message(self, fmt, *args):
-        pass                                     # too chatty at 60 fps
+        if self.verbose:
+            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
     def _serve_file(self, name, content_type):
         try:
@@ -436,9 +451,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _do_websocket(self):
+        if self.verbose:
+            sys.stderr.write("ws: upgrade request from %s\n%s\n"
+                             % (self.client_address, self.headers))
         key = self.headers.get("Sec-WebSocket-Key")
+        # A proxy may merge or reorder connection tokens, so look for the
+        # upgrade token inside the header rather than matching it whole.
         upgrade = (self.headers.get("Upgrade") or "").lower()
-        if not key or upgrade != "websocket":
+        if not key or "websocket" not in upgrade:
+            sys.stderr.write("ws: rejected upgrade from %s (Upgrade=%r key=%r)\n"
+                             % (self.client_address, upgrade, key))
             self.send_error(400, "Expected a WebSocket upgrade")
             return
         accept = base64.b64encode(
@@ -458,12 +480,22 @@ class Handler(BaseHTTPRequestHandler):
                             "timeout": self.display.timeout})
         client.send(hello.encode("utf-8"), 0x1)
         self.hub.add(client)
+        opened = time.monotonic()
+        sys.stderr.write("ws: client %s connected (%d total)\n"
+                         % (self.address_string(), self.hub.count()))
         try:
             # Hold the handler thread here; returning would close the socket.
-            ws_read_loop(client)
+            ws_read_loop(client, self.rfile)
+        except Exception as e:                   # never take the server down
+            sys.stderr.write("ws: %s read loop failed: %r\n"
+                             % (self.address_string(), e))
         finally:
             self.hub.remove(client)
             client.close()
+            sys.stderr.write("ws: client %s disconnected after %.2fs, "
+                             "%d frames sent, %d skipped (%d left)\n"
+                             % (self.address_string(), time.monotonic() - opened,
+                                client.sent, client.skipped, self.hub.count()))
         self.close_connection = True
 
 
@@ -494,8 +526,9 @@ class DualStackHTTPServer(ThreadingHTTPServer):
         ThreadingHTTPServer.server_bind(self)
 
 
-def make_server(bind, port, hub, display):
-    handler = type("BoundHandler", (Handler,), {"hub": hub, "display": display})
+def make_server(bind, port, hub, display, verbose=False):
+    handler = type("BoundHandler", (Handler,),
+                   {"hub": hub, "display": display, "verbose": verbose})
     family, addr = resolve_bind(bind, port, socket.SOCK_STREAM)
     server = type("BoundServer", (DualStackHTTPServer,), {"address_family": family})
     return server(addr[:2], handler)
@@ -612,6 +645,8 @@ def main():
                     help="clear a layer after this many seconds of inactivity")
     ap.add_argument("--push-fps", type=float, default=60.0,
                     help="cap on frames pushed to the browser")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="log HTTP requests and WebSocket upgrade headers")
     args = ap.parse_args()
 
     width, height = args.dimension
@@ -620,7 +655,8 @@ def main():
     hub = Hub()
     stop = threading.Event()
 
-    httpd = make_server(args.bind, args.http_port, hub, display)
+    httpd = make_server(args.bind, args.http_port, hub, display,
+                        verbose=args.verbose)
     threads = [
         threading.Thread(target=udp_loop,
                          args=(display, args.ft_port, args.bind, stop),

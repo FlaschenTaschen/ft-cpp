@@ -87,7 +87,13 @@ and only show up on the wall.
     --bind ADDR         viewer bind address; '::1' for local only (default '::')
     --layer-timeout SEC clear a layer after this much inactivity  (default 15)
     --push-fps N        cap on frames pushed to the browser   (default 60)
+-v, --verbose           log HTTP requests and WebSocket upgrade headers
 ```
+
+WebSocket connect and disconnect are always logged, with how long the
+connection lasted and how many frames it received. A browser that reconnects
+every second with `disconnected after 0.00s` is failing the handshake; one
+with a rising `skipped` count cannot keep up with `--push-fps`.
 
 `--bind` defaults to all interfaces so you can watch from another machine; use
 `--bind ::1` to keep it local.
