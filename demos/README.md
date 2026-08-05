@@ -249,6 +249,33 @@ the melt stays locked to the second rather than drifting with frame rate.
 $ python3 daliclock.py --12h --palette green --morph 0.6
 ```
 
+### splitflap
+
+![splitflap](screenshots/splitflap.png)
+
+A split-flap departures board. Changing a letter riffles through *every*
+intervening card in a fixed stack order, so blank→Z takes 26 flips and blank→B
+takes two — that staggering, plus per-cell rate jitter and start delay, is what
+makes the board ripple instead of switching in unison.
+
+The flip is a real mechanism, not a crossfade: the outgoing glyph's top half
+squashes toward the seam while the incoming glyph's top arrives above it, so
+mid-flip a cell legitimately shows two different characters with a hard dark
+seam between them. Past ninety degrees you see the card's back, which is the
+incoming bottom half unfolding downward. Foreshortening is a nearest-neighbour
+row resample rather than a blur, which at 64 rows would turn to mush.
+
+Every squashed step of every card is baked at startup, so a frame is a handful
+of small blits and settled cells are never touched — it is the cheapest demo
+here by a wide margin. Glyphs are a 5x7 bitmap font in the source, no font file.
+
+`{TIME}` and `{DATE}` are substituted live, so it can be a clock as well as a
+sign.
+
+```console
+$ python3 splitflap.py --messages "SEQUOIA FABRICA|OPEN HOUSE {TIME};MAKE THINGS|ASK ANYONE" --hold 12
+```
+
 ### scroller
 
 ![scroller](screenshots/scroller.png)
