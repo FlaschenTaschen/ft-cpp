@@ -109,6 +109,80 @@ the effect was cheap enough for hardware that could not multiply quickly.
 $ python3 rotozoom.py --texture xor --spin 0.35 --zoom-min 0.4
 ```
 
+### slime
+
+![slime](screenshots/slime.png)
+
+A Physarum transport network. Sixteen thousand agents each sense the trail
+ahead of them at three angles, turn toward the strongest, move, and deposit;
+the trail map is blurred and decayed each step. Nothing draws the network — the
+filaments, junctions and loops are what those rules settle into.
+
+Three departures from the textbook rule, each fixing a specific failure:
+
+*Capping* the trail map stops it being winner-take-all. Uncapped, the busiest
+strand reads brightest, out-attracts its neighbours, and within a minute two
+fat strands hold the entire population.
+
+*Food* — weak, slowly drifting attractant sources — is the one that matters
+most. Even capped and well tuned, the network **relaxes**: strands merge, bends
+straighten, and after a few minutes all that is left is motionless vertical
+lines, which are the shortest closed paths a wrapping 64-row canvas admits. No
+decay value fixes that; it is the end state of the tuning rather than a failure
+of it. Foraging forces junctions that relaxation cannot remove, and moving
+sources keep it re-solving.
+
+*Spore batches* nucleate new colonies that grow and fuse while starved branches
+prune. They have to be a batch in one place and facing outward — scattered
+agents just join the nearest strand, and random headings give a trapped orbit
+that shows as permanent confetti.
+
+`--deposit` is expressed as the resulting equilibrium mean trail value, with
+the per-agent amount derived from it, so changing agent count or decay does not
+move the brightness — only the sharpness of pruning. Decay 0.94 is about
+sixteen steps of memory; 0.98 floods to a uniform lit field in twenty seconds
+and 0.85 never organises at all.
+
+The trail is seeded with blurred noise and given a few hundred warmup steps
+inside `build()`, so frame zero is already a network rather than something you
+wait for.
+
+```console
+$ python3 slime.py --agents 24000 --sensor-dist 5 --palette ice
+```
+
+### fireflies
+
+![fireflies](screenshots/fireflies.png)
+
+A field of oscillators that spontaneously synchronise. Each firefly has its own
+natural rate and flashes when its phase wraps; coupling pulls it toward its
+neighbours, and out of that come waves of synchrony that sweep across the panel
+and collide.
+
+Coupling is deliberately **local**, not mean-field. Mean-field is cheaper, but
+the whole field then snaps into unison at once, which is far duller to watch —
+local coupling is what produces travelling waves, and a 5:1 panel is the right
+shape to see them cross. Each phase is splatted as a unit vector into a coarse
+grid, the grid is blurred, and the result sampled back at each position: O(N)
+plus a small blur, with the blur radius acting as the coupling range.
+Normalising by the blurred *count* makes the pull depend on how much a
+neighbourhood agrees rather than how crowded it is, so a synchronised patch
+recruits its border.
+
+Two things keep it from going static, which is the real design problem — a
+fully locked field is as boring as a scattered one. The frequency spread is
+wide enough that full lock is unreachable, and the natural frequencies
+themselves drift, so there is no fixed consensus to converge on: leaders change
+and every truce eventually breaks. Measured over five minutes the global order
+parameter roams 0.08 to 0.84 indefinitely, reaching 0.8 within twenty seconds
+from a cold start, so a short slot still shows the arc. With `--coupling 0` it
+sits at 0.05 and never organises, which is the control worth keeping in mind.
+
+```console
+$ python3 fireflies.py --coupling 2.5 --range 40 --no-grass
+```
+
 ### mario
 
 ![mario](screenshots/mario.png)
