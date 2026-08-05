@@ -91,6 +91,16 @@ paced down a long way, since that usually means the running order could be
 better. Anything that cannot fit a frame even alone — `slime` at 81.5 ms,
 `fireflies` at 61.3 — is marked `solo` and gets a cut on either side instead.
 
+**Building costs the current segment some frame rate.** The builder is a
+thread, and Python threads share the GIL, so while an expensive `build()` runs
+the effect on screen dips — `nyancat` measured 60.0/60 fps in steady state and
+32/60 during the few seconds `printer` was building behind it. That is the
+trade being made on purpose: the shell rotation this replaces went *entirely
+black* for 1.4 s at every segment change, and a brief rate dip in the middle
+of a 45 s slot is a much better failure than a stall at the transition. Moving
+builds to a subprocess would remove it, at the cost of shipping the built
+tables back across a pipe.
+
 **Previews.** The GIFs in `previews/` are 16 frames at 8 fps, committed rather
 than generated at runtime: baking two dozen of them costs every demo's
 `build()` and would steal the CPU the render loop needs. Rebuild after
