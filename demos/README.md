@@ -109,6 +109,33 @@ the effect was cheap enough for hardware that could not multiply quickly.
 $ python3 rotozoom.py --texture xor --spin 0.35 --zoom-min 0.4
 ```
 
+### mario
+
+![mario](screenshots/mario.png)
+
+A self-playing side-scrolling platformer: a little plumber runs right through
+an endlessly generated level, jumping pipes and gaps, collecting coins and
+stomping the odd goomba, over three layers of parallax.
+
+Uses 8 px tiles with a two-tile character rather than classic 16 px ones. At
+16 the panel is four tiles: ground plus character leaves under a tile of
+headroom and there is no jump arc at all. At 8 it is eight tiles — one ground,
+two character, five of air — which is what makes a three-tile pipe clearable.
+`--scale 2` gives real 16 px tiles and demonstrates the problem: no pipe
+height passes the clearance test, so the generator emits only gaps.
+
+The level generator is bounded by the physics rather than tuned by hand.
+`build()` derives the airtime and horizontal reach of a jump, then admits an
+obstacle only if the actual trajectory clears it at *both* edges of its span —
+the apex is over the middle, so the edges are the tight part — and leaves more
+than one jump's reach of flat ground between obstacles. That is what stops it
+ever generating something unclearable, which on an unattended wall would strand
+the character hours later.
+
+```console
+$ python3 mario.py --density 0.6 --speed 70 --run-fps 14
+```
+
 ### nyancat
 
 ![nyancat](screenshots/nyancat.png)
