@@ -23,7 +23,26 @@ No display to hand? [`../tools/ft-web`](../tools/ft-web) is a server that
 renders to a browser instead of hardware, which is how the screenshots below
 were taken.
 
-## The demos
+## megademo
+
+![megademo](screenshots/megademo.png)
+
+Plays the effects back to back as one continuous show, with real transitions
+instead of hard cuts, and a scrolling banner over the bottom. Both effects are
+live during a transition and their frames are blended; the type is chosen per
+boundary, because a sparse effect crossfaded under a busy one is invisible and
+wants a fade through black instead.
+
+Effects are built on a worker thread a couple of segments ahead. Building
+everything up front means a slow black start and every table resident at once;
+building at the transition stalls visibly, since `scroller` bakes for seconds.
+
+```console
+$ python3 megademo.py --playlist "fire:20,tunnel:15:wipe,water:12+drops=4"
+$ python3 megademo.py --no-banner --segment 25 --transition 3
+```
+
+## The effects
 
 ### fire
 
@@ -88,6 +107,96 @@ the effect was cheap enough for hardware that could not multiply quickly.
 
 ```console
 $ python3 rotozoom.py --texture xor --spin 0.35 --zoom-min 0.4
+```
+
+### floor
+
+![floor](screenshots/floor.png)
+
+A Mode-7 perspective plane: gradient sky with a sun, a horizon, and textured
+ground receding to it, with forward motion and a slow steer. Each screen row
+below the horizon is at a constant distance, so per-row depth, texture step,
+mip level and fog are all precomputed and a frame costs an add, a truncate and
+one gather. An anisotropic mip chain kills the fish-scale moire that otherwise
+covers the mid field, since a row near the horizon spans hundreds of texels of
+depth while stepping a fraction of one across.
+
+```console
+$ python3 floor.py --texture road --palette magma --speed 90
+```
+
+### cycle
+
+![cycle](screenshots/cycle.png)
+
+Colour-cycled plasma. The image is computed exactly once and the animation is
+entirely the palette rotating under it — the classic technique, and about ten
+times cheaper per frame than anything else here at 0.05 ms. The palette must
+be *cyclic* or every wrap shows as a seam sweeping across the panel, so the
+non-cyclic ramps are mirrored to close the loop.
+
+```console
+$ python3 cycle.py --pattern spiral --palette rainbow --bands 3
+```
+
+### water
+
+![water](screenshots/water.png)
+
+A damped wave equation with drops falling on it, rendered by refraction rather
+than by colouring height: the local slope offsets a lookup into a background,
+so the surface bends what is beneath it. Uses a nine-point isotropic Laplacian
+— the usual four-neighbour stencil makes ripples spread as diamonds and sits
+right on the stability limit. Boundaries are fixed rather than wrapping, so
+ripples reflect instead of reappearing on the far edge.
+
+```console
+$ python3 water.py --background grid --drops 5 --refract 34
+```
+
+### fireworks
+
+![fireworks](screenshots/fireworks.png)
+
+Shells launch, arc up and burst into sparks that fall and fade. One fixed-size
+particle pool in flat arrays, updated with whole-array operations and recycled
+through dead slots, so every frame costs the same. Trails come from a decay
+buffer. Spark speed is the load-bearing parameter: below about a pixel per
+frame the sparks creep and the decay buffer paints a solid disc instead of
+rays, so speed and drag have to be raised together.
+
+```console
+$ python3 fireworks.py --rate 3 --types willow,crackle --palette ice
+```
+
+### boing
+
+![boing](screenshots/boing.png)
+
+The Amiga Boing Ball: a red and white checkered sphere spinning about a tilted
+axis, bouncing in a purple wireframe room. The silhouette and the surface
+coordinates of every pixel are precomputed once, so a frame is an add, an xor
+and a masked blit. Checker counts derive from the radius and are forced even,
+so the equator lands on a cell boundary and the pattern stays consistent
+across the longitude wrap.
+
+```console
+$ python3 boing.py --radius 24 --segments 16 --bands 8
+```
+
+### daliclock
+
+![daliclock](screenshots/daliclock.png)
+
+A clock whose digits melt into each other. Seven-segment glyphs are generated
+rather than loaded from a font, and the morph interpolates their signed
+distance fields and re-thresholds — so the outline moves and you get one solid
+deforming figure, where a crossfade would give two superimposed glyphs at half
+brightness. Time is read from the system clock inside the frame callback, so
+the melt stays locked to the second rather than drifting with frame rate.
+
+```console
+$ python3 daliclock.py --12h --palette green --morph 0.6
 ```
 
 ### scroller
