@@ -19,7 +19,7 @@ Requirements: numpy, plus Pillow for `scroller.py`, and the `flaschen` client
 from [`../api/python`](../api/python) (`pip install ./api/python`, or just run
 from a clone — the demos fall back to the checkout).
 
-No display to hand? [`../tools/ft-web`](../tools/ft-web) is a server that
+No display to hand? [`../tools/ft-emulator`](../tools/ft-emulator) is a server that
 renders to a browser instead of hardware, which is how the screenshots below
 were taken.
 
@@ -602,7 +602,7 @@ These effects are usually written for something squarer and taller than a
 - **Single-pixel elements** carry no weight. A near star drawn the same size
   as a far one makes a starfield read as static rather than as motion.
 
-The frame-interval trace in [`../tools/ft-web`](../tools/ft-web) is useful
+The frame-interval trace in [`../tools/ft-emulator`](../tools/ft-emulator) is useful
 here: a stall shows up as a spike there long before it moves the average, and
 stalls rather than average jitter are what read as visible flicker.
 
