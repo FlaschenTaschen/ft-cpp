@@ -134,13 +134,23 @@ their whole `-t`, false for `send-text`, which sets a layer and returns at
 once.
 
 [`rotation-betelgeuse.json`](rotation-betelgeuse.json) is the Sequoia Fabrica
-installation's running order and the worked example of all of this: 37
-entries, 24 minutes, mixing the numpy effects with the older segments that
-predate them — `sf-tree`, `space-invaders`, `pacman`, `full-moon` and a sewing
-animation through `grayscale`; `life` and `maze` as binaries; and three
-Arduino jokes through `send-text`. Site-specific things live there rather than
-in `ftsched.py`: the `/home/pi` paths, the marquee text and the split-flap
-messages.
+installation's running order: 35 entries, 25 minutes, and **all of them
+native**. The segments that predate the numpy demos were ported rather than
+shelled out to — the pixel art into [`pixelart.py`](#pixelart), the C
+binaries into [`life.py`](#life) and [`maze.py`](#maze), the `send-text` jokes
+into [`console.py`](#console) — so every one of them now blends into its
+neighbours, has a preview, and runs from a checkout on any machine instead of
+from absolute paths on one Pi. `exec` remains as the escape hatch it was
+built to be; nothing in this rotation needs it.
+
+Site-specific text lives in that file rather than in `ftsched.py`: the marquee
+and the split-flap messages. The running order itself is generated to satisfy
+the pairing rule above and currently has **zero** transitions paced down; note
+that the most expensive effect sits last before `slime`, because a `solo`
+neighbour cuts and that edge is therefore free.
+
+An entry's `module` may differ from its `name` — the seven pixel-art segments
+are one module with seven sets of options — and previews are keyed by name.
 
 The API is a handful of verbs — `jump`, `toggle`, `next`, `pause`/`resume`,
 `restart` — POSTed as JSON to `/api/command`, with `/api/state` returning
@@ -730,6 +740,85 @@ sign.
 ```console
 $ python3 splitflap.py --messages "SEQUOIA FABRICA|OPEN HOUSE {TIME};MAKE THINGS|ASK ANYONE" --hold 12
 ```
+
+### pixelart
+
+![pixelart](screenshots/pixelart.png)
+
+The sprite sheets in [`pixelart/`](pixelart) — a sequoia, space invaders,
+pacman and his ghosts, a full moon, an eight-frame sewing machine — which have
+been on the Sequoia Fabrica wall for years, played until now by an external C
+binary reading JSON files of hex strings.
+
+Sprites are either joined side by side into one strip and moved as a unit
+(four invaders in a row, seven sequoias marching past) or played in place as
+frames of an animation (the sewing machine, pacman's chomp), and placed
+centred, bouncing or scrolling. `--art` takes ranges, so `sew1..8` and
+`sf-tree*7` mean what they look like.
+
+Half the set is greyscale line art and half is full colour, so `--render auto`
+checks for chroma: the moon and the ghosts are drawn as they are, and the tree
+and the invaders are painted from a palette. The palette is laid **across** the
+strip rather than mapped from brightness — brightness to hue turns every
+antialiased edge into a different colour and the shape into confetti, which is
+exactly what the first attempt at this looked like.
+
+```console
+$ python3 pixelart.py --art sf-tree --mode center
+$ python3 pixelart.py --art pacman-32x32-1..6 --sequence-ms 50 --reverse
+```
+
+### life
+
+![life](screenshots/life.png)
+
+Conway, one cell per pixel, which at 320x64 is 20,480 cells — enough for
+gliders to travel and for still lifes to settle out all over the board.
+
+The rule is four lines of numpy. Everything else is about making a black and
+white automaton worth looking at on an LED wall: cells are coloured by how
+long they have been alive, so a fresh birth is bright and a block that has sat
+there a minute has faded to an ember, and dead cells leave a decaying trail so
+a glider draws its own wake. Life always dies down, so when the population
+stops changing — allowing for period-2 oscillators, which change forever
+without going anywhere — a fresh patch is seeded somewhere and the board gets
+reinvaded rather than reset.
+
+Neighbour counting is eight slices of one padded scratch board. `np.roll`
+would build sixteen full-size temporaries per generation, which on a Pi is
+most of the cost of the rule.
+
+### maze
+
+![maze](screenshots/maze.png)
+
+A maze carved, flooded and solved, on a loop. The old C version drew a
+finished maze and left it there, but a finished maze is a texture; the making
+of it is the part worth watching. A depth-first walk knocks down walls with
+the head glowing at the frontier, visibly backtracking when it paints itself
+into a corner; then a breadth-first flood pours down every dead end at once;
+then the route lights up end to end and holds.
+
+The carve order and the route are baked into grids rather than kept as lists,
+so each frame is one comparison against a rising playhead instead of a Python
+loop over a few thousand cells.
+
+### console
+
+![console](screenshots/console.png)
+
+Code typing itself out, with a cursor and syntax colouring — the three Arduino
+one-liners that used to appear as static text for five seconds each.
+
+The typing is deliberately uneven: a constant interval reads as a machine
+printing, while a little jitter and a longer beat after a semicolon reads as
+someone at a keyboard. Every character's arrival time is worked out up front,
+which is what lets `render()` stay a pure function of `t` — the demo can be
+started at any moment, seeked, or run at any frame rate and look the same. The
+cursor blinks only while idle; blinking through the typing looks like a fault.
+
+Lines are just an argument, so this is the one demo anyone in the space can
+add to without touching code.
 
 ### scroller
 

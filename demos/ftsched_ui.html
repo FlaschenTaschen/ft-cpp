@@ -60,7 +60,12 @@ header {
 #progress { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: 9px; }
 #progress i { display: block; height: 100%; width: 0; background: var(--live); transition: width .25s linear; }
 
-.controls { display: flex; gap: 8px; margin-top: 10px; }
+.controls { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+/* Pushes the bulk switches away from the transport controls on a desktop, and
+   collapses to nothing once the row wraps on a phone. */
+.controls .gap { flex: 1 1 0; min-width: 0; }
+button.minor { color: var(--dim); padding: 9px 11px; }
+button.minor:hover { color: var(--text); }
 button {
   font: inherit; color: var(--text); background: var(--card); cursor: pointer;
   border: 1px solid var(--line); border-radius: 8px;
@@ -151,6 +156,9 @@ button[aria-pressed="true"] { border-color: var(--live); color: var(--live); }
   <div class="controls">
     <button id="btnPause" aria-pressed="false">Pause</button>
     <button id="btnNext">Skip &rsaquo;&rsaquo;</button>
+    <span class="gap"></span>
+    <button id="btnAllOn" class="minor">Enable all</button>
+    <button id="btnAllOff" class="minor">Disable all</button>
   </div>
 </header>
 
@@ -323,6 +331,13 @@ async function refresh() {
 }
 
 document.getElementById("btnNext").addEventListener("click", () => post("next"));
+document.getElementById("btnAllOn").addEventListener("click", () => post("all", {on: true}));
+document.getElementById("btnAllOff").addEventListener("click", () => {
+  // Irreversible-ish from a phone -- putting 35 switches back one at a time is
+  // nobody's afternoon -- and it is right next to Skip, so confirm it.
+  if (confirm("Switch every effect off except the one on air?"))
+    post("all", {on: false});
+});
 document.getElementById("btnPause").addEventListener("click",
   () => post(state && state.paused ? "resume" : "pause"));
 

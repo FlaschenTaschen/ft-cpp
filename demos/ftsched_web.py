@@ -32,8 +32,8 @@ UI_FILE = os.path.join(_HERE, "ftsched_ui.html")
 # Commands the API will forward. An allowlist rather than passing the string
 # through, so a typo in a client is a 400 and not a stack trace in the render
 # loop's command handler.
-OPS = {"jump": ("index",), "toggle": ("name", "on"), "next": (),
-       "pause": (), "resume": (), "restart": ()}
+OPS = {"jump": ("index",), "toggle": ("name", "on"), "all": ("on",),
+       "next": (), "pause": (), "resume": (), "restart": ()}
 
 MAX_BODY = 4096
 

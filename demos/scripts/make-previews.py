@@ -41,6 +41,11 @@ WARMUP = {
     "karl": 6.0, "metaballs": 2.0, "printer": 6.0, "knit": 4.0, "laser": 5.0,
     "sunset": 12.0, "splitflap": 1.5, "daliclock": 1.0, "goldengate": 3.0,
     "wheel": 2.0, "scroller": 2.0,
+    # The ported-forward ones. life needs to get past its random soup into
+    # structure; maze needs the carve to be well under way rather than a
+    # black screen; console needs a few lines on screen before it reads.
+    "life": 12.0, "maze": 6.0, "console": 5.0,
+    "sf-tree-bounce": 2.0, "space-invaders": 2.0, "pacman": 1.0, "sewing": 1.0,
 }
 
 # The demos are driven at their own frame rate through the warmup and between
@@ -50,10 +55,10 @@ WARMUP = {
 RENDER_FPS = 20
 
 
-def bake(name, options, frames, fps, warmup, width, height):
+def bake(module_name, options, frames, fps, warmup, width, height):
     from PIL import Image
 
-    module = __import__(name)
+    module = __import__(module_name)
     opts = ds.options(module, width=width, height=height, fps=RENDER_FPS)
     for key, value in (options or {}).items():
         if hasattr(opts, key):
@@ -89,6 +94,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("names", nargs="*", help="demos to bake (default: all)")
     ap.add_argument("--out", default=os.path.join(_DEMOS, "previews"))
+    ap.add_argument("--rotation", default=None,
+                    help="bake the py entries of a rotation file, using each "
+                         "entry's own options -- the seven pixel-art segments "
+                         "are one module and only differ by those")
     ap.add_argument("--frames", type=int, default=16)
     ap.add_argument("--fps", type=float, default=8.0)
     ap.add_argument("--width", type=int, default=ds.WIDTH)
@@ -97,7 +106,9 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    wanted = {e.name: e for e in ftsched.default_rotation() if e.kind == "py"}
+    entries = (ftsched.load_rotation(args.rotation) if args.rotation
+               else ftsched.default_rotation())
+    wanted = {e.name: e for e in entries if e.kind == "py"}
     names = args.names or sorted(wanted)
 
     total = 0
@@ -109,7 +120,8 @@ def main():
         entry = wanted.get(name)
         try:
             t0 = time.monotonic()
-            shots = bake(name, entry.options if entry else {}, args.frames,
+            shots = bake(entry.module if entry else name,
+                         entry.options if entry else {}, args.frames,
                          args.fps, WARMUP.get(name, 0.5), args.width, args.height)
             save(shots, path, args.fps)
         except Exception as exc:

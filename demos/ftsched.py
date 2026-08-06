@@ -148,9 +148,14 @@ class Entry(object):
     """One slot in the rotation. Plain data, and the unit the UI operates on."""
 
     def __init__(self, kind, name, seconds, fps=0, options=None, ms=0.0,
-                 solo=False, argv=None, enabled=True, clears=None, wait=True):
+                 solo=False, argv=None, enabled=True, clears=None, wait=True,
+                 module=None):
         self.kind = kind                     # "py" or "exec"
         self.name = name
+        # Several entries can be the same module with different options -- the
+        # seven pixel-art segments all are -- so the name is the slot's, and
+        # the module is what gets imported. Preview files are keyed by name.
+        self.module = module or name
         self.seconds = float(seconds)
         self.fps = int(fps or 0)             # 0 = take the daemon's --fps
         self.options = options or {}
@@ -179,6 +184,8 @@ class Entry(object):
             d["clears"] = self.clears
         if not self.wait:
             d["wait"] = False
+        if self.module != self.name:
+            d["module"] = self.module
         return d
 
     @staticmethod
@@ -187,7 +194,7 @@ class Entry(object):
                      d.get("seconds", DEFAULT_SECONDS), d.get("fps", 0),
                      d.get("options"), d.get("ms", 0.0), d.get("solo", False),
                      d.get("argv"), d.get("enabled", True), d.get("clears"),
-                     d.get("wait", True))
+                     d.get("wait", True), d.get("module"))
 
 
 def default_rotation():
@@ -263,6 +270,27 @@ class Rotation(object):
                 e.enabled = on
             return True
 
+    def set_all(self, on, keep=None):
+        """Switch every entry on, or every entry but one off.
+
+        Disabling everything would leave the scheduler with nothing to play,
+        so `keep` -- the entry on air when the button was pressed -- stays in.
+        That also makes the button do the obvious thing: you are left looking
+        at what you were already looking at, and you switch back on the ones
+        you want.
+        """
+        with self.lock:
+            changed = False
+            for e in self.all:
+                want = True if on else (e is keep)
+                if e.enabled != want:
+                    e.enabled = want
+                    changed = True
+            if not any(e.enabled for e in self.all) and self.all:
+                self.all[0].enabled = True   # never leave it empty
+                changed = True
+            return changed
+
     def jump(self, position, at_index):
         """Make global index `at_index` play live position `position`."""
         with self.lock:
@@ -330,7 +358,7 @@ class Builder(mega.Builder):
             # building at 20 and running at 60 plays them three times too fast.
             if entry.fps:
                 overrides["fps"] = entry.fps
-            seg = mega.Segment(entry.name, __import__(entry.name), entry.seconds,
+            seg = mega.Segment(entry.name, __import__(entry.module), entry.seconds,
                                overrides, "cut")
             self._segcache[entry] = seg
         seg.seconds = entry.seconds
@@ -556,6 +584,11 @@ class Scheduler(object):
                 # Only indices past the playhead move. The current effect keeps
                 # playing even if it is the one just switched off, which is
                 # what you want when you switch it off while looking at it.
+                self.builder.invalidate_from(self.show.index + 1)
+                self.dirty.set()
+        elif op == "all":
+            on = bool(payload["on"])
+            if self.rot.set_all(on, keep=self.builder.entry_at(self.show.index)):
                 self.builder.invalidate_from(self.show.index + 1)
                 self.dirty.set()
         elif op == "jump":
