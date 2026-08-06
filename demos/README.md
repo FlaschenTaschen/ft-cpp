@@ -559,6 +559,138 @@ trades loop length for startup time.
 $ python3 scroller.py --text "GREETZ  " --amp 16 --no-plasma
 ```
 
+### headroom
+
+![headroom](screenshots/headroom.png)
+
+Max Headroom: a plasticky head in dark glasses stuttering in front of a
+backdrop of neon stripes that rotates and recedes. The stutter is the
+character, not a defect — holds, one-frame repeats, jumps back to an earlier
+pose and the occasional freeze, all of them the artefacts of video that keeps
+skipping, with a horizontal tear and an RGB split arriving on the glitch frames.
+
+The room is one `np.take` from a table that packs the angle around the
+vanishing point, 1/radius, the radial fade and the row parity into a single
+index, so a frame is one gather rather than four trig evaluations over 20480
+pixels. What that buys is also what it costs: the vanishing point cannot wander
+continuously, because moving it means re-deriving `atan2` and `1/r` every
+frame, so it cuts between three baked positions instead. On this material the
+cuts read as deliberate camera jumps.
+
+The head is a union of eight ellipsoids solved in closed form — the ray-ellipsoid
+quadratic has an analytic nearest root, so there is no marching — baked into 20
+yaw poses over about 100°, then blitted. Three of its features are painted as
+bands in head space rather than built as geometry: the glasses, the hairline,
+and the lit crest of the hair. That last one is what stops the hair reading as a
+polished gold helmet — a single material shades smoothly however it is lit,
+whereas splitting it into a lit front and an unlit swept-back mass gives the
+silhouette a direction at 64 rows.
+
+Getting it to read as plastic rather than as a mannequin took a pale, nearly
+unpigmented base with the room's magenta arriving through the fill and a hard
+specular carrying the surface; an earlier pass with the colour in the base
+instead came out as meat.
+
+```console
+$ python3 headroom.py --room acid --spin -1.5 --glitch 1
+$ python3 headroom.py --say "" --side left --no-scanlines
+```
+
+### wopr
+
+![wopr](screenshots/wopr.png)
+
+WOPR from *WarGames*: the lamp banks thinking on the left, the Falken exchange
+printing itself out on the right. Two things made the 1983 prop memorable and
+neither is a graphic — the monolith's rows of amber lamps blinking against each
+other with a sweep occasionally crossing a bank, and chunky phosphor capitals
+arriving one at a time.
+
+The two speakers differ by colour *and* by rhythm, which is what lets you tell
+who is talking from across the room without reading a word. WOPR prints
+steadily with a few percent of jitter, because it is a computer; the human's
+replies are paler, sit behind a `>` prompt, run at about half the speed, and
+carry real hesitation — a wide spread per keystroke and an occasional quarter
+second of nothing at a word boundary. A constant interval never reads as a
+person.
+
+The lamps are 112 numbers, not 4600 pixels: each gets a baked rate, phase and
+duty, so its brightness is `((t*rate + phase) % 1) < duty`, and painting the
+bank is a single gather through an index map with the glow already folded into
+a weight map. The chase is a gaussian in lamp-column space, one per bank, with
+incommensurate speeds so the banks never line up. Two things that did *not*
+work: dimming the gaps between lamp rows for the grille, since those are
+already black, and letting the chase push brightness past 1.0 — the store into
+uint8 is unsafe, so a lamp at 1.2 wrapped round to dark green confetti.
+
+The script is an argument, so anyone can retype it: `;` between lines, a
+leading `>` for the human. The whole exchange lands in about 35 s and then
+holds, so it finishes on FINE rather than being cut off mid-sentence.
+
+```console
+$ python3 wopr.py --layout lights --colour green
+$ python3 wopr.py --script 'SHALL WE PLAY A GAME?;>LOVE TO.' --cps 14
+```
+
+### defcon
+
+![defcon](screenshots/defcon.png)
+
+The big board from the same film, playing out an exchange: coastline in thin
+glowing vector, missile tracks arcing over it, warheads blooming as expanding
+rings, and a DEFCON readout stepping down while it all goes wrong. 320x64 is a
+letterbox, and a letterbox is what a wall map wants to be.
+
+**The map is real geography baked into the file** — Natural Earth 1:110m
+coastline, public domain, simplified offline with Douglas-Peucker and encoded
+as 81 polylines and 897 points in about 2 kB of source. Nothing is read at
+runtime and nothing needs the network, which matters on a Pi that boots into
+the rotation with no guarantee that anything else is reachable.
+
+The projection is forced by the panel rather than chosen: 320 square pixels
+across 360° of longitude is 1.125° a pixel, so 64 rows buy exactly 72° of
+latitude. Taking that as 8°N–80°N turns out to be a gift rather than a
+compromise, because that band *is* where the film's war happens — North
+America, the Atlantic, Europe, Russia, China, Japan.
+
+The map never moves, so it is rasterised once at 2x and box-filtered down; that
+supersample is the whole reason the coast reads as a line rather than as a rash
+of lit pixels, since a 1x Bresenham line on a 320-wide panel is either dashes
+or, thickened, a blob. Per frame the demo composites into one float32
+accumulator and maps it through a palette — about five whole-array passes and
+no allocation. Each trajectory's pixel path is baked as a flat index array, so
+a live track is six numpy calls over fifty-odd elements, and the spent tracks
+that accumulate into the finale are drawn in eight pre-concatenated groups
+rather than as ninety separate scatters.
+
+It opens with tracks already in the air, because an effect that starts empty
+spends its first seconds looking broken. From there the interval between
+launches shrinks geometrically over the whole 80 s cycle — about one launch
+every five seconds at the start, six to eight a second by the end — and flight
+times shorten on the same curve, which compounds. DEFCON is derived from that
+schedule rather than run off its own clock: the level drops as cumulative
+launches cross fixed fractions of the total, so the countdown is a consequence
+of the exchange instead of a caption over it.
+
+Then it ends the way the film does. The impacts pile into a rising glare —
+baked as one float per 1/60 s, an exponential pulse per detonation summed and
+clipped, so it costs a scalar add — the board whites out, and everything goes
+dark. After a beat of nothing, the line comes up:
+
+> THE ONLY WINNING MOVE IS NOT TO PLAY
+
+set in the same baked 3x5 pixel font as the readouts, scaled up and wrapped to
+whatever fits, so there is no font file to be missing on the Pi. Then the map
+fades back at DEFCON 5 and it starts again. The whiteout draws the board *under*
+an additive white that dies as `(1-k)⁴`; a flat filled panel read as a fault
+rather than as a detonation.
+
+```console
+$ python3 defcon.py --colour amber --arcs 10
+$ python3 defcon.py --cycle 30 --speed 1.5      # hurry the war along
+$ python3 defcon.py --message ""                # no epigram, longer war
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
