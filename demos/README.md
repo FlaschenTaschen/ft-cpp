@@ -191,6 +191,61 @@ the old `ft_demos.service` so the two can never both drive layer 0.
 
 <img src="screenshots/ftsched-ui-mobile.png" width="300" alt="the same panel on a phone">
 
+## ftindex
+
+![the landing page](screenshots/ftindex.png)
+
+The control panel is on port 8081, which is fine if you already know it and
+useless if you do not. Someone standing in front of the wall with a phone
+types the hostname and nothing else, gets a connection refused, and gives up.
+[`ftindex.py`](ftindex.py) serves that bare hostname: what the wall is, what
+is playing right now, a button to the panel, and how to push your own pixels
+at it.
+
+```console
+$ python3 ftindex.py --listen 0.0.0.0:80
+```
+
+It is a **separate daemon** from `ftsched` on purpose. The scheduler is
+driving the wall on a frame deadline, and the thing most likely to be hit by a
+room full of curious people should not share a process — let alone a GIL —
+with the render loop. This one holds no state and can be restarted at any
+time. It is also deliberately not `BindsTo=ftsched`: if the scheduler is down,
+this page is what says so, and it is what someone reaches for when the wall
+looks wrong — exactly when it must not have died alongside it.
+
+No JavaScript, and the page is rendered server-side, because it has to work
+first time on whatever phone walks into the room. The one dynamic part is a
+`now playing` line fetched from `ftsched` with a 0.6 s timeout: the page is
+worth more than the status line on it, so a wedged scheduler costs a blink
+rather than a spinner.
+
+Binding `:80` does not need root. [`ftindex.service`](ftindex.service) runs as
+`pi` with `AmbientCapabilities=CAP_NET_BIND_SERVICE`, which grants exactly the
+one privilege — plus the usual `Protect*` sandbox, since this is the process
+most exposed to the room.
+
+**TLS is not handled here.** `tailscale serve` terminates it with a real
+`ts.net` certificate, renews it, and exposes it to the tailnet only, which is
+three things this would otherwise have to get right by itself:
+
+```console
+$ tailscale serve --bg --https=443  http://127.0.0.1:80     # this page
+$ tailscale serve --bg --https=8443 http://127.0.0.1:8081   # the panel
+```
+
+Those persist across reboots on their own. They need HTTPS Certificates
+enabled for the tailnet (admin console → DNS → HTTPS Certificates); until then
+`tailscale cert` answers *your Tailscale account does not support getting TLS
+certs* and only the plain HTTP side works.
+
+A link from an `https` page to an `http` one is not blocked the way a
+subresource would be, but it drops the reader out of TLS without saying so —
+so when the page is reached through the proxy (`X-Forwarded-Proto: https`) it
+points at the panel's tailnet port instead of its LAN one. `/panel` is a
+redirect rather than a hard-coded link, so exactly one place knows which port
+the panel is on.
+
 ## The effects
 
 ### fire
