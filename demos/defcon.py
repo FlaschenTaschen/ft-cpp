@@ -66,15 +66,39 @@ Then four phases, as fractions of `--cycle` rather than fixed tails, so that
 `--cycle 30` is a shorter version of the same film and not a war with the
 ending cut off:
 
-  * 0.00-0.74  the exchange, accelerating the whole way; the last launch goes
+  * 0.00-0.70  the exchange, accelerating the whole way; the last launch goes
                up about one flight time before the end, so impacts keep
                arriving to the last moment
-  * 0.74-0.78  the board whites out on the final wave and goes black. The
+  * 0.70-0.74  the board whites out on the final wave and goes black. The
                darkness is the point: a beat of nothing is what makes the
                next thing land
-  * 0.78-0.96  THE ONLY WINNING MOVE IS NOT TO PLAY, held long enough to read
+  * 0.74-0.96  THE ONLY WINNING MOVE IS NOT TO PLAY, typed out a character at
+               a time and then held long enough to read
   * 0.96-1.00  the map fades back up at DEFCON 5, drawing the tracks that are
                already in the air at t=0 so the loop does not seam
+
+**The closing line types itself.** In the film the machine prints its side of
+the conversation to a terminal, so the line arrives as WOPR writing it rather
+than as a caption being switched on: characters at about seven and a half a
+second, a block caret at the write position, a beat at the line break where a
+terminal would return the carriage, and a longer one before the last word. The
+interval is a machine's — one rate, wobbled by five per cent, because
+dead-constant timing at this size reads as a progress bar filling and anything
+more uneven reads as a person at the keyboard, which is the wrong character.
+The caret is solid while it writes and blinks only once the line is finished; a
+caret that blinks *through* the typing looks like a fault. Every keystroke's
+arrival time is drawn in `build()` and the frame binary-searches it, for the
+same reason the war's schedule is baked: `render()` must be a pure function of
+`t`.
+
+Typing costs time that used to be reading time, so the message phase took four
+points of the cycle off the war — the cheapest place there is to take them
+from, since the exchange is one continuous ramp parameterised by its own
+progress and a slightly shorter one is the same escalation very slightly
+steeper. The whole performance is then capped at 55 per cent of the phase, so
+better than half of it is always the finished line sitting still. A long
+`--message`, or `--cycle 30`, types faster rather than running past the end of
+the phase: being cut off mid-word is the one failure the ending cannot have.
 
 `--message ""` turns the closing line off, and then the darkness shrinks to a
 punctuation mark and the exchange takes the time back. Only the second half of
@@ -244,7 +268,14 @@ def _wrap(words, cols):
 
 
 def _message_mask(text, W, H):
-    """A whole-panel mask for the closing line, or None if there isn't one.
+    """The closing line: a whole-panel mask plus its layout, or None.
+
+    Returns `(mask, scale, rows)`, where rows is `[(text, y0, x0), ...]` — one
+    entry a wrapped line, giving the top row and left column the line was drawn
+    at. The typing needs the geometry as well as the pixels: it reveals the
+    mask a glyph cell at a time and puts a caret at the write position, and
+    both of those are `x0 + j * 4 * scale` arithmetic that only the layout
+    knows.
 
     Same 3x5 font as the readouts, scaled by an integer factor with
     np.repeat — nearest-neighbour, so it stays a pixel font instead of turning
@@ -282,6 +313,7 @@ def _message_mask(text, W, H):
 
     lines, scale, gap, height = chosen
     mask = np.zeros((H, W), f32)
+    rows = []
     y = (H - height) // 2
     for line in lines:
         m = _text(line)
@@ -289,8 +321,9 @@ def _message_mask(text, W, H):
             m = np.repeat(np.repeat(m, scale, axis=0), scale, axis=1)
         x = (W - m.shape[1]) // 2
         mask[y:y + m.shape[0], x:x + m.shape[1]] = m
+        rows.append((line, y, x))
         y += 5 * scale + gap
-    return mask
+    return mask, scale, rows
 
 
 # --------------------------------------------------------------------------
@@ -348,6 +381,18 @@ BLOOM_R = 16                             # bloom window half-size, px
 RAMP = 48.0
 
 MESSAGE = "THE ONLY WINNING MOVE IS NOT TO PLAY"
+
+# The closing line types itself out. Characters a second at the default cycle;
+# slow enough to read along with, and the machine at the other end is printing
+# to a terminal rather than racing. TYPE_SHARE caps the whole performance --
+# lead-in, keystrokes and pauses -- at a fraction of the message phase, so what
+# is left is always time to sit and read the finished line. A longer --message
+# or a shorter --cycle scales the rate to fit rather than running past the end
+# of the phase and getting cut off mid-word.
+TYPE_CPS = 7.5
+TYPE_SHARE = 0.55
+TYPE_JITTER = 0.05                       # +/- this fraction of the interval
+CURSOR_HZ = 2.0                          # blink rate once the line is done
 
 
 def add_arguments(ap):
@@ -490,10 +535,17 @@ def build(args):
     # Phases are fractions of the cycle rather than fixed-length tails, so a
     # 30 s slot gets a shorter war *and* a shorter blackout and a shorter
     # message, instead of a war with the ending sheared off it.
-    msg_mask = _message_mask(args.message, W, H)
+    laid_out = _message_mask(args.message, W, H)
+    msg_mask = None if laid_out is None else laid_out[0]
     if msg_mask is not None:
-        f_war, f_dark = 0.74, 0.04
-        msg_len = cycle * 0.18
+        # The message phase is a little wider than it was when the line simply
+        # switched on, because typing it costs time that used to be reading
+        # time. The four points come out of the war, which is the cheapest
+        # place to take them from: the exchange is one continuous ramp
+        # parameterised by its own progress, so a shorter one is the same
+        # escalation slightly steeper and nothing in it visibly moves.
+        f_war, f_dark = 0.70, 0.04
+        msg_len = cycle * 0.22
     else:
         # Nothing to hold on a black board, so the darkness is only long
         # enough to punctuate the reset and the exchange takes the rest.
@@ -664,6 +716,64 @@ def build(args):
         # as well not have.
         steps.append((max(at, steps[-1][0] + cycle * 0.02), level))
 
+    # ---- the closing line, typed ----------------------------------------
+    #
+    # Baked for the same reason the war is: render() has to be a pure function
+    # of t, so every character's arrival time is drawn here and the frame does
+    # a binary search rather than advancing a state machine. `type_t` holds the
+    # time each state begins, `type_row`/`type_n` say which line is being
+    # written and how much of it is on the board.
+    #
+    # The rhythm is a machine's, not a person's: one interval, wobbled by a few
+    # per cent. That wobble is the whole difference between a caret writing and
+    # a progress bar filling -- dead-constant timing at this size reads as a
+    # wipe -- and any more of it would be a human at the keyboard, which is the
+    # wrong character. The two pauses are punctuation: a beat at the line break
+    # where a terminal would return the carriage, and a longer one before the
+    # last word, because "NOT TO PLAY" is the sentence turning over.
+    type_t = None
+    if msg_mask is not None:
+        mscale, rows = laid_out[1], laid_out[2]
+        pitch, cell = 4 * mscale, 3 * mscale
+        row_geom = [(y0, y0 + 5 * mscale, x0, len(txt))
+                    for txt, y0, x0 in rows]
+
+        # Where the last word starts, so it can be given its beat -- but only
+        # when it follows a space on its own line, since a word that begins a
+        # line has had the line break's pause already.
+        last_row = len(rows) - 1
+        last_txt = rows[last_row][0]
+        gap_at = last_txt.rfind(" ")
+
+        base = 1.0 / TYPE_CPS
+        times, at_row, at_n = [], [], []
+        clock = base * 3.0               # a beat of bare caret before the first
+        for r, (txt, _y0, _x0) in enumerate(rows):
+            for k in range(len(txt) + 1):
+                times.append(clock)
+                at_row.append(r)
+                at_n.append(k)
+                if k == len(txt):
+                    break
+                step = base * (1.0 + TYPE_JITTER * (2.0 * rng.random() - 1.0))
+                if r == last_row and gap_at >= 0 and k == gap_at + 1:
+                    step += base * 4.0
+                clock += step
+            if r < last_row:
+                clock += base * 5.0      # the carriage return
+        # Scale the whole performance to fit its share of the phase. A long
+        # --message or a short --cycle types faster rather than being cut off
+        # in the middle of a word, which is the one failure this cannot have.
+        span = max(1e-6, times[-1] + base)
+        budget = msg_len * TYPE_SHARE
+        if span > budget:
+            k = budget / span
+            times = [v * k for v in times]
+        type_t = np.array(times, np.float64)
+        type_row = np.array(at_row, np.int32)
+        type_n = np.array(at_n, np.int32)
+        type_end = float(type_t[-1])
+
     # ---- per-frame buffers ----------------------------------------------
     acc = np.zeros((H, W), f32)
     accf = acc.reshape(-1)
@@ -776,12 +886,42 @@ def build(args):
                 # line lands because of the seconds of black in front of it.
                 acc.fill(0.0)
             elif p < msg_off:
-                k = (p - msg_at) / (msg_off - msg_at)
-                # Up fast, hold, out a little slower. The hold is nearly all
-                # of it -- the point of the phase is that it can be read, not
-                # that it animates.
-                g = min(1.0, k / 0.07) * min(1.0, (1.0 - k) / 0.16)
-                np.multiply(msg_mask, f32(1.35 * g), out=acc)
+                tt = p - msg_at
+                k = tt / (msg_off - msg_at)
+                # No fade in: the caret arrives out of the black already lit,
+                # which is what a terminal does. Only the tail fades, and only
+                # so the map has something to come up out of.
+                g = min(1.0, (1.0 - k) / 0.12)
+                acc.fill(0.0)
+                # Where the typing has got to. One searchsorted over a few
+                # dozen floats, then at most three slice copies out of the
+                # baked mask -- the ending stays the cheapest part of the
+                # cycle, which is the point of it being at the end.
+                s = int(np.searchsorted(type_t, tt, side="right")) - 1
+                if s < 0:
+                    s = 0
+                cur, n = int(type_row[s]), int(type_n[s])
+                for r in range(cur + 1):
+                    y0, y1, x0, ncols = row_geom[r]
+                    shown = ncols if r < cur else n
+                    if shown <= 0:
+                        continue
+                    x1 = x0 + (shown - 1) * pitch + cell
+                    np.multiply(msg_mask[y0:y1, x0:x1], f32(1.35 * g),
+                                out=acc[y0:y1, x0:x1])
+                # The caret: solid while it is writing, blinking once the line
+                # is finished. A caret that blinks *through* the typing reads
+                # as a fault rather than as a caret.
+                done = tt >= type_end
+                if not done or (tt * CURSOR_HZ) % 1.0 < 0.55:
+                    y0, y1, x0, _ncols = row_geom[cur]
+                    # A line that fills the panel leaves less than a cell of
+                    # margin after its last glyph, so the caret is pushed back
+                    # on rather than clipped: half a block at the edge reads as
+                    # the text having been cut off, which is the one thing this
+                    # phase must never look like.
+                    cx = min(x0 + n * pitch, W - cell)
+                    acc[y0:y1, cx:cx + cell] = f32(1.35 * g)
             else:
                 # Back to a quiet board. The tracks that will be mid-flight at
                 # t=0 are drawn here at negative time, so the loop is a fade
