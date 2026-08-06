@@ -257,10 +257,15 @@ Binding `:80` does not need root. [`ftindex.service`](ftindex.service) runs as
 privilege — plus the usual `Protect*` sandbox, since this is the process most
 exposed to the room.
 
-`ftsched`'s own `--listen` stays reachable on 8081 rather than being bound to
-loopback. Binding it inward would make the front door the only way in, which
-is tidier, and is exactly why it is not done: there has to be a way to drive
-the wall when the front door is the thing that is broken.
+`ftsched` listens on `127.0.0.1:8081`, so the front door is the only way in
+and the panel is not also answering on a port nobody was told about. That does
+mean there is no second way to drive the wall if `ftindex` is the broken
+thing; the fallback is an ssh tunnel, which is a fair trade for not having a
+second unauthenticated listener on the shop wifi.
+
+```console
+$ ssh -N -L 8081:127.0.0.1:8081 pi@betelgeuse
+```
 
 ## The effects
 

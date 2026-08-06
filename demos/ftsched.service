@@ -24,9 +24,15 @@ Conflicts=ft_demos.service
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/ft-cpp/demos
+# --listen is on loopback: ftindex is the way in, and the panel has no
+# business being a second front door on a port nobody was told about. To reach
+# it directly while debugging -- from the Pi itself, or over an ssh tunnel:
+#
+#   curl -s localhost:8081/api/state | python3 -m json.tool
+#   ssh -N -L 8081:127.0.0.1:8081 pi@betelgeuse
 ExecStart=/usr/bin/python3 /home/pi/ft-cpp/demos/ftsched.py \
     --host localhost --fps 20 --quiet \
-    --listen 0.0.0.0:8081 \
+    --listen 127.0.0.1:8081 \
     --rotation /home/pi/ft-cpp/demos/rotation-betelgeuse.json \
     --state-file /var/lib/ftsched/state.json
 

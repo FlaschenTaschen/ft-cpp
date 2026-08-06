@@ -14,10 +14,10 @@
 # needs a second certificate or a second rule. It persists across reboots on
 # its own, so it is not a unit here.
 #
-# ftsched's own --listen stays on 8081 bound to 0.0.0.0 for now. Binding it to
-# 127.0.0.1 would make this the only way in, which is tidier; it is left
-# reachable so there is a way to drive the wall if this daemon is the thing
-# that is broken.
+# ftsched listens on 127.0.0.1:8081, so this is the only way in. If this
+# daemon is the thing that is broken, reach the panel over an ssh tunnel:
+#
+#   ssh -N -L 8081:127.0.0.1:8081 pi@betelgeuse
 
 [Unit]
 Description=Flaschen Taschen web front door
