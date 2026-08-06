@@ -2,8 +2,15 @@
 """Mario.
 
 A self-playing 8-bit platformer: a little plumber runs right forever through a
-level that generates itself, jumping gaps and pipes, over a parallax sky. No
-input -- the character reads the level ahead of it and decides when to jump.
+level that generates itself, jumping gaps and pipes, under a grove of giant
+sequoias. No input -- the character reads the level ahead of it and decides
+when to jump.
+
+The scenery is the thing that is not from the game it is quoting: instead of
+round bushes and green mounds, cinnamon-barked sequoias, bare trunk for two
+thirds of their height, the near ones taller than the panel. They are the only
+background at the character's own scale, so the scene reads as a redwood grove
+that a platformer happens to be running through.
 
 Everything is source, not an asset. The plumber, the tiles, the pipe, the coin
 and the goomba are grids of characters with a palette mapping each to an RGB,
@@ -365,8 +372,8 @@ def scroll_blit(dst, src, mask, off, y):
 
 
 # --------------------------------------------------------------------------
-# Parallax scenery. Hills and clouds are shapes, not sprites, so they are
-# drawn into wide strips once and scrolled by slicing.
+# Parallax scenery. Clouds, hills and the grove are shapes, not sprites, so
+# they are drawn into wide strips once and scrolled by slicing.
 # --------------------------------------------------------------------------
 
 def cloud_strip(width, height, rng, scale):
@@ -389,6 +396,119 @@ def cloud_strip(width, height, rng, scale):
         # A shaded underside keeps a white blob from reading as a hole.
         low = blob & np.roll(~blob, -max(1, scale), axis=0)
         rgb[low] = (198, 214, 244)
+    return rgb, mask
+
+
+def sequoia_strip(width, height, rng, scale, count_div=44):
+    """A grove of giant sequoias standing along the bottom of a strip.
+
+    The round two-lobed bushes this replaces are the single most Nintendo
+    thing on the panel, and they are also the only scenery at the same scale
+    as the character -- so swapping them is what changes the reading of the
+    whole scene. A sequoia is the opposite shape: a bare cinnamon column for
+    the first half of its height, then a narrow ragged crown, and taller than
+    anything else in frame. Trunk before foliage is the whole silhouette; a
+    green triangle on a stick is a christmas tree.
+
+    Trees are stamped in two depths. The far ones are drawn first, shorter and
+    hazed toward the sky so the near trunks read in front of them rather than
+    as one flat cutout, which is the same trick the distant hills use.
+    """
+    rgb = np.zeros((height, width, 3), np.uint8)
+    mask = np.zeros((height, width), bool)
+
+    # Cinnamon bark and dark foliage, keyed off grove.py's ramp so the two
+    # demos agree on what a sequoia is coloured like.
+    BARK = (140, 71, 41)
+    BARK_LIT = (178, 106, 66)
+    BARK_DARK = (78, 38, 23)
+    LEAF = (22, 74, 40)
+    LEAF_LIT = (44, 112, 58)
+    LEAF_DARK = (12, 46, 28)
+    HAZE = (150, 194, 244)          # what distance blends toward
+
+    def mix(c, k):
+        return tuple(int(round(a + (b - a) * k)) for a, b in zip(c, HAZE))
+
+    def run(y, x0, w, color):
+        """A horizontal run, wrapping around the end of the strip."""
+        if w <= 0 or y < 0 or y >= height:
+            return
+        cols = np.arange(x0, x0 + w) % width
+        rgb[y, cols] = color
+        mask[y, cols] = True
+
+    def tree(cx, ht, k):
+        """One tree: `ht` tall, hazed by `k` (0 near, 1 lost in the fog)."""
+        bark, lit, dark = mix(BARK, k), mix(BARK_LIT, k), mix(BARK_DARK, k)
+        leaf, leaf_lit = mix(LEAF, k), mix(LEAF_LIT, k)
+        leaf_dark = mix(LEAF_DARK, k)
+        base = height - 1
+        # Not clamped to 0: a tree taller than the strip is drawn with its top
+        # off the end and every run() above row 0 is dropped, so the biggest
+        # ones leave the frame instead of politely stopping under the sky --
+        # which is the one thing everybody knows about these trees.
+        top = height - ht
+
+        # Trunk: a taper from a flared base to a couple of pixels at the top,
+        # with a lit edge one side and a shaded edge the other. Sequoias are
+        # near enough columns for most of their height, so the taper is
+        # gentle and the flare is only the bottom few rows.
+        bw = max(2, int(round(ht * 0.14)))
+        tw = max(1, bw // 3)
+        for y in range(base, top - 1, -1):
+            f = (base - y) / float(max(1, ht - 1))
+            w = int(round(bw + (tw - bw) * f))
+            if f < 0.08:                      # buttressed base
+                w += max(1, bw // 2)
+            x0 = cx - w // 2
+            run(y, x0, w, bark)
+            if w >= 3:
+                rgb[y, x0 % width] = lit
+                rgb[y, (x0 + w - 1) % width] = dark
+
+        # Crown: tufts of foliage on alternating sides up the top half of the
+        # trunk, each narrower than the one below it, ending in a blunt tip.
+        # Alternating and jittering is what keeps a row of trees from looking
+        # like one sprite repeated.
+        # Two thirds bare trunk. Any lower and the crown's width against its
+        # height turns the tree into a christmas tree, which is the shape
+        # this whole layer exists to avoid.
+        crown_bot = base - int(round(ht * 0.64))
+        span = max(1, crown_bot - top)
+        step = max(2, int(round(ht * 0.085)))
+        rad_max = max(2, int(round(ht * 0.13)))
+        side = 1 if rng.integers(0, 2) else -1
+        for y in range(crown_bot, top - 1, -step):
+            f = (y - top) / float(span)       # 1 at the crown's base, 0 at tip
+            rad = max(1, int(round(rad_max * (0.2 + 0.8 * f))))
+            lean = side * int(rng.integers(0, max(1, rad // 3) + 1))
+            th = max(1, min(step, int(round(rad * 0.9))))
+            for dy in range(-th, th + 1):
+                t = 1.0 - abs(dy) / float(th + 1)
+                w = max(1, int(round(2 * rad * t)))
+                run(y + dy, cx + lean - w // 2, w,
+                    leaf_lit if dy == -th else
+                    (leaf_dark if dy >= th - 0 else leaf))
+            side = -side
+        # The tip, so the tree comes to a point rather than stopping flat.
+        for y in range(top, min(height, top + max(1, step // 2))):
+            run(y, cx - max(1, scale // 2), max(1, scale), leaf_lit)
+
+    n = max(2, width // (count_div * scale))
+    # Far trees first, then near, so the near ones overlap them.
+    for far in (True, False):
+        for _ in range(n * 2 if far else n):
+            cx = int(rng.integers(0, width))
+            if far:
+                ht = int(rng.integers(max(6, height // 2),
+                                      max(7, int(height * 0.82))))
+                k = float(rng.uniform(0.42, 0.62))
+            else:
+                ht = int(rng.integers(max(8, int(height * 0.85)),
+                                      max(9, int(height * 1.35))))
+                k = float(rng.uniform(0.0, 0.14))
+            tree(cx, ht, k)
     return rgb, mask
 
 
@@ -625,7 +745,7 @@ def add_arguments(ap):
                     help="where he sits across the panel, 0..1")
     ap.add_argument("--seed", type=int, default=3)
     ap.add_argument("--no-parallax", action="store_true",
-                    help="drop the clouds and hills")
+                    help="drop the clouds, the hills and the grove")
     ap.add_argument("--no-hud", action="store_true", help="no coin counter")
 
 
@@ -728,15 +848,19 @@ def build(args):
     clouds = cloud_strip(strip_w, cloud_h, rng, scale)
     cloud_y = max(0, min(2 * scale, ground_top - cloud_h))
 
-    hill_h = max(3, min(ground_top // 2, 20 * scale))
+    hill_h = max(3, min(ground_top // 3, 13 * scale))
     # Distant hills are darker and duller than anything in the level, which
     # is what puts them behind it -- at the same green as a pipe they read as
-    # scenery in the same plane and the pipe vanishes into them.
+    # scenery in the same plane and the pipe vanishes into them. Hazed toward
+    # the sky as well, now that the grove in front of them is the darkest
+    # thing on the panel: coast range seen through afternoon air.
     hills = hill_strip(strip_w, hill_h, rng, scale,
-                       ((0, 92, 56), (36, 140, 84)), 90)
-    bush_h = max(2, min(ground_top // 3, 7 * scale))
-    bushes = hill_strip(strip_w + 97, bush_h, rng, scale,
-                        ((0, 140, 60), (72, 192, 104)), 40)
+                       ((92, 138, 148), (118, 164, 168)), 70)
+    # The grove: as tall as the sky above the ground will take, because the
+    # point of a sequoia is that it runs out of frame. Its strip is a prime-ish
+    # amount wider than the hills' so the two layers never fall into step.
+    tree_h = max(6, min(ground_top, 52 * scale))
+    trees = sequoia_strip(strip_w + 97, tree_h, rng, scale)
 
     # --- state ------------------------------------------------------------
     level = Level(geo, args, rng)
@@ -847,8 +971,8 @@ def build(args):
             scroll_blit(back, clouds[0], clouds[1], cam * 0.12, cloud_y)
             scroll_blit(back, hills[0], hills[1], cam * 0.35,
                         ground_top - hill_h)
-            scroll_blit(back, bushes[0], bushes[1], cam * 0.62,
-                        ground_top - bush_h)
+            scroll_blit(back, trees[0], trees[1], cam * 0.62,
+                        ground_top - tree_h)
         np.copyto(buf, back)
 
         # --- ground, one slice, then holes cut back out ------------------

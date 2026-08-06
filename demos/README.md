@@ -383,6 +383,14 @@ A self-playing side-scrolling platformer: a little plumber runs right through
 an endlessly generated level, jumping pipes and gaps, collecting coins and
 stomping the odd goomba, over three layers of parallax.
 
+The background is a sequoia grove rather than the round two-lobed bushes the
+genre expects — cinnamon trunks bare for two thirds of their height, the
+nearest of them running off the top of the panel. They are the only scenery at
+the character's own scale, so they are what the scene reads as; the level in
+front of them stays eight-bit. Trees are stamped into one wide strip at two
+depths, the far ones shorter and blended toward the sky, and the strip is
+scrolled by slicing, so the whole grove costs one wrapped blit a frame.
+
 Uses 8 px tiles with a two-tile character rather than classic 16 px ones. At
 16 the panel is four tiles: ground plus character leaves under a tile of
 headroom and there is no jump arc at all. At 8 it is eight tiles — one ground,
