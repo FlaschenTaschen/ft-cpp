@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """The control server for ftsched: a small JSON API and the page that drives it.
 
-Deliberately boring. It is stdlib http.server on a daemon thread, and it does
-exactly two things to the scheduler: read the snapshot the render loop
-published, and push a command onto its queue. It never renders, never touches
-the rotation directly, and never holds a lock the frame loop wants -- a client
-on a bad phone connection cannot stall the wall, and neither can a hundred of
-them.
+Deliberately boring. It is stdlib http.server on a daemon thread, and every
+route is a read of something already computed -- the snapshot the render loop
+published, the option schemas read off the demos at startup -- or a command
+pushed onto a queue. It never renders, never touches the rotation directly,
+and never holds a lock the frame loop wants: a client on a bad phone
+connection cannot stall the wall, and neither can a hundred of them.
 
 There is no authentication. This is a wall in a makerspace and the server is
 meant to be reachable from anyone's phone on the shop wifi; the worst anyone
@@ -26,6 +26,8 @@ import threading
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import ftsched_opts
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 UI_FILE = os.path.join(_HERE, "ftsched_ui.html")
 
@@ -33,7 +35,11 @@ UI_FILE = os.path.join(_HERE, "ftsched_ui.html")
 # through, so a typo in a client is a 400 and not a stack trace in the render
 # loop's command handler.
 OPS = {"jump": ("index",), "toggle": ("name", "on"), "all": ("on",),
-       "next": (), "pause": (), "resume": (), "restart": ()}
+       "next": (), "pause": (), "resume": (), "restart": (),
+       # options is the whole set for that entry, not a patch, so an editor
+       # that has been open a while cannot half-apply against a rotation that
+       # moved under it. null means "back to what the rotation file says".
+       "configure": ("name", "options")}
 
 MAX_BODY = 4096
 
@@ -82,6 +88,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, "no UI: %s" % exc, "text/plain")
         elif path == "/api/state":
             self._json(200, self.server.sched.snapshot())
+        elif path == "/api/schema":
+            # Primed at startup, so this is a dict walk and not a sweep of
+            # imports on the request thread. Fetched once per page load and
+            # then the editors open without a round trip.
+            self._json(200, {"modules": self.server.sched.schemas()})
         elif path.startswith("/previews/"):
             self._preview(path[len("/previews/"):])
         else:
@@ -128,6 +139,24 @@ class Handler(BaseHTTPRequestHandler):
         if missing:
             self._json(400, {"error": "%s needs %s" % (op, ", ".join(missing))})
             return
+        if op == "configure":
+            # Checked here as well as in the scheduler so a typo comes back as
+            # a sentence the editor can put under the field, rather than as a
+            # command that is accepted, queued, and quietly dropped a frame
+            # later where only the journal sees it.
+            module = self.server.sched.module_of(payload["name"])
+            if module is None:
+                self._json(404, {"error": "nothing configurable called %r"
+                                          % (payload["name"],)})
+                return
+            if payload["options"] is not None:
+                try:
+                    payload["options"] = ftsched_opts.check(module,
+                                                            payload["options"])
+                except ValueError as exc:
+                    self._json(400, {"error": str(exc)})
+                    return
+            payload["restart"] = bool(payload.get("restart"))
         if not self.server.sched.submit(op, payload):
             self._json(503, {"error": "command queue full"})
             return

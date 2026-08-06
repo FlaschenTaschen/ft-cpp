@@ -31,9 +31,10 @@ Three threads and no more:
            the playhead. Inherited from megademo, which already had to solve
            this -- scroller.build() bakes for seconds and cannot be done
            inline at the moment of a transition.
-  http     the control server. Only ever reads a published snapshot and pushes
-           commands onto the queue, so it cannot stall the wall no matter how
-           slow a client is or how many of them there are.
+  http     the control server. Only ever reads published state -- the frame
+           loop's snapshot, and the option schemas read off the demos at
+           startup -- and pushes commands onto the queue, so it cannot stall
+           the wall no matter how slow a client is or how many there are.
 
 Allocation
 ----------
@@ -76,6 +77,7 @@ if _HERE not in sys.path:
 
 import demoscene as ds
 import megademo as mega
+import ftsched_opts
 import ftsched_web
 
 f32 = ds.f32
@@ -158,7 +160,14 @@ class Entry(object):
         self.module = module or name
         self.seconds = float(seconds)
         self.fps = int(fps or 0)             # 0 = take the daemon's --fps
-        self.options = options or {}
+        self.options = dict(options or {})
+        # What the rotation file said, kept so the panel's editor has
+        # something to restore to. "Defaults" from the shop floor means the
+        # settings this entry was installed with -- water with four drops
+        # rather than nine -- not the demo's bare argparse defaults, which
+        # nobody chose and which would quietly undo the running order's
+        # tuning.
+        self.base_options = dict(self.options)
         # exec only. `clears` are the layers the child draws on, blanked when
         # its slot ends -- the C++ tools set a layer with a timeout of their
         # own and it would otherwise sit on top of the next effect for the
@@ -187,6 +196,11 @@ class Entry(object):
         if self.module != self.name:
             d["module"] = self.module
         return d
+
+    @property
+    def customised(self):
+        """Has the panel changed this away from what the rotation file says?"""
+        return self.options != self.base_options
 
     @staticmethod
     def from_json(d):
@@ -291,6 +305,24 @@ class Rotation(object):
                 changed = True
             return changed
 
+    def configure(self, name, options):
+        """Replace an entry's options. `options` None restores the file's.
+
+        Every slot with this name, for the same reason set_enabled does: the
+        name is what the panel addresses, what the preview is keyed by, and
+        what somebody reads off a card. Two slots sharing one and diverging
+        would be indistinguishable in the UI.
+
+        Returns the entries it touched, so the caller can drop their cached
+        builds -- an option only takes effect the next time the effect is
+        constructed.
+        """
+        with self.lock:
+            hit = [e for e in self.all if e.name == name]
+            for e in hit:
+                e.options = dict(e.base_options if options is None else options)
+            return hit
+
     def jump(self, position, at_index):
         """Make global index `at_index` play live position `position`."""
         with self.lock:
@@ -312,7 +344,12 @@ class Rotation(object):
     def snapshot(self):
         with self.lock:
             live = self._live()
-            return [dict(e.to_json(),
+            # module and options are always present here, unlike in to_json()
+            # which omits what it can: the panel needs the module to find the
+            # right schema, and the options even when empty so an editor
+            # opened on a stock entry starts from the right values.
+            return [dict(e.to_json(), module=e.module, options=e.options,
+                         customised=e.customised,
                          position=live.index(e) if e in live else -1)
                     for e in self.all]
 
@@ -350,7 +387,8 @@ class Builder(mega.Builder):
         return self.entry_at(index)
 
     def segment_for(self, entry):
-        seg = self._segcache.get(entry)
+        with self.lock:
+            seg = self._segcache.get(entry)
         if seg is None:
             overrides = dict(entry.options)
             # The demo has to be built for the rate it will actually be driven
@@ -360,7 +398,8 @@ class Builder(mega.Builder):
                 overrides["fps"] = entry.fps
             seg = mega.Segment(entry.name, __import__(entry.module), entry.seconds,
                                overrides, "cut")
-            self._segcache[entry] = seg
+            with self.lock:
+                self._segcache[entry] = seg
         seg.seconds = entry.seconds
         return seg
 
@@ -372,6 +411,17 @@ class Builder(mega.Builder):
             black = self.black
             return lambda t, n: black
         return mega.build_segment(self.segment_for(entry), self.args)
+
+    def forget(self, entry):
+        """Drop the cached Segment: its options changed underneath it.
+
+        Under the same lock invalidate_from() bumps `gen` with, so a build
+        that is already in flight against the old options is discarded rather
+        than filed. Which it would be anyway -- but the pair is one decision
+        and it should read as one.
+        """
+        with self.lock:
+            self._segcache.pop(entry, None)
 
     def invalidate_from(self, index):
         """Drop builds for `index` and later: the mapping moved under them."""
@@ -595,6 +645,8 @@ class Scheduler(object):
             if self.rot.jump(int(payload["index"]), self.show.index + 1):
                 self.builder.invalidate_from(self.show.index + 1)
                 self.show.skip(t, self.args.transition)
+        elif op == "configure":
+            self._configure(payload, t)
         elif op == "next":
             self.show.skip(t, self.args.transition)
         elif op == "restart":
@@ -602,6 +654,71 @@ class Scheduler(object):
             self.show.skip(t, self.args.transition)
         else:
             raise ValueError("unknown op %r" % op)
+
+    def _configure(self, payload, t):
+        """Change one entry's demo options, from the panel's editor.
+
+        Validated again here even though the API validated it before queueing:
+        this is the only path that writes into an Entry, and a bad value gets
+        as far as a numpy allocation on the builder thread.
+        """
+        name = payload["name"]
+        options = payload["options"]
+        module = self.module_of(name)
+        if module is None:
+            self.warn("configure: no configurable entry called %r" % (name,))
+            return
+        if options is not None:
+            options = ftsched_opts.check(module, options)
+        changed = self.rot.configure(name, options)
+        for entry in changed:
+            self.builder.forget(entry)
+        # Only indices past the playhead, exactly as a toggle does: the effect
+        # on air keeps the instance it was built with. Rebuilding underneath
+        # it would drop the wall for however long the build takes.
+        self.builder.invalidate_from(self.show.index + 1)
+        self.dirty.set()
+        self.warn("configured %s: %s" % (name, "restored" if options is None
+                                         else ", ".join(sorted(options)) or "nothing"))
+
+        # Editing the number of fireflies while looking at fireflies has to
+        # show, or the control reads as broken for the rest of a 45 second
+        # slot. Play it again from the top with the new options -- which is a
+        # jump to where we already are, so it rides the ordinary transition
+        # machinery and waits for the build rather than punching a hole.
+        live = self.builder.entry_at(self.show.index)
+        if payload.get("restart") and live in changed:
+            position = self.rot.position_of(live)
+            if position >= 0 and self.rot.jump(position, self.show.index + 1):
+                self.builder.invalidate_from(self.show.index + 1)
+                self.show.skip(t, self.args.transition)
+
+    # -- what the editor needs to know ------------------------------------
+
+    def module_of(self, name):
+        """The demo module behind a rotation entry, or None if there is none.
+
+        None for an exec entry as well as for an unknown name: an external
+        command has no argparse of ours to read and nothing the panel can
+        offer to edit.
+        """
+        with self.rot.lock:
+            for e in self.rot.all:
+                if e.name == name:
+                    return e.module if e.kind == "py" else None
+        return None
+
+    def schemas(self):
+        """Every configurable module in the rotation, and what it takes.
+
+        Served whole rather than one module per request. It is a few tens of
+        kB against the couple of megabytes of previews on the same page load,
+        and fetching it once means opening an editor is instant instead of a
+        round trip -- which matters on a phone at the back of a workshop.
+        """
+        with self.rot.lock:
+            names = sorted({e.module for e in self.rot.all if e.kind == "py"})
+        return {name: ftsched_opts.schema(name, self.warn) for name in names}
 
     # -- exec segments ----------------------------------------------------
 
@@ -667,6 +784,14 @@ class Scheduler(object):
         self.builder = Builder(self.rot, args, args.lead, self.warn, self.black)
         self.builder.start(self._build_opening())
         self.show = Show(self.builder, args, self.blend, self.warn)
+
+        # Read every demo's options off its own parser now: the wall is
+        # already lit, and the builder is hammering the GIL working ahead
+        # anyway. Left lazy, this would be twenty-nine imports on the HTTP
+        # thread the first time anybody opened an editor -- on the one thread
+        # that is supposed to be incapable of stalling the frame loop.
+        ftsched_opts.prime(sorted({e.module for e in self.rot.all
+                                   if e.kind == "py"}), self.warn)
 
         # Everything above is startup: big, long-lived, acyclic. Move it out of
         # the generations the collector actually walks.
@@ -822,6 +947,18 @@ class Scheduler(object):
         with self.state_lock:
             self.state = state
 
+        # Persist on the same tick rather than only at shutdown. Which effects
+        # are switched off would survive a clean stop either way, but options
+        # somebody spent a few minutes getting right should also survive the
+        # wall being unplugged, which is how this machine usually goes down.
+        # It is a few hundred bytes and an atomic rename, only on a change.
+        if self.dirty.is_set():
+            self.dirty.clear()
+            try:
+                save_state(self.args.state_file, self.rot)
+            except OSError as exc:
+                self.warn("could not write %s (%s)" % (self.args.state_file, exc))
+
     def snapshot(self):
         with self.state_lock:
             return self.state
@@ -861,33 +998,55 @@ def add_arguments(ap):
 
 
 def load_state(path, entries, warn):
-    """Which effects are switched off survives a restart; nothing else does.
+    """What the panel changed survives a restart; nothing else does.
 
     The running order lives in the rotation file, which goes through review.
-    What somebody switched off from their phone in the shop does not, so it is
-    kept apart and can only ever toggle entries the rotation already lists.
+    What somebody switched off, or retyped the splitflap board to, from their
+    phone in the shop does not -- so it is kept apart, and can only ever touch
+    entries the rotation already lists, with options the demo already
+    declares. A rotation file that has been edited since simply drops whatever
+    no longer applies, with a line about it, rather than refusing to start.
     """
     if not path or not os.path.exists(path):
         return
     try:
         with open(path) as fh:
-            off = set(json.load(fh).get("disabled", []))
+            saved = json.load(fh)
+        off = set(saved.get("disabled", []))
+        tweaks = saved.get("options") or {}
+        if not isinstance(tweaks, dict):
+            raise ValueError("options is not an object")
     except Exception as exc:
         warn("ignoring unreadable state file %s (%s)" % (path, exc))
         return
+    restored = 0
     for e in entries:
         if e.name in off:
             e.enabled = False
-    if off:
-        warn("restored %d switched-off entries from %s" % (len(off), path))
+        want = tweaks.get(e.name)
+        if want is None or e.kind != "py":
+            continue
+        try:
+            e.options = ftsched_opts.check(e.module, want)
+            restored += 1
+        except ValueError as exc:
+            warn("ignoring saved options for %s (%s)" % (e.name, exc))
+    if off or restored:
+        warn("restored %d switched-off and %d reconfigured entries from %s"
+             % (len(off), restored, path))
 
 
 def save_state(path, rot):
     if not path:
         return
+    # Only what differs from the rotation file. An entry left alone should not
+    # get a copy of its settings frozen here, or a later edit to the rotation
+    # would be silently overridden by a state file nobody remembers writing.
+    state = {"disabled": [e.name for e in rot.all if not e.enabled],
+             "options": {e.name: e.options for e in rot.all if e.customised}}
     tmp = path + ".tmp"
     with open(tmp, "w") as fh:
-        json.dump({"disabled": [e.name for e in rot.all if not e.enabled]}, fh)
+        json.dump(state, fh, indent=1, sort_keys=True)
     os.replace(tmp, path)                    # never a half-written state file
 
 

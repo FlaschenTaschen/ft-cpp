@@ -73,6 +73,48 @@ so it rides the ordinary transition rather than cutting. What is switched off
 persists across restarts via `--state-file`; the running order itself does
 not, since that belongs in the rotation file, where it gets reviewed.
 
+**Settings.** The gear on a card opens an editor for that effect's own
+options — the splitflap board's messages, the number of fireflies, which
+palette `life` burns through.
+
+![the settings editor](screenshots/ftsched-editor.png)
+
+Nothing in the panel knows what a firefly is. Every demo already declares its
+options in `add_arguments()` with a type, a default, its choices and a line of
+help, so [`ftsched_opts.py`](ftsched_opts.py) reads that description back off
+the parser and `/api/schema` serves it; the page generates the form. Adding an
+option to a demo puts a control in the editor and there is nothing to keep in
+step — which is the only version of this that is still true in a year. It does
+mean walking `ArgumentParser._actions`, which is private, but there is no
+public introspection API and the alternative is parsing `--help`.
+
+Two shapes need fixing up on the way through: a flag *pair* like scroller's
+`--plasma` / `--no-plasma` is two actions writing one dest and collapses to
+one switch, and an option taking more than one value is left out rather than
+shown as a control that cannot round-trip it. Values are checked against the
+schema at the API — an unknown option or a value outside the declared choices
+comes back as a 400 with a sentence in it, rather than as a build that raises
+forty-five seconds later and switches the effect off.
+
+A change applies the next time that effect is *built*, since rebuilding
+underneath the one on screen would drop the wall for as long as the build
+takes. The exception is the effect on air, which is played again from the top
+so the change actually shows: retyping the splitflap board while looking at it
+has to do something, or the control reads as broken for the rest of the slot.
+Note that the `ms` figure on the card was measured with the settings the
+rotation shipped with — turn `--flies` up far enough and the pairing arithmetic
+below is no longer describing what is on the wall.
+
+Edits live in the `--state-file` alongside what is switched off, and for the
+same reason: what somebody retyped from their phone in the shop has not been
+through review, so it is kept apart from the rotation file and can only touch
+entries that file already lists. Only what differs is stored, so a later edit
+to the rotation is not silently overridden by a state file nobody remembers
+writing, and *Restore defaults* means the settings the entry was installed
+with rather than the demo's bare argparse defaults, which nobody chose. The
+file is rewritten within the second rather than at shutdown — this machine
+usually goes down by being unplugged.
+
 **Frame rate is per segment**, as it was when each demo ran as its own
 process: `boing` costs 2 ms and runs at 60, `water` costs 45.8 and runs at 20.
 Holding the whole show to one rate would make the cheap effects choppier than
@@ -174,13 +216,22 @@ An entry's `module` may differ from its `name` — the six pixel-art segments
 are one module with six sets of options — and previews are keyed by name.
 
 The API is a handful of verbs — `jump`, `toggle`, `next`, `pause`/`resume`,
-`restart` — POSTed as JSON to `/api/command`, with `/api/state` returning
-everything the page renders:
+`restart`, `configure` — POSTed as JSON to `/api/command`, with `/api/state`
+returning everything the page renders and `/api/schema` what each demo can be
+told to do:
 
 ```console
 $ curl -s localhost:8081/api/state | jq '.now, .health'
 $ curl -sX POST localhost:8081/api/command -d '{"op":"jump","index":12}'
+$ curl -s localhost:8081/api/schema | jq '.modules.fireflies[].label'
+$ curl -sX POST localhost:8081/api/command -d \
+    '{"op":"configure","name":"splitflap","options":{"colour":"amber"}}'
 ```
+
+`configure` carries the whole set of options for that entry rather than a
+patch, so an editor that has been open a while cannot half-apply against a
+rotation that has moved under it; `"options": null` puts the entry back to
+what the rotation file says.
 
 There is no authentication: it is a wall in a makerspace, and the worst anyone
 on the shop wifi can do is change what is on it. Bind it to the LAN or to a
@@ -190,6 +241,12 @@ Deployment is [`ftsched.service`](ftsched.service), which `Conflicts=` with
 the old `ft_demos.service` so the two can never both drive layer 0.
 
 <img src="screenshots/ftsched-ui-mobile.png" width="300" alt="the same panel on a phone">
+<img src="screenshots/ftsched-editor-mobile.png" width="300" alt="the settings editor on a phone">
+
+On a phone the editor is a sheet up from the bottom, where a thumb is, rather
+than a dialog floating in the middle of the screen. It is a `<dialog>`, so the
+backdrop, the focus trap, Esc and making everything behind it inert come from
+the browser instead of from three hundred lines here.
 
 ## ftindex
 
