@@ -130,16 +130,28 @@ ROTATION = [
     # in the middle of every transition into it.
     ("water",      45, 20, {"drops": 4}, 45.8, False),
     ("boing",      45, 60, {}, 2.0, False),
+    ("sneakers",   45, 30, {}, 8.3, False),
+    ("tron",       45, 30, {}, 16.1, False),
     ("headroom",   45, 30, {}, 16.0, False),
     ("laser",      45, 40, {}, 11.9, False),
+    ("trench",     45, 24, {}, 29.2, False),
     ("mario",      45, 60, {}, 6.4, False),
     ("goldengate", 45, 30, {}, 19.2, False),
     ("nyancat",    45, 60, {}, 8.2, False),
+    # esper's own cycle is 60 s -- eight camera moves ending on the mirror --
+    # so the slot is 70 like sunset's. Cut it at 45 and the show stops before
+    # the thing the whole sequence was zooming towards.
+    ("esper",      70, 30, {}, 10.9, False),
     ("printer",    45, 30, {}, 16.9, False),
     ("splitflap",  45, 30, {}, 6.2, False),    # a flap board has nothing to gain
     ("grove",      45, 30, {}, 18.7, False),
     ("daliclock",  45, 30, {}, 20.1, False),
     ("fire",       45, 30, {}, 18.8, False),
+    # fsn is solo for the same reason slime and fireflies are: 46.6 ms does not
+    # fit a 30 fps frame, let alone a blend with a neighbour. Its 20 fps is the
+    # water treatment -- a slow camera move over a static landscape is the one
+    # kind of effect that can give up frames without anyone noticing.
+    ("fsn",        45, 20, {}, 46.6, True),
     ("wheel",      45, 40, {}, 13.1, False),
     ("tunnel",     45, 40, {"palette": "ice"}, 13.5, False),
     ("fireworks",  45, 24, {"rate": 3}, 33.7, False),

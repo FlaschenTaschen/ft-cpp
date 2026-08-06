@@ -51,6 +51,12 @@ WARMUP = {
     # all -- it is full from the first frame -- but a couple of seconds gets
     # past the opening pose sweep into the stutter, which is the point of it.
     "headroom": 2.0, "wopr": 8.0, "defcon": 34.0,
+    # tron wants a board with ribbons already laid down rather than two dots at
+    # the spawns; sneakers wants to be mid-flight, which is the only part of it
+    # that is not just type sitting still; fsn wants to be about to pass through
+    # a gateway; trench wants the targeting computer already down; esper wants
+    # the last enhance, where the iron is what is on screen.
+    "tron": 16.0, "sneakers": 11.0, "fsn": 22.0, "trench": 20.0, "esper": 46.0,
     "sf-tree-bounce": 2.0, "space-invaders": 2.0, "pacman": 1.0, "sewing": 1.0,
 }
 

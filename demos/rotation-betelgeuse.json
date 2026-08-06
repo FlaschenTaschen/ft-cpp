@@ -120,12 +120,32 @@
     },
     {
       "kind": "py",
+      "name": "tron",
+      "seconds": 45.0,
+      "fps": 30,
+      "ms": 16.1,
+      "enabled": true,
+      "solo": false,
+      "options": {}
+    },
+    {
+      "kind": "py",
       "name": "headroom",
       "seconds": 45.0,
       "fps": 30,
       "ms": 16.0,
       "enabled": true,
       "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "sneakers",
+      "seconds": 45.0,
+      "fps": 30,
+      "ms": 8.3,
+      "enabled": true,
+      "solo": false,
+      "options": {}
     },
     {
       "kind": "py",
@@ -216,6 +236,16 @@
     },
     {
       "kind": "py",
+      "name": "trench",
+      "seconds": 45.0,
+      "fps": 24,
+      "ms": 29.2,
+      "enabled": true,
+      "solo": false,
+      "options": {}
+    },
+    {
+      "kind": "py",
       "name": "sf-tree",
       "module": "pixelart",
       "seconds": 30,
@@ -270,6 +300,16 @@
       "enabled": true,
       "ms": 9.9,
       "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "fsn",
+      "seconds": 45.0,
+      "fps": 20,
+      "ms": 46.6,
+      "enabled": true,
+      "solo": true,
+      "options": {}
     },
     {
       "kind": "py",
@@ -338,6 +378,16 @@
       "enabled": true,
       "ms": 11.9,
       "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "esper",
+      "seconds": 70.0,
+      "fps": 30,
+      "ms": 10.9,
+      "enabled": true,
+      "solo": false,
+      "options": {}
     },
     {
       "kind": "py",
