@@ -264,10 +264,14 @@ function paint(s) {
     if (document.activeElement !== c.box) c.box.checked = e.enabled;
     c.badge.textContent = live ? "ON AIR"
       : e.enabled ? "#" + (e.position + 1) : "off";
+    // exec entries are external programs, so they have no preview to bake and
+    // no render cost of ours to report. Saying so beats an unexplained gap.
     c.meta.innerHTML = [fmtTime(e.seconds),
+                        e.kind === "exec" ? "external" : "",
                         e.fps ? e.fps + " fps" : "",
                         e.ms ? e.ms.toFixed(1) + " ms" : "",
-                        e.solo ? '<span class="solo">solo</span>' : ""]
+                        e.solo && e.kind !== "exec"
+                          ? '<span class="solo">solo</span>' : ""]
                        .filter(Boolean).join(" &middot; ");
   }
 

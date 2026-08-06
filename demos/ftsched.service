@@ -27,6 +27,7 @@ WorkingDirectory=/home/pi/ft-cpp/demos
 ExecStart=/usr/bin/python3 /home/pi/ft-cpp/demos/ftsched.py \
     --host localhost --fps 20 --quiet \
     --listen 0.0.0.0:8081 \
+    --rotation /home/pi/ft-cpp/demos/rotation-betelgeuse.json \
     --state-file /var/lib/ftsched/state.json
 
 # The daemon clears the wall on SIGTERM, which takes about a tenth of a second.

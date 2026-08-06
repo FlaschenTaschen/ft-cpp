@@ -124,6 +124,24 @@ $ python3 ftsched.py --dump-rotation > rotation.json   # then edit, and:
 $ python3 ftsched.py --rotation rotation.json
 ```
 
+An `exec` entry names the layers it draws on (`clears`), which are blanked
+when its slot ends — the C++ tools set a layer with a timeout of their own, so
+a pacman would otherwise sit on top of the next effect for the rest of it. Our
+own layer is blanked when the child starts, or the frozen last frame of the
+outgoing effect shows through wherever the child's layer is black. `wait`
+says whether the child exiting ends the slot: true for the ones that run for
+their whole `-t`, false for `send-text`, which sets a layer and returns at
+once.
+
+[`rotation-betelgeuse.json`](rotation-betelgeuse.json) is the Sequoia Fabrica
+installation's running order and the worked example of all of this: 37
+entries, 24 minutes, mixing the numpy effects with the older segments that
+predate them — `sf-tree`, `space-invaders`, `pacman`, `full-moon` and a sewing
+animation through `grayscale`; `life` and `maze` as binaries; and three
+Arduino jokes through `send-text`. Site-specific things live there rather than
+in `ftsched.py`: the `/home/pi` paths, the marquee text and the split-flap
+messages.
+
 The API is a handful of verbs — `jump`, `toggle`, `next`, `pause`/`resume`,
 `restart` — POSTed as JSON to `/api/command`, with `/api/state` returning
 everything the page renders:
