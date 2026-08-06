@@ -148,7 +148,10 @@ def add_arguments(ap):
                     help="how often and how hard the picture tears, 0..1")
     ap.add_argument("--stutter", type=float, default=0.6,
                     help="how much the head holds, ratchets and jumps, 0..1")
-    ap.add_argument("--say", default="MAX HEADROOM",
+    # Not his name. A head is a tailspace's opposite in both halves, which is
+    # the sort of joke the character would have made about himself, and it
+    # keeps the wall from claiming to be someone it is not.
+    ap.add_argument("--say", default="MAX TAILSPACE",
                     help="stuttered caption along the bottom; empty for none")
     ap.add_argument("--side", default="right", choices=("left", "right"),
                     help="which side of the panel the head sits on")

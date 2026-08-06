@@ -591,9 +591,15 @@ unpigmented base with the room's magenta arriving through the fill and a hard
 specular carrying the surface; an earlier pass with the colour in the base
 instead came out as meat.
 
+The caption says MAX TAILSPACE, which is what a head and a room become when you
+take the opposite of both halves — the sort of joke the character would have
+made about himself, and it keeps the wall from claiming to be someone it is
+not. `--say` takes anything; the stutter is derived from whatever it is given.
+
 ```console
 $ python3 headroom.py --room acid --spin -1.5 --glitch 1
 $ python3 headroom.py --say "" --side left --no-scanlines
+$ python3 headroom.py --say BLIPVERT --room ice
 ```
 
 ### wopr
