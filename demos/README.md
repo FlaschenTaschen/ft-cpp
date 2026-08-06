@@ -681,13 +681,25 @@ of the exchange instead of a caption over it.
 Then it ends the way the film does. The impacts pile into a rising glare —
 baked as one float per 1/60 s, an exponential pulse per detonation summed and
 clipped, so it costs a scalar add — the board whites out, and everything goes
-dark. After a beat of nothing, the line comes up:
+dark. After a beat of nothing, a block caret appears and types the line out a
+character at a time:
 
 > THE ONLY WINNING MOVE IS NOT TO PLAY
 
-set in the same baked 3x5 pixel font as the readouts, scaled up and wrapped to
-whatever fits, so there is no font file to be missing on the Pi. Then the map
-fades back at DEFCON 5 and it starts again. The whiteout draws the board *under*
+It reads as the machine at the other end composing it rather than as a caption
+being switched on. The rhythm is a machine's — one interval wobbled five per
+cent, because dead-constant timing at this size reads as a progress bar filling
+and anything more uneven reads as a person at the keyboard, which is the wrong
+character — with a beat where a terminal would return the carriage and a longer
+one before the last word. The caret is solid while it writes and blinks only
+once the line is finished; a caret that blinks *through* the typing looks like a
+fault. The whole performance is capped at 55% of the phase and scales down
+uniformly if it will not fit, so a long `--message` or a short `--cycle` types
+faster rather than being cut off mid-word.
+
+It is set in the same baked 3x5 pixel font as the readouts, scaled up and
+wrapped to whatever fits, so there is no font file to be missing on the Pi. Then
+the map fades back at DEFCON 5 and it starts again. The whiteout draws the board *under*
 an additive white that dies as `(1-k)⁴`; a flat filled panel read as a fault
 rather than as a detonation.
 
