@@ -745,9 +745,14 @@ def build(args):
         last_txt = rows[last_row][0]
         gap_at = last_txt.rfind(" ")
 
-        base = 1.0 / TYPE_CPS
+        # `beat`, not `base`: `base` is the rasterised map a few dozen lines up
+        # and is read by every frame. Shadowing it here replaced the coastline
+        # with a float, and since the composite is a multiply that broadcasts,
+        # it did not raise -- it just quietly turned the map into a flat wash
+        # for the whole cycle.
+        beat = 1.0 / TYPE_CPS
         times, at_row, at_n = [], [], []
-        clock = base * 3.0               # a beat of bare caret before the first
+        clock = beat * 3.0               # a beat of bare caret before the first
         for r, (txt, _y0, _x0) in enumerate(rows):
             for k in range(len(txt) + 1):
                 times.append(clock)
@@ -755,16 +760,23 @@ def build(args):
                 at_n.append(k)
                 if k == len(txt):
                     break
-                step = base * (1.0 + TYPE_JITTER * (2.0 * rng.random() - 1.0))
+                # `wait`, not `step`: `step` is the half-second bucket width
+                # the war's schedule is indexed on, and render() reads it out
+                # of this same closure. Shadowing it here left every frame
+                # looking up `live[int(p / 0.133)]`, which runs off the end of
+                # the schedule a fifth of the way in and pins there -- so the
+                # board lost its live heads, its blooms and its labels, and the
+                # tally read its grand total for two thirds of the cycle.
+                wait = beat * (1.0 + TYPE_JITTER * (2.0 * rng.random() - 1.0))
                 if r == last_row and gap_at >= 0 and k == gap_at + 1:
-                    step += base * 4.0
-                clock += step
+                    wait += beat * 4.0
+                clock += wait
             if r < last_row:
-                clock += base * 5.0      # the carriage return
+                clock += beat * 5.0      # the carriage return
         # Scale the whole performance to fit its share of the phase. A long
         # --message or a short --cycle types faster rather than being cut off
         # in the middle of a word, which is the one failure this cannot have.
-        span = max(1e-6, times[-1] + base)
+        span = max(1e-6, times[-1] + beat)
         budget = msg_len * TYPE_SHARE
         if span > budget:
             k = budget / span
