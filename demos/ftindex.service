@@ -1,20 +1,26 @@
-# The wall's front door: a landing page on :80 pointing at the control panel.
-# Install on betelgeuse with:
+# The wall's front door: the web app on :80, with ftsched proxied at the root
+# and one page of its own at /about. Install on betelgeuse with:
 #
 #   sudo cp demos/ftindex.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now ftindex.service
 #
-# And, once HTTPS Certificates are enabled for the tailnet (admin console ->
-# DNS -> HTTPS Certificates), the same two pages over TLS on the tailnet only:
+# And, for the same thing over TLS to the tailnet only:
 #
-#   tailscale serve --bg --https=443  http://127.0.0.1:80
-#   tailscale serve --bg --https=8443 http://127.0.0.1:8081
+#   tailscale serve --bg --https=443 http://127.0.0.1:80
 #
-# Those persist across reboots on their own, so they are not a unit here.
+# One line, because everything is behind one port now: the panel, the API, the
+# previews and /about are all the same origin, so there is nothing left that
+# needs a second certificate or a second rule. It persists across reboots on
+# its own, so it is not a unit here.
+#
+# ftsched's own --listen stays on 8081 bound to 0.0.0.0 for now. Binding it to
+# 127.0.0.1 would make this the only way in, which is tidier; it is left
+# reachable so there is a way to drive the wall if this daemon is the thing
+# that is broken.
 
 [Unit]
-Description=Flaschen Taschen landing page
+Description=Flaschen Taschen web front door
 Documentation=https://github.com/FlaschenTaschen/ft-cpp
 After=network-online.target
 Wants=network-online.target
@@ -27,8 +33,7 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/ft-cpp/demos
 ExecStart=/usr/bin/python3 /home/pi/ft-cpp/demos/ftindex.py \
-    --listen 0.0.0.0:80 \
-    --panel-port 8081 --panel-tls-port 8443 \
+    --listen 0.0.0.0:80 --panel-port 8081 \
     --ft-port 1337 --width 320 --height 64
 
 # Ports below 1024 need the capability, not the user: this stays unprivileged

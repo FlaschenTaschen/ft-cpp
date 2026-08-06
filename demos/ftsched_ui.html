@@ -50,6 +50,8 @@ header {
 .bar .spacer { flex: 1 1 auto; }
 #health { color: var(--dim); font-size: 12px; }
 #health.warn { color: var(--live); }
+.about { color: var(--dim); font-size: 12px; text-decoration: none; }
+.about:hover { color: var(--text); }
 
 .now { margin-top: 10px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .now .title { font-size: 20px; font-weight: 650; }
@@ -146,6 +148,9 @@ button[aria-pressed="true"] { border-color: var(--live); color: var(--live); }
   <div class="bar">
     <h1>Flaschen Taschen</h1>
     <span class="spacer"></span>
+    <!-- Only present when something is fronting this at the root; served
+         standalone on :8081 the link is a 404, so it is not in the way. -->
+    <a class="about" href="/about">about</a>
     <span id="health" class="mono"></span>
   </div>
   <div class="now">

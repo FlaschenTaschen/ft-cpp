@@ -193,58 +193,65 @@ the old `ft_demos.service` so the two can never both drive layer 0.
 
 ## ftindex
 
-![the landing page](screenshots/ftindex.png)
+![the about page](screenshots/ftindex.png)
 
-The control panel is on port 8081, which is fine if you already know it and
-useless if you do not. Someone standing in front of the wall with a phone
-types the hostname and nothing else, gets a connection refused, and gives up.
-[`ftindex.py`](ftindex.py) serves that bare hostname: what the wall is, what
-is playing right now, a button to the panel, and how to push your own pixels
-at it.
+`ftsched` serves its panel on 8081, which is fine for a checkout and wrong for
+an installation: a port number is something you have to be *told*, and someone
+standing in front of the wall with a phone types the hostname and nothing
+else. [`ftindex.py`](ftindex.py) owns the root instead — it reverse-proxies
+`ftsched` at `/` and keeps one page of its own at `/about`, covering what the
+wall is and how to push your own pixels at it, which the panel has no business
+explaining.
 
 ```console
-$ python3 ftindex.py --listen 0.0.0.0:80
+$ python3 ftindex.py --listen 0.0.0.0:80 --panel-port 8081
 ```
+
+Everything therefore lives in **one origin on one port**. That is not only
+tidier: it is what lets the panel be served over TLS at all without the page
+having to know which of its links need a different scheme and port, and it
+means the same URLs work on the shop wifi and over the tailnet. An earlier
+version of this fronted the two separately and had to rewrite links based on
+`X-Forwarded-Proto`; proxying deleted that problem rather than solving it.
+
+```console
+$ tailscale serve --bg --https=443 http://127.0.0.1:80
+```
+
+One line, because there is nothing left that needs a second rule. `tailscale
+serve` terminates TLS with a real `ts.net` certificate, renews it, and exposes
+it to the tailnet only — three things this would otherwise have to get right
+by itself.
 
 It is a **separate daemon** from `ftsched` on purpose. The scheduler is
-driving the wall on a frame deadline, and the thing most likely to be hit by a
-room full of curious people should not share a process — let alone a GIL —
-with the render loop. This one holds no state and can be restarted at any
-time. It is also deliberately not `BindsTo=ftsched`: if the scheduler is down,
-this page is what says so, and it is what someone reaches for when the wall
-looks wrong — exactly when it must not have died alongside it.
+driving the wall on a frame deadline; the front door is the thing most likely
+to be hit by a room full of curious people, and it can be restarted, reloaded
+and got wrong without touching the render loop. It is also deliberately not
+`BindsTo=ftsched`: when the scheduler is down this answers **502 with a page
+that says so**, which is a great deal better than a connection refused on the
+one URL anybody knows.
 
-No JavaScript, and the page is rendered server-side, because it has to work
-first time on whatever phone walks into the room. The one dynamic part is a
-`now playing` line fetched from `ftsched` with a 0.6 s timeout: the page is
-worth more than the status line on it, so a wedged scheduler costs a blink
-rather than a spinner.
+Proxying is deliberately dumb — one upstream request per request, no
+connection reuse, no caching. The traffic is a 1 Hz poll per phone in the room
+plus a few dozen preview images the browser then caches for a day, and a pool
+would be more moving parts than that earns. Bodies are streamed rather than
+read whole, so a 260 kB preview never becomes resident.
+
+`/about` has no JavaScript and is rendered server-side, because it has to work
+first time on whatever phone walks in. Its one dynamic part is a `now playing`
+line fetched from `ftsched` with a 0.6 s timeout: the page is worth more than
+the status line on it, so a wedged scheduler costs a blink rather than a
+spinner.
 
 Binding `:80` does not need root. [`ftindex.service`](ftindex.service) runs as
-`pi` with `AmbientCapabilities=CAP_NET_BIND_SERVICE`, which grants exactly the
-one privilege — plus the usual `Protect*` sandbox, since this is the process
-most exposed to the room.
+`pi` with `AmbientCapabilities=CAP_NET_BIND_SERVICE` — exactly the one
+privilege — plus the usual `Protect*` sandbox, since this is the process most
+exposed to the room.
 
-**TLS is not handled here.** `tailscale serve` terminates it with a real
-`ts.net` certificate, renews it, and exposes it to the tailnet only, which is
-three things this would otherwise have to get right by itself:
-
-```console
-$ tailscale serve --bg --https=443  http://127.0.0.1:80     # this page
-$ tailscale serve --bg --https=8443 http://127.0.0.1:8081   # the panel
-```
-
-Those persist across reboots on their own. They need HTTPS Certificates
-enabled for the tailnet (admin console → DNS → HTTPS Certificates); until then
-`tailscale cert` answers *your Tailscale account does not support getting TLS
-certs* and only the plain HTTP side works.
-
-A link from an `https` page to an `http` one is not blocked the way a
-subresource would be, but it drops the reader out of TLS without saying so —
-so when the page is reached through the proxy (`X-Forwarded-Proto: https`) it
-points at the panel's tailnet port instead of its LAN one. `/panel` is a
-redirect rather than a hard-coded link, so exactly one place knows which port
-the panel is on.
+`ftsched`'s own `--listen` stays reachable on 8081 rather than being bound to
+loopback. Binding it inward would make the front door the only way in, which
+is tidier, and is exactly why it is not done: there has to be a way to drive
+the wall when the front door is the thing that is broken.
 
 ## The effects
 

@@ -1,31 +1,37 @@
 #!/usr/bin/env python3
-"""The front door: a landing page on :80 so people can find the wall.
+"""The front door: the wall's web app on :80, with the panel at the root.
 
-The control panel lives on port 8081, which is fine if you already know it and
-useless if you do not. Someone standing in front of a 320x64 LED wall with a
-phone will type the hostname and nothing else, get a connection refused, and
-give up. This serves that bare hostname: what the wall is, what is on it right
-now, a button to the panel, and how to push your own pixels at it.
+ftsched serves its control panel on 8081, which is fine for a checkout and
+wrong for an installation. A port number is something you have to be told, and
+someone standing in front of a 320x64 LED wall with a phone types the hostname
+and nothing else. So this owns the root: it reverse-proxies ftsched at `/`,
+and keeps one page of its own at `/about` -- what the wall is and how to push
+your own pixels at it, which the panel has no business explaining.
 
-It is deliberately a separate daemon from ftsched rather than another route
-inside it. ftsched drives the wall on a frame deadline, and the thing most
-likely to be hit by a room full of curious people should not share a process
--- let alone a GIL -- with the render loop. This one holds no state, can be
-restarted at any time, and if ftsched is down it says so instead of vanishing.
+Everything therefore lives in one origin on one port. That is not just tidier:
+it is what lets the panel be reached over TLS at all without the page having
+to know which of its links need a different port and scheme, and it means the
+same URLs work on the shop wifi and over the tailnet.
+
+It is a separate daemon from ftsched rather than another route inside it. The
+scheduler is driving the wall on a frame deadline; the front door is the thing
+most likely to be hit by a room full of curious people, and it can be
+restarted, reloaded and got wrong without touching the render loop. When
+ftsched is down this answers 502 with a page that says so, which is a great
+deal better than a connection refused on the one URL anybody knows.
+
+Proxying is deliberately dumb -- one upstream request per request, no
+connection reuse, no caching. The traffic is a 1 Hz poll per phone in the room
+plus a few dozen preview images that the browser then caches for a day, and a
+pool would be more moving parts than that earns.
 
 Binding :80 does not need root: the unit grants CAP_NET_BIND_SERVICE and runs
 as pi. See ftindex.service.
 
-TLS is not handled here either. `tailscale serve` terminates it with a real
-ts.net certificate, renews it, and exposes it only to the tailnet, which is
-three things this would otherwise have to get right on its own:
+TLS is not handled here. `tailscale serve` terminates it with a real ts.net
+certificate, renews it, and exposes it to the tailnet only:
 
-  tailscale serve --bg --https=443  http://127.0.0.1:80     # this page
-  tailscale serve --bg --https=8443 http://127.0.0.1:8081   # the panel
-
-That needs HTTPS Certificates enabled for the tailnet (admin console -> DNS).
-Until it is, `tailscale cert` returns "your Tailscale account does not support
-getting TLS certs" and the plain HTTP side is unaffected.
+  tailscale serve --bg --https=443 http://127.0.0.1:80
 
 Run:  python3 ftindex.py --listen 0.0.0.0:8080
       python3 ftindex.py --listen 0.0.0.0:80 --panel-port 8081
@@ -34,23 +40,37 @@ Run:  python3 ftindex.py --listen 0.0.0.0:8080
 import argparse
 import json
 import os
+import shutil
 import socket
 import sys
+import urllib.error
+import urllib.request
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE_FILE = os.path.join(_HERE, "ftindex.html")
 
-# How long to wait on ftsched when rendering "now playing". The page is worth
-# more than the status line on it, so this is short enough that a wedged
-# scheduler costs a blink rather than a spinner.
+# How long to wait on ftsched when rendering "now playing" on our own page.
+# That page is worth more than the status line on it, so this is short enough
+# that a wedged scheduler costs a blink rather than a spinner.
 STATE_TIMEOUT = 0.6
+
+# How long to wait when proxying. Longer, because this one is the answer
+# rather than a garnish on it, but still bounded: a stuck upstream must not
+# park a thread for ever.
+PROXY_TIMEOUT = 15
+
+MAX_BODY = 4096                              # ftsched's commands are tiny
+
+# Headers that describe one hop and must not be forwarded to the next.
+HOP_BY_HOP = frozenset((
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade"))
 
 
 def load_state(port):
     """ftsched's snapshot, or None if it is not answering."""
-    import urllib.request
     try:
         with urllib.request.urlopen("http://127.0.0.1:%d/api/state" % port,
                                     timeout=STATE_TIMEOUT) as fh:
@@ -88,76 +108,44 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-    # -- where the reader actually is -------------------------------------
-
-    def scheme(self):
-        """http, or https when tailscale serve is terminating TLS for us.
-
-        Trusting X-Forwarded-Proto is only safe because nothing else can set
-        it: the only proxy in front of this is tailscaled on the loopback, and
-        the header decides link text rather than anything security-relevant.
-        """
-        return "https" if self.headers.get(
-            "X-Forwarded-Proto", "").lower() == "https" else "http"
-
-    def host(self):
-        """The name the reader typed, without any port."""
-        host = self.headers.get("Host") or self.server.server_address[0]
-        if host.startswith("["):                         # [::1]:80
-            return host[1:host.index("]")] if "]" in host else host
-        return host.rsplit(":", 1)[0] if ":" in host else host
-
-    def panel_url(self):
-        """The panel, reachable the same way this page was.
-
-        A link from an https page to an http one is not blocked the way a
-        subresource would be, but it drops the reader out of TLS without
-        saying so. If we were reached over the tailnet, point at the panel's
-        tailnet port instead.
-        """
-        args = self.server.args
-        if self.scheme() == "https":
-            return "https://%s:%d/" % (self.host(), args.panel_tls_port)
-        return "http://%s:%d/" % (self.host(), args.panel_port)
-
     # -- routes -----------------------------------------------------------
 
     def do_HEAD(self):
         self.do_GET()
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0].rstrip("/") or "/"
-        if path == "/":
-            self._index()
-        elif path == "/panel":
-            # A short, typeable way to get to the panel, and what the button
-            # on the page uses -- so the redirect is the single place that
-            # knows which port the panel is on.
-            self._send(302, b"", "text/plain",
-                       {"Location": self.panel_url()})
+        path = self.path.split("?", 1)[0]
+        if path.rstrip("/") == "/about":
+            self._about()
         elif path == "/healthz":
+            # Ours, not ftsched's: this answers whether the front door is up,
+            # which is the question a supervisor is asking.
             self._send(200, "ok\n", "text/plain")
         else:
-            self._send(404, "no\n", "text/plain")
+            self._proxy()
 
-    def _index(self):
+    def do_POST(self):
+        self._proxy()
+
+    # -- the one page of our own -------------------------------------------
+
+    def _about(self):
         args = self.server.args
         state = load_state(args.panel_port)
-
         if state is None:
             status = ('<span class="dot bad"></span>'
                       "the scheduler is not answering")
         else:
             now = state.get("now") or {}
             health = state.get("health") or {}
-            live = state.get("rotation") and sum(
-                1 for r in state["rotation"] if r.get("enabled"))
+            live = sum(1 for r in state.get("rotation") or []
+                       if r.get("enabled"))
             status = (
                 '<span class="dot ok"></span>now playing '
                 '<b>%s</b> <span class="dim">&middot; %d of %d &middot; '
                 '%.0f fps</span>' % (
                     esc(now.get("name", "?")),
-                    (now.get("position", 0) or 0) + 1, live or 0,
+                    (now.get("position", 0) or 0) + 1, live,
                     health.get("actual_fps") or 0.0))
 
         try:
@@ -167,14 +155,96 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, "no page: %s\n" % exc, "text/plain")
             return
 
+        host = self.headers.get("Host") or socket.gethostname()
+        if host.startswith("["):                         # [::1]:80
+            host = host[1:host.index("]")] if "]" in host else host
+        elif ":" in host:
+            host = host.rsplit(":", 1)[0]
+
         page = (page
-                .replace("{{PANEL}}", esc(self.panel_url()))
                 .replace("{{STATUS}}", status)
-                .replace("{{HOST}}", esc(self.host()))
+                .replace("{{HOST}}", esc(host))
                 .replace("{{FTPORT}}", str(args.ft_port))
                 .replace("{{WIDTH}}", str(args.width))
                 .replace("{{HEIGHT}}", str(args.height)))
         self._send(200, page, "text/html; charset=utf-8")
+
+    # -- everything else is ftsched ----------------------------------------
+
+    def _proxy(self):
+        args = self.server.args
+        body = None
+        if self.command == "POST":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            if not 0 < n <= MAX_BODY:
+                self._send(400, "bad body length\n", "text/plain")
+                return
+            body = self.rfile.read(n)
+
+        req = urllib.request.Request(
+            "http://127.0.0.1:%d%s" % (args.panel_port, self.path),
+            data=body, method=self.command)
+        for name in ("Content-Type", "Accept", "Accept-Encoding",
+                     "If-None-Match", "If-Modified-Since"):
+            value = self.headers.get(name)
+            if value:
+                req.add_header(name, value)
+
+        try:
+            upstream = urllib.request.urlopen(req, timeout=PROXY_TIMEOUT)
+        except urllib.error.HTTPError as exc:
+            # 404 for a preview that is not baked, 400 for a bad command:
+            # ftsched's answer, not an error in the proxy. Pass it through.
+            upstream = exc
+        except Exception:
+            self._unreachable()
+            return
+
+        try:
+            self.send_response(upstream.status)
+            for key, value in upstream.headers.items():
+                if key.lower() not in HOP_BY_HOP:
+                    self.send_header(key, value)
+            self.end_headers()
+            if self.command != "HEAD":
+                # copyfileobj rather than read(): a preview is a couple of
+                # hundred kB and there is no reason for it to be resident.
+                shutil.copyfileobj(upstream, self.wfile, 64 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            pass                                         # someone closed a tab
+        finally:
+            upstream.close()
+
+    def _unreachable(self):
+        """ftsched is not there. Say which of the two is broken."""
+        self._send(502, PANEL_DOWN, "text/html; charset=utf-8")
+
+
+PANEL_DOWN = """<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Flaschen Taschen</title>
+<style>
+ body { background:#0b0d12; color:#e8ecf4; margin:0; padding:14vh 20px;
+        font:16px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+ main { max-width:32rem; margin:0 auto; }
+ h1 { font-size:22px; margin:0 0 10px; }
+ p { color:#8891a5; margin:0 0 14px; }
+ a { color:#ffb03a; }
+</style>
+<main>
+  <h1>The scheduler is not answering</h1>
+  <p>The wall's front door is up &mdash; you reached this page &mdash; but the
+     process that drives the panels is not responding, so there is nothing to
+     show you and probably nothing on the wall.</p>
+  <p>It restarts itself on failure, so this may clear on its own in a few
+     seconds. <a href="/">Try again</a>, or
+     <a href="/about">read about the wall</a> meanwhile.</p>
+</main>
+"""
 
 
 class Server(ThreadingHTTPServer):
@@ -207,8 +277,6 @@ def main():
     ap.add_argument("--listen", default="0.0.0.0:80")
     ap.add_argument("--panel-port", type=int, default=8081,
                     help="where ftsched's control panel is")
-    ap.add_argument("--panel-tls-port", type=int, default=8443,
-                    help="where tailscale serve exposes the panel over TLS")
     ap.add_argument("--ft-port", type=int, default=1337,
                     help="the wall's own UDP port, for the instructions")
     ap.add_argument("--width", type=int, default=320)
@@ -222,9 +290,9 @@ def main():
         sys.stderr.write("ftindex: cannot listen on %s:%d (%s)\n"
                          % (host, port, exc))
         raise SystemExit(1)
-    sys.stderr.write("ftindex: http://%s:%d/\n"
+    sys.stderr.write("ftindex: http://%s:%d/ (panel proxied from :%d)\n"
                      % (host if host not in ("", "0.0.0.0") else
-                        socket.gethostname(), port))
+                        socket.gethostname(), port, args.panel_port))
     sys.stderr.flush()
     try:
         server.serve_forever()
