@@ -20,10 +20,16 @@ restarted, reloaded and got wrong without touching the render loop. When
 ftsched is down this answers 502 with a page that says so, which is a great
 deal better than a connection refused on the one URL anybody knows.
 
-Proxying is deliberately dumb -- one upstream request per request, no
-connection reuse, no caching. The traffic is a 1 Hz poll per phone in the room
-plus a few dozen preview images that the browser then caches for a day, and a
-pool would be more moving parts than that earns.
+Preview images are the exception: they are served straight off disk here
+rather than proxied. They are the overwhelming majority of the bytes -- a cold
+page load is three dozen files and a couple of megabytes, against a 5 kB poll
+once a second -- and putting that burst through ftsched would run it through
+the GIL the render loop is waiting on, which is the whole thing keeping the
+front door in its own process was meant to avoid.
+
+What is left to proxy is small, so proxying is deliberately dumb: one upstream
+request per request, no connection reuse, no caching. A pool would be more
+moving parts than a 1 Hz poll per phone in the room earns.
 
 Binding :80 does not need root: the unit grants CAP_NET_BIND_SERVICE and runs
 as pi. See ftindex.service.
@@ -40,6 +46,7 @@ Run:  python3 ftindex.py --listen 0.0.0.0:8080
 import argparse
 import json
 import os
+import posixpath
 import shutil
 import socket
 import sys
@@ -62,6 +69,10 @@ STATE_TIMEOUT = 0.6
 PROXY_TIMEOUT = 15
 
 MAX_BODY = 4096                              # ftsched's commands are tiny
+
+# Previews are animated WebP; GIF stays servable so a checkout that has not
+# re-baked still shows pictures rather than nothing.
+PREVIEW_TYPES = {".webp": "image/webp", ".gif": "image/gif"}
 
 # Headers that describe one hop and must not be forwarded to the next.
 HOP_BY_HOP = frozenset((
@@ -121,8 +132,47 @@ class Handler(BaseHTTPRequestHandler):
             # Ours, not ftsched's: this answers whether the front door is up,
             # which is the question a supervisor is asking.
             self._send(200, "ok\n", "text/plain")
+        elif path.startswith("/previews/"):
+            self._preview(path[len("/previews/"):])
         else:
             self._proxy()
+
+    def _preview(self, name):
+        """Served from disk here rather than proxied.
+
+        Previews are the overwhelming majority of the bytes -- a cold page
+        load is three dozen files and a couple of megabytes, against a 5 kB
+        poll once a second -- and ftsched is the process holding a frame
+        deadline. Proxying them would put that whole burst through the GIL the
+        render loop is waiting on, which is precisely what keeping the front
+        door in its own process was meant to avoid. They are static files
+        sitting in the same checkout, so this reads them directly and ftsched
+        never hears about it. It also means the wall's pictures still load
+        when the scheduler is down.
+        """
+        name = posixpath.basename(posixpath.normpath("/" + name))
+        ctype = PREVIEW_TYPES.get(os.path.splitext(name)[1].lower())
+        if not ctype:
+            self._send(404, "no\n", "text/plain")
+            return
+        try:
+            with open(os.path.join(self.server.args.previews, name), "rb") as fh:
+                data = fh.read()
+        except OSError:
+            self._send(404, "no preview\n", "text/plain")
+            return
+        # Immutable in practice: a preview only changes when its demo does,
+        # and then the daemon has been restarted anyway.
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=86400")
+        self.end_headers()
+        if self.command != "HEAD":
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def do_POST(self):
         self._proxy()
@@ -277,6 +327,10 @@ def main():
     ap.add_argument("--listen", default="0.0.0.0:80")
     ap.add_argument("--panel-port", type=int, default=8081,
                     help="where ftsched's control panel is")
+    ap.add_argument("--previews",
+                    default=os.path.join(_HERE, "previews"),
+                    help="directory of <name>.webp previews, served from here "
+                         "rather than proxied")
     ap.add_argument("--ft-port", type=int, default=1337,
                     help="the wall's own UDP port, for the instructions")
     ap.add_argument("--width", type=int, default=320)

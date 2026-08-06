@@ -231,11 +231,20 @@ and got wrong without touching the render loop. It is also deliberately not
 that says so**, which is a great deal better than a connection refused on the
 one URL anybody knows.
 
-Proxying is deliberately dumb — one upstream request per request, no
-connection reuse, no caching. The traffic is a 1 Hz poll per phone in the room
-plus a few dozen preview images the browser then caches for a day, and a pool
-would be more moving parts than that earns. Bodies are streamed rather than
-read whole, so a 260 kB preview never becomes resident.
+**Previews are served from disk here, not proxied.** They are the
+overwhelming majority of the bytes — a cold page load is three dozen files and
+a couple of megabytes, against a 5 kB poll once a second — and putting that
+burst through `ftsched` would run it through the GIL the render loop is
+waiting on, which is the whole thing keeping the front door in its own process
+was meant to avoid. They are static files in the same checkout, so it reads
+them directly and `ftsched` never hears about it; the wall's pictures also
+keep loading when the scheduler is down.
+
+What is left to proxy is small, so proxying is deliberately dumb: one upstream
+request per request, no connection reuse, no caching. Bodies stream rather
+than being read whole, and upstream 4xx pass through rather than being
+swallowed — a 400 for a malformed command is `ftsched`'s answer, not an error
+in the proxy.
 
 `/about` has no JavaScript and is rendered server-side, because it has to work
 first time on whatever phone walks in. Its one dynamic part is a `now playing`
