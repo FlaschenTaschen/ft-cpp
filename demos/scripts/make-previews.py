@@ -26,10 +26,12 @@ import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEMOS = os.path.dirname(_HERE)
+sys.path.insert(0, _HERE)
 sys.path.insert(0, _DEMOS)
 
 import demoscene as ds
 import ftsched
+import preview_gif
 
 # Demos whose opening is not representative: a warmup is rendered and thrown
 # away so the preview shows the effect in its steady state rather than its
@@ -79,25 +81,8 @@ def bake(name, options, frames, fps, warmup, width, height):
 
 
 def save(shots, path, fps):
-    # A shared adaptive palette across the whole clip: quantising each frame
-    # on its own makes the colours crawl between frames, which on a gradient
-    # -- and most of these are gradients -- is more distracting than banding.
-    from PIL import Image
-    tall = Image.new("RGB", (shots[0].width, shots[0].height * len(shots)))
-    for n, im in enumerate(shots):
-        tall.paste(im, (0, n * shots[0].height))
-    pal = tall.quantize(colors=128, method=Image.MEDIANCUT)
-    h = shots[0].height
-    quantised = [pal.crop((0, n * h, shots[0].width, (n + 1) * h))
-                 for n in range(len(shots))]
-    tmp = path + ".tmp"
-    # Written to a temp name and renamed, so a killed run cannot leave a
-    # truncated GIF that the UI would then serve forever. The name has no
-    # useful extension, hence the explicit format.
-    quantised[0].save(tmp, format="GIF", save_all=True,
-                      append_images=quantised[1:],
-                      duration=int(round(1000.0 / fps)), loop=0, optimize=True)
-    os.replace(tmp, path)
+    """See preview_gif: one palette across the clip, written atomically."""
+    return preview_gif.save(shots, path, fps)
 
 
 def main():
