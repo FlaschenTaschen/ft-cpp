@@ -717,6 +717,223 @@ $ python3 defcon.py --cycle 30 --speed 1.5      # hurry the war along
 $ python3 defcon.py --message ""                # no epigram, longer war
 ```
 
+### tron
+
+![tron](screenshots/tron.png)
+
+Light cycles, seen from above. Of everything in this directory this is the one
+whose source material was already the right shape: the game grid in the film is
+a wide rectangle viewed from overhead, which is what the wall is.
+
+Two bikes leave solid ribbons behind them and turn only at right angles, on a
+faint grid inside a lit border. The bike is hotter than its trail and carries a
+lead spark, so the eye can find the live end of a line that is otherwise
+uniform. When one is boxed in it **derezzes**: the panel flashes, the bike
+bursts into blocks that scatter and fade over about 0.4 s, and then its ribbon
+dissolves from the far end with a bright front running along it, like a fuse
+burning backwards. Four rounds fit in the cycle.
+
+The arena is a small integer array — at the default `--grid 2` it is 160x32
+cells — scaled up with `np.repeat`, so a frame is a couple of array ops rather
+than any drawing. Sim state is a pure function of the step index, which is what
+keeps `render()` a pure function of `t`: a forward jump is just extra steps, and
+a backward jump reseeds and replays. That matters because ftsched starts a demo
+at t=0 having built it earlier, and the preview baker steps it at its own rate.
+
+Two things worth saying plainly. **The riders rarely trap themselves.** On a
+5120-cell board, two bikes with a 20-cell lookahead can dodge almost forever, so
+most rounds end at a deadline where the steering comes off the rider with the
+shortest way out and it is pointed at a wall. It is a real collision with a
+visible obstacle, but the timing is scheduled rather than emergent. And **more
+riders is not the fix on this hardware**: `--riders 3` and `--riders 4` are
+genuinely better to watch, but they measure 44 and 40 ms a frame on a Pi 3
+against the 33.3 that 30 fps allows, so they will not hold frame rate on the
+wall. They are there for a faster host.
+
+```console
+$ python3 tron.py --riders 4 --colour neon      # better, but not on a Pi 3
+$ python3 tron.py --grid 4 --speed 18           # chunkier, legible further away
+$ python3 tron.py --rounds 2 --derez 2
+```
+
+### sneakers
+
+![sneakers](screenshots/sneakers.png)
+
+SETEC ASTRONOMY, rearranging itself into TOO MANY SECRETS. Both are the same
+fourteen letters — A C E E M N O O R S S T T Y — and the demo is that fact,
+animated: every letter is a tile that lifts off the line, flies to its position
+in the other phrase along a staggered arc, overshoots and settles.
+
+A single line of large type is the best possible use of a 5:1 panel. Fourteen
+glyphs across 320 px is 18 px of advance each, which at the default scale is
+15 px of ink and 27 px tall — big enough to read from across a room, which is
+the entire point. If both phrases are not legible the joke does not exist.
+
+It opens the way the film's box does, with the letters churning through garbage
+before they lock, and it holds each phrase long enough to actually be read. The
+palette is amber phosphor with a scanline texture, deliberately unlike `wopr`
+and `console`, which already own green.
+
+**The anagram is checked at build time.** A supplied `--words` pair that is not
+actually an anagram is refused with the difference spelled out, because the
+failure mode otherwise is letters quietly appearing and vanishing mid-flight,
+which looks like a rendering bug rather than a typo. The glyphs come from a 6x9
+bitmap font in this file, baked at 16 brightness levels and two scanline
+phases; a frame is a background copy and at most 28 tile blits, and there is no
+font file to be missing on the Pi.
+
+Honest about one thing: through the middle half-second of a crossing, fourteen
+letters permuting inside a 64 px band do clump near the centre. In motion it
+reads as objects crossing each other; a still frame makes it look worse than it
+is. `--arc 1.5` buys more vertical separation if you want it.
+
+```console
+$ python3 sneakers.py --colour green --arc 1.5
+$ python3 sneakers.py --words 'ELVIS|LIVES;DORMITORY|DIRTY ROOM'
+$ python3 sneakers.py --hold 3 --speed 1.6       # impatient version
+```
+
+### trench
+
+![trench](screenshots/trench.png)
+
+The Death Star trench, and the targeting computer that swings down over it.
+
+Two walls, a floor and a strip of sky converging on a vanishing point, studded
+with panel lines, hatches and lit greebles rushing past. The panel's shape does
+the work: a 5:1 letterbox with the vanishing point centred puts the four
+convergence lines in an X across the frame and leaves the near walls as big
+slabs sweeping the outer thirds, which is what sells the speed.
+
+Then the computer comes down — a dim amber bezel with hot orange reticle
+brackets, the trench still visible through the middle — the two blips close on
+the centre over about fifteen seconds, the lock verticals blink, and it swings
+back up and out of frame. The run finishes without it, the torpedoes go in, and
+the exhaust port blooms the whole panel white-amber before it all resets.
+
+The geometry is a baked per-pixel inverse map, the rectangular cousin of what
+`tunnel.py` does with a circle: `build()` resolves every pixel's ray against
+four planes and stores one flat texture index plus a fog scalar, each surface is
+written into the atlas twice back to back, and flying forward is `idx + off*W`
+followed by a single `np.take`. Roll is thirteen baked angles picked per frame
+and camera shake is a slice offset into padded maps, so neither costs anything.
+Three passes over the frame in total.
+
+It is deliberately dark. The far field falls off steeply because a gentler
+curve left an aliased speckle cloud crawling around the vanishing point; the
+price is that the middle third of the panel is nearly black for most of the run,
+which on an LED wall reads as depth rather than as absence.
+
+```console
+$ python3 trench.py --no-computer --speed 1.4
+$ python3 trench.py --greebles 2 --shake 1.5
+$ python3 trench.py --cycle 30                  # one quick run
+```
+
+### fsn
+
+![fsn](screenshots/fsn.png)
+
+"It's a UNIX system. I know this." The 3D file system navigator from Jurassic
+Park — real software, SGI's `fsn` — as a flythrough over a dark plane of
+extruded boxes.
+
+Directories are gateways you fly *through*, with their path name above them and
+ranks of small file blocks on plinths either side; walkways and a converging
+ground grid tie the level together. The camera runs forward, banks, and passes
+through one gateway after another, and the moment the pillars swell past the
+edges of the panel with the next level visible through the opening is the best
+thing in it. Labels are what make it say *filesystem* — the geometry alone reads
+as structure but not as a directory tree, so `/HOME`, `/ETC`, `/PROC` and the
+rest are doing real work rather than decorating.
+
+The camera only translates, never rotates, so every box stays axis-aligned in
+camera space and each visible face is a quad with straight screen-space edges;
+bank is a shear folded into the projection. Boxes are pre-sorted by centre z and
+tiled over three periods, so painter's order is a `bisect` slice with no
+per-frame sort, and the ground, sky and clear are baked per bank angle so the
+background is a memcpy.
+
+**This one is where the Pi stopped being an abstraction.** It first measured
+65 ms a frame there against 1.1 ms on a desktop, and the fix was not fewer
+pixels but fewer numpy calls: on this hardware a numpy call inside real code
+costs about 80 µs almost regardless of array size. Reducing the drawn content
+was worth about 1.5 ms; restructuring was worth 30. Three traps, all worth
+knowing before writing another of these:
+
+- `np.clip` under numpy 1.19 costs **0.4 ms per call at any size** — a
+  deprecation shim. Eight a frame is 3 ms of nothing.
+- A **`float32` scalar** costs 50 µs per arithmetic operation against 1.6 µs
+  for a plain Python float. All scalar maths here is `math`, not numpy.
+- `int_array + 0.5` silently promotes to float64, so a scanline pass written
+  the obvious way runs in double precision.
+
+Even so it lands around 45 ms p95 on the wall's Pi rather than the 20 that was
+wanted, so it runs at 20 fps in the rotation rather than 30. It is a slow camera
+move over a mostly static landscape and it does not miss the extra frames;
+dropping them unpredictably would have looked worse than not asking for them.
+
+Worth knowing when reading any of these numbers: betelgeuse currently reports
+`throttled=0x50005` with its ARM clock pinned at 600 MHz instead of 1200, which
+is under-voltage, not heat. Every timing here was taken in that state, so they
+are all roughly a factor of two pessimistic against a Pi 3 on a healthy supply.
+
+```console
+$ python3 fsn.py --caption --density 1.2
+$ python3 fsn.py --depth 6 --speed 1.5
+$ python3 fsn.py --no-labels --no-grid       # just the landscape
+```
+
+### esper
+
+![esper](screenshots/esper.png)
+
+The Esper machine from Blade Runner: a photograph, enhanced to death. Deckard
+talks to a screen — ENHANCE 224 176, PAN RIGHT, STOP, TRACK 45 LEFT — and the
+machine walks a reticle over a still and dives into it, until a detail that was
+never visible in the original fills the frame.
+
+That sequence is almost the only thing in cinema built for a 5:1 letterbox. The
+picture is a wide still, the commands run along the bottom in one thin line, and
+the whole drama is a crop rectangle moving. **The blockiness is the aesthetic
+rather than a compromise** — every move lands frankly pixelated and resolves in
+three visible steps, 8x8 blocks to 4x4 to 2x2 to full detail, which is what the
+film's enhancements do and what a 320 px panel does anyway.
+
+**The photograph is generated, not baked.** `build()` draws a 1280x256 room in
+numpy: deep shadow, a sodium lamp, venetian blind bars across the left wall, a
+doorway with a figure in it, a chair, and a mirror on the far wall reflecting a
+workbench. It is detailed at several scales on purpose, because a source with
+detail at only one scale gives you one good zoom and then nothing — the
+wallpaper stripes are 8 px, the chair slats 3 px.
+
+On that bench is a soldering iron, 48 px end to end with a tip two pixels
+across, and it is the payoff. At the opening framing the whole bench is a smudge
+and the tip is a single warm pixel indistinguishable from a highlight on the
+glass; at the last enhance the tip is the brightest thing on the panel and the
+thing it is attached to is unmistakable. The cord trailing off the handle and
+the tapered hot tip are what carry the read. The V-cradle it rests in is at the
+edge of what survives at this size — what comes across is that the iron is
+propped in *something*, which is enough; a coiled-wire holder was tried first
+and read as nothing at all, because at five pixels a turn a helix is not a
+shape.
+
+A zoom is one gather. The source and its three mosaic levels are stored flat as
+(N, 3) uint8, and a frame computes 320 column and 64 row indices from the
+current crop and does a single `np.take`. No resampling, no PIL, no float in the
+per-frame path. Scanlines are free: the source is stored twice, once dimmed, and
+odd rows index the second copy.
+
+Eight moves, about 60 s, so it wants a `seconds: 70` slot — a cut before the
+mirror is a cycle with no ending in it.
+
+```console
+$ python3 esper.py --colour amber               # monochrome Esper CRT
+$ python3 esper.py --cycle 40 --speed 1.2       # the short version
+$ python3 esper.py --no-commands                # just the photograph moving
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
