@@ -45,6 +45,12 @@ WARMUP = {
     # structure; maze needs the carve to be well under way rather than a
     # black screen; console needs a few lines on screen before it reads.
     "life": 12.0, "maze": 6.0, "console": 5.0,
+    # wopr wants a few lines of dialogue on screen; defcon wants the exchange
+    # well under way, since its own opening is deliberately sparse and its
+    # ending is a caption rather than the effect. headroom needs no warmup at
+    # all -- it is full from the first frame -- but a couple of seconds gets
+    # past the opening pose sweep into the stutter, which is the point of it.
+    "headroom": 2.0, "wopr": 8.0, "defcon": 34.0,
     "sf-tree-bounce": 2.0, "space-invaders": 2.0, "pacman": 1.0, "sewing": 1.0,
 }
 

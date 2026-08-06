@@ -116,6 +116,11 @@ ROTATION = [
     # (name, seconds, fps, {options}, ms_p95, solo)
     ("starfield",  45, 50, {}, 9.9, False),
     ("sunset",     70, 24, {}, 30.0, False),   # 58 s is one full lap of the drive
+    ("wopr",       45, 30, {}, 6.0, False),
+    # defcon's own cycle is 80 s and the slot matches it, so the transition out
+    # lands on the quiet board it resets to rather than mid-exchange -- which is
+    # also the cheapest part of its cycle to be paying for a blend during.
+    ("defcon",     80, 30, {}, 25.7, False),
     ("knit",       45, 60, {}, 4.5, False),
     ("karl",       45, 24, {}, 32.7, False),
     ("cycle",      45, 60, {}, 2.2, False),
@@ -125,6 +130,7 @@ ROTATION = [
     # in the middle of every transition into it.
     ("water",      45, 20, {"drops": 4}, 45.8, False),
     ("boing",      45, 60, {}, 2.0, False),
+    ("headroom",   45, 30, {}, 16.0, False),
     ("laser",      45, 40, {}, 11.9, False),
     ("mario",      45, 60, {}, 6.4, False),
     ("goldengate", 45, 30, {}, 19.2, False),

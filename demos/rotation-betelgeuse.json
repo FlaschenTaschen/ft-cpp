@@ -24,6 +24,24 @@
     },
     {
       "kind": "py",
+      "name": "wopr",
+      "seconds": 45.0,
+      "fps": 30,
+      "ms": 6.0,
+      "enabled": true,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "defcon",
+      "seconds": 80.0,
+      "fps": 30,
+      "ms": 25.7,
+      "enabled": true,
+      "solo": false
+    },
+    {
+      "kind": "py",
       "name": "boing",
       "seconds": 45.0,
       "fps": 60,
@@ -98,6 +116,15 @@
       "fps": 60,
       "enabled": true,
       "ms": 4.5,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "headroom",
+      "seconds": 45.0,
+      "fps": 30,
+      "ms": 16.0,
+      "enabled": true,
       "solo": false
     },
     {
