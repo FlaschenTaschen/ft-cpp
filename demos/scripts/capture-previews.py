@@ -36,7 +36,7 @@ _DEMOS = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
 sys.path.insert(0, _DEMOS)
 
-import preview_gif
+import preview_anim
 
 # Layers, as the server has them: 0 at the bottom, the topmost non-black pixel
 # wins. The C++ tools in the rotation draw on 2 and 5.
@@ -233,7 +233,7 @@ def main():
     total = 0
     try:
         for entry in execs:
-            path = os.path.join(args.out, entry["name"] + ".gif")
+            path = os.path.join(args.out, entry["name"] + preview_anim.SUFFIX)
             if os.path.exists(path) and not args.force:
                 print("  %-16s have it" % entry["name"])
                 continue
@@ -250,7 +250,7 @@ def main():
                 print("  %-16s *** NOTHING DRAWN (%d packets)"
                       % (entry["name"], packets))
                 continue
-            size = preview_gif.save(shots, path, args.fps)
+            size = preview_anim.save(shots, path, args.fps)
             total += size
             print("  %-16s %6.1f kB  %2d frames  %5.1fs  %d packets"
                   % (entry["name"], size / 1024.0, len(shots),

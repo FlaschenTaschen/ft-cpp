@@ -215,7 +215,7 @@ function buildCards(rotation) {
     const img = document.createElement("img");
     img.loading = "lazy";
     img.alt = e.name + " preview";
-    img.src = "/previews/" + encodeURIComponent(e.name) + ".gif";
+    img.src = "/previews/" + encodeURIComponent(e.name) + ".webp";
     const missing = document.createElement("div");
     missing.className = "missing";
     missing.textContent = "no preview";

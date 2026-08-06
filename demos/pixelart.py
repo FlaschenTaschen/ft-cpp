@@ -2,11 +2,11 @@
 """Sprite sheets from pixelart/, the way the C `grayscale` tool played them.
 
 The Sequoia Fabrica wall has been showing this artwork for a couple of years:
-a sequoia, space invaders, pacman and his ghosts, a full moon, and an
-eight-frame sewing machine. It was played by an external binary reading JSON
-files of hex strings, which meant it could never blend into the effect either
-side of it, could never be previewed, and had to be pointed at absolute paths
-on one Pi. This is the same artwork as a demoscene module.
+a sequoia, space invaders, pacman and his ghosts, and an eight-frame sewing
+machine. It was played by an external binary reading JSON files of hex
+strings, which meant it could never blend into the effect either side of it,
+could never be previewed, and had to be pointed at absolute paths on one Pi.
+This is the same artwork as a demoscene module.
 
 Two ways to lay a set of sprites out, which is the distinction the old tool
 drew with its -D flag:
@@ -17,10 +17,16 @@ drew with its -D flag:
   sequence   the sprites are frames of one animation, played in place. The
              sewing machine and pacman's chomp.
 
-and three ways to place the result: centred, bouncing, or scrolling. Bounce is
-the one worth having on a 320x64 panel -- a strip wider than the screen that
-turns around at each end reads as deliberate, where a strip that wraps reads
-as a seam going past.
+and a third that is both at once. --poses names alternative sheets of the same
+slots, so a strip can hold four different sprites and still animate, every one
+of them changing pose together. That is how an arcade cabinet did it and it is
+what stops a row of invaders reading as a printed banner.
+
+Then three ways to place the result: centred, bouncing, or scrolling. Bounce
+is the one worth having on a 320x64 panel -- a strip wider than the screen
+that turns around at each end reads as deliberate, where a strip that wraps
+reads as a seam going past. A scroll needs --travel to match whichever way the
+artwork faces.
 
 Colour is either the artwork's own, or its brightness mapped through a palette.
 The old tool defaulted to the latter and that is how the sequoia has always
@@ -28,7 +34,10 @@ looked on this wall: a rainbow-shaded tree, not a green one.
 
 Run:  python3 pixelart.py --art sf-tree --mode center
       python3 pixelart.py --art sew1..8 --sequence-ms 120
-      python3 pixelart.py --art pacman-32x32-1..6 --sequence-ms 50 --reverse
+      python3 pixelart.py --art pacman-32x32-1..6 --sequence-ms 50 \
+              --mode scroll --travel right
+      python3 pixelart.py --art space-invaders-1..4 --poses ,b \
+              --sequence-ms 500 --mode bounce
       python3 pixelart.py --art "sf-tree*7" --mode bounce --render palette
 """
 
@@ -116,9 +125,8 @@ def has_colour(sprite):
 
     It matters because half this set is each. sf-tree, the invaders and the
     sewing machine are drawn in greys -- which is what the old tool's name is
-    about -- and have to be given a colour or they are a white smudge. The
-    moon, pacman and the ghosts are full-colour images that only want drawing
-    as they are.
+    about -- and have to be given a colour or they are a white smudge. Pacman
+    and the ghosts are full-colour images that only want drawing as they are.
     """
     span = sprite.max(axis=2).astype(np.int16) - sprite.min(axis=2)
     return float(span.mean()) > 8.0
@@ -148,6 +156,10 @@ def add_arguments(ap):
     ap.add_argument("--sequence-ms", type=float, default=0.0,
                     help="ms per frame to play the sprites as an animation "
                          "(0 joins them side by side into one strip instead)")
+    ap.add_argument("--poses", default="",
+                    help="suffixes making each sprite a pose of the same slot, "
+                         "e.g. ',b' plays name then nameb. The strip keeps its "
+                         "layout and every sprite in it changes pose together")
     ap.add_argument("--reverse", action="store_true",
                     help="play the sequence backwards")
     ap.add_argument("--render", default="auto",
@@ -163,6 +175,9 @@ def add_arguments(ap):
                     choices=sorted(TRANSPARENT), help="colour meaning 'not drawn'")
     ap.add_argument("--speed", type=float, default=26.0,
                     help="px/sec for bounce and scroll")
+    ap.add_argument("--travel", default="right", choices=("left", "right"),
+                    help="which way a scroll goes; a sprite that faces one way "
+                         "has to travel that way or it moonwalks")
     ap.add_argument("--gap", type=int, default=0,
                     help="blank columns between sprites in a strip")
     ap.add_argument("--background", default="000000",
@@ -172,14 +187,24 @@ def add_arguments(ap):
 def build(args):
     W, H = args.width, args.height
 
-    names = expand(args.art)
-    if not names:
+    slots = expand(args.art)
+    if not slots:
         raise SystemExit("pixelart: --art named nothing")
-    sprites = [load(n) for n in names]
+
+    # A pose is a whole alternative sheet: the same slots in the same order,
+    # every name carrying a suffix. The invaders need this because they are a
+    # strip *and* an animation at once -- four different sprites side by side,
+    # all changing pose together -- which neither "strip" nor "sequence" on
+    # its own can express.
+    poses = args.poses.split(",") if args.poses else [""]
+    if len(poses) > 1 and args.sequence_ms <= 0:
+        raise SystemExit("pixelart: --poses needs --sequence-ms to play them")
+    sheets = [[load(n + suffix.strip()) for n in slots] for suffix in poses]
 
     key = TRANSPARENT[args.transparent]
     painted = (args.render == "palette" or
-               (args.render == "auto" and not any(has_colour(s) for s in sprites)))
+               (args.render == "auto" and
+                not any(has_colour(s) for sheet in sheets for s in sheet)))
     palette = ds.named_palette(args.palette, 256).astype(f32) if painted else None
 
     def prepare(sprite):
@@ -190,7 +215,7 @@ def build(args):
             return intensity(sprite, mask, key), mask
         return sprite.astype(np.uint8), mask
 
-    prepared = [prepare(s) for s in sprites]
+    sheets = [[prepare(s) for s in sheet] for sheet in sheets]
 
     # Scale anything taller than the panel down to fit, by whole pixels where
     # possible: these are pixel art and a fractional resample turns crisp
@@ -202,30 +227,45 @@ def build(args):
         step = -(-art.shape[0] // H)                 # ceil, so 1 means "fits"
         return art[::step, ::step], mask[::step, ::step]
 
-    prepared = [fit(art, mask) for art, mask in prepared]
+    sheets = [[fit(art, mask) for art, mask in sheet] for sheet in sheets]
 
-    sequence = args.sequence_ms > 0
-    if sequence:
-        frames = prepared[::-1] if args.reverse else prepared
-    else:
-        # One wide strip. Frames are stacked side by side on a common height,
-        # each sitting on the bottom of the strip rather than the top -- these
-        # sprites are objects standing on the ground, and top-aligning a short
-        # one leaves it hovering.
-        gap = max(0, args.gap)
-        height = max(r.shape[0] for r, _ in prepared)
-        width = sum(r.shape[1] for r, _ in prepared) + gap * (len(prepared) - 1)
+    # Slot geometry is measured across every pose, not within one, so a pose
+    # whose artwork happens to be a pixel narrower cannot shuffle the sprites
+    # to its right. The layout is fixed; only the pixels in it change.
+    gap = max(0, args.gap)
+    height = max(r.shape[0] for sheet in sheets for r, _ in sheet)
+    widths = [max(sheet[i][0].shape[1] for sheet in sheets)
+              for i in range(len(slots))]
+    width = sum(widths) + gap * (len(slots) - 1)
+
+    def strip(sheet):
+        """The slots joined side by side into one wide image.
+
+        Each sprite sits on the bottom of the strip rather than the top --
+        these are objects standing on the ground, and top-aligning a short one
+        leaves it hovering.
+        """
         shape = (height, width) if painted else (height, width, 3)
-        art = np.zeros(shape, prepared[0][0].dtype)
+        art = np.zeros(shape, sheet[0][0].dtype)
         mask = np.zeros((height, width), bool)
         x = 0
-        for r, m in prepared:
+        for (r, m), slot_w in zip(sheet, widths):
             h, w = r.shape[:2]
             y = height - h
             art[y:y + h, x:x + w] = r
             mask[y:y + h, x:x + w] = m
-            x += w + gap
-        frames = [(art, mask)]
+            x += slot_w + gap
+        return art, mask
+
+    sequence = args.sequence_ms > 0
+    if len(poses) > 1:
+        frames = [strip(sheet) for sheet in sheets]        # a strip per pose
+    elif sequence:
+        frames = sheets[0]                                 # sprites are frames
+    else:
+        frames = [strip(sheets[0])]                        # one still strip
+    if args.reverse:
+        frames = frames[::-1]
 
     bg = int(args.background.lstrip("#"), 16)
     background = np.array((bg >> 16 & 255, bg >> 8 & 255, bg & 255), np.uint8)
@@ -242,7 +282,10 @@ def build(args):
             return slack
         if args.mode == "scroll":
             # Always travels; a strip narrower than the panel still crosses it.
-            return W - int(t * args.speed) % (width + W)
+            # The lap is width + W either way: the strip has to clear the far
+            # edge completely before it comes back on at the near one.
+            step = int(t * args.speed) % (width + W)
+            return (step - width) if args.travel == "right" else (W - step)
         # bounce: a triangle wave over the travel, which is the slack if the
         # strip fits and the overhang if it does not. abs() of a sawtooth
         # rather than a sine, so the speed is constant and only the turn is

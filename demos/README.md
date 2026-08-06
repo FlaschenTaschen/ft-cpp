@@ -101,8 +101,8 @@ of a 45 s slot is a much better failure than a stall at the transition. Moving
 builds to a subprocess would remove it, at the cost of shipping the built
 tables back across a pipe.
 
-**Previews.** The GIFs in `previews/` are 16 frames at 8 fps, committed rather
-than generated at runtime: baking two dozen of them costs every demo's
+**Previews.** The clips in `previews/` are 16 frames at 8 fps, committed rather
+than generated at runtime: baking three dozen of them costs every demo's
 `build()` and would steal the CPU the render loop needs. Rebuild after
 changing a demo:
 
@@ -111,7 +111,20 @@ $ python3 scripts/make-previews.py --force knit sunset
 ```
 
 A still cannot show what most of these are — `splitflap` is *entirely* motion,
-and `slime` looks like noise until it moves.
+and `slime` looks like noise until it moves. (Two are stills anyway:
+`pacman-ghosts` does not move, and `daliclock` does not change within a two
+second window.)
+
+They are **animated WebP**, losslessly encoded, having been GIFs. GIF was
+costing about a third more for pixels that were also worse: its compression is
+weak enough that the palette had to be cut to 128 colours to keep the files
+reasonable, which is real damage on a wall whose whole business is gradients.
+Lossless WebP compresses a paletted image so much better that 256 colours in
+WebP still come out smaller than 128 in GIF — measured over this rotation, 32%
+smaller and strictly closer to what the demo rendered, with `fire`, `slime`,
+`metaballs`, `nyancat` and `pacman` landing exact. Lossy WebP was measured too
+and is the wrong tool: 320×64 of dithered noise and hard pixel edges is the
+worst case for a DCT, and at a quality matching GIF's error it saved nothing.
 
 **Segments** are `py` (a demoscene module, rendered in-process) or `exec` (an
 external command that draws on the wall itself, for the C++ tools). The
@@ -134,7 +147,7 @@ their whole `-t`, false for `send-text`, which sets a layer and returns at
 once.
 
 [`rotation-betelgeuse.json`](rotation-betelgeuse.json) is the Sequoia Fabrica
-installation's running order: 35 entries, 25 minutes, and **all of them
+installation's running order: 34 entries, 25 minutes, and **all of them
 native**. The segments that predate the numpy demos were ported rather than
 shelled out to — the pixel art into [`pixelart.py`](#pixelart), the C
 binaries into [`life.py`](#life) and [`maze.py`](#maze), the `send-text` jokes
@@ -146,11 +159,19 @@ built to be; nothing in this rotation needs it.
 Site-specific text lives in that file rather than in `ftsched.py`: the marquee
 and the split-flap messages. The running order itself is generated to satisfy
 the pairing rule above and currently has **zero** transitions paced down; note
-that the most expensive effect sits last before `slime`, because a `solo`
-neighbour cuts and that edge is therefore free.
+that a `solo` neighbour cuts, so the edges either side of `slime` and
+`fireflies` are free and an expensive effect can sit there.
 
-An entry's `module` may differ from its `name` — the seven pixel-art segments
-are one module with seven sets of options — and previews are keyed by name.
+The order is genuinely load-bearing, and it is easy to break by accident:
+removing one cheap segment leaves the two expensive ones that were either side
+of it adjacent, which is how dropping `full-moon` put `goldengate` next to
+`fire` and paced that transition down to 21 fps from 30. The floor is set by
+`water`, which at 45.8 ms cannot fit its own 20 fps frame even alone, so its
+two edges run at 80% however the rest is arranged; the order is chosen to
+bring everything else up to at least that.
+
+An entry's `module` may differ from its `name` — the six pixel-art segments
+are one module with six sets of options — and previews are keyed by name.
 
 The API is a handful of verbs — `jump`, `toggle`, `next`, `pause`/`resume`,
 `restart` — POSTed as JSON to `/api/command`, with `/api/state` returning
@@ -746,9 +767,9 @@ $ python3 splitflap.py --messages "SEQUOIA FABRICA|OPEN HOUSE {TIME};MAKE THINGS
 ![pixelart](screenshots/pixelart.png)
 
 The sprite sheets in [`pixelart/`](pixelart) — a sequoia, space invaders,
-pacman and his ghosts, a full moon, an eight-frame sewing machine — which have
-been on the Sequoia Fabrica wall for years, played until now by an external C
-binary reading JSON files of hex strings.
+pacman and his ghosts, an eight-frame sewing machine — which have been on the
+Sequoia Fabrica wall for years, played until now by an external C binary
+reading JSON files of hex strings.
 
 Sprites are either joined side by side into one strip and moved as a unit
 (four invaders in a row, seven sequoias marching past) or played in place as
@@ -756,16 +777,31 @@ frames of an animation (the sewing machine, pacman's chomp), and placed
 centred, bouncing or scrolling. `--art` takes ranges, so `sew1..8` and
 `sf-tree*7` mean what they look like.
 
+`--poses` is both at once: it names alternative sheets of the same slots, so a
+strip can hold four different sprites and still animate, all of them changing
+pose together. That is how an arcade cabinet did it, and it is the difference
+between a row of invaders and a printed banner of invaders. The second pose is
+baked from the first by
+[`scripts/make-invader-poses.py`](scripts/make-invader-poses.py), which moves
+the limbs rather than redrawing them — the bodies stay byte-identical, so
+nothing in the outline flickers when the pose changes.
+
+A scroll needs `--travel` pointed whichever way the artwork faces, or pacman
+chomps his way backwards across the wall.
+
 Half the set is greyscale line art and half is full colour, so `--render auto`
-checks for chroma: the moon and the ghosts are drawn as they are, and the tree
-and the invaders are painted from a palette. The palette is laid **across** the
-strip rather than mapped from brightness — brightness to hue turns every
-antialiased edge into a different colour and the shape into confetti, which is
-exactly what the first attempt at this looked like.
+checks for chroma: the ghosts are drawn as they are, and the tree and the
+invaders are painted from a palette. The palette is laid **across** the strip
+rather than mapped from brightness — brightness to hue turns every antialiased
+edge into a different colour and the shape into confetti, which is exactly what
+the first attempt at this looked like.
 
 ```console
 $ python3 pixelart.py --art sf-tree --mode center
-$ python3 pixelart.py --art pacman-32x32-1..6 --sequence-ms 50 --reverse
+$ python3 pixelart.py --art pacman-32x32-1..6 --sequence-ms 50 \
+      --mode scroll --travel right
+$ python3 pixelart.py --art space-invaders-1..4 --poses ,b --sequence-ms 500 \
+      --mode bounce
 ```
 
 ### life

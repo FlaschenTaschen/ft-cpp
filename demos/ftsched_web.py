@@ -37,6 +37,11 @@ OPS = {"jump": ("index",), "toggle": ("name", "on"), "all": ("on",),
 
 MAX_BODY = 4096
 
+# Previews are animated WebP. GIF stays servable because a checkout that has
+# not re-baked its previews should still show them rather than show nothing,
+# and it costs one dict entry.
+PREVIEW_TYPES = {".webp": "image/webp", ".gif": "image/gif"}
+
 
 class Handler(BaseHTTPRequestHandler):
 
@@ -86,7 +91,8 @@ class Handler(BaseHTTPRequestHandler):
         # posixpath.basename after normpath: the previews directory is flat,
         # so anything with structure in it is someone probing, not a client.
         name = posixpath.basename(posixpath.normpath("/" + name))
-        if not name.endswith(".gif"):
+        ctype = PREVIEW_TYPES.get(os.path.splitext(name)[1].lower())
+        if not ctype:
             self._send(404, "no", "text/plain")
             return
         path = os.path.join(self.server.previews, name)
@@ -94,7 +100,7 @@ class Handler(BaseHTTPRequestHandler):
             with open(path, "rb") as fh:
                 # Immutable in practice: a preview only changes when its demo
                 # does, and then the daemon has been restarted anyway.
-                self._send(200, fh.read(), "image/gif", "max-age=86400")
+                self._send(200, fh.read(), ctype, "max-age=86400")
         except OSError:
             self._send(404, "no preview", "text/plain")
 

@@ -73,10 +73,10 @@
       "options": {
         "art": "pacman-32x32-1..6",
         "sequence_ms": 50.0,
-        "reverse": true,
         "mode": "scroll",
         "speed": 34.0,
-        "transparent": "black"
+        "transparent": "black",
+        "travel": "right"
       }
     },
     {
@@ -144,30 +144,21 @@
     },
     {
       "kind": "py",
-      "name": "life",
-      "seconds": 45,
-      "fps": 30,
-      "ms": 19.3,
+      "name": "sunset",
+      "seconds": 70.0,
+      "fps": 24,
       "enabled": true,
-      "solo": false,
-      "options": {
-        "density": 6,
-        "palette": "fire"
-      }
+      "ms": 30.0,
+      "solo": false
     },
     {
       "kind": "py",
-      "name": "sf-tree",
-      "module": "pixelart",
-      "seconds": 30,
-      "fps": 30,
-      "ms": 7.0,
+      "name": "nyancat",
+      "seconds": 45.0,
+      "fps": 60,
       "enabled": true,
-      "solo": false,
-      "options": {
-        "art": "sf-tree",
-        "mode": "center"
-      }
+      "ms": 8.2,
+      "solo": false
     },
     {
       "kind": "py",
@@ -186,35 +177,28 @@
     },
     {
       "kind": "py",
-      "name": "nyancat",
+      "name": "tunnel",
       "seconds": 45.0,
-      "fps": 60,
+      "fps": 40,
       "enabled": true,
-      "ms": 8.2,
-      "solo": false
+      "ms": 13.5,
+      "solo": false,
+      "options": {
+        "palette": "ice"
+      }
     },
     {
       "kind": "py",
-      "name": "goldengate",
-      "seconds": 45.0,
-      "fps": 30,
-      "enabled": true,
-      "ms": 19.2,
-      "solo": false
-    },
-    {
-      "kind": "py",
-      "name": "full-moon",
+      "name": "sf-tree",
       "module": "pixelart",
-      "seconds": 25,
-      "fps": 24,
-      "ms": 9.1,
+      "seconds": 30,
+      "fps": 30,
+      "ms": 7.0,
       "enabled": true,
       "solo": false,
       "options": {
-        "art": "full-moon",
-        "mode": "center",
-        "transparent": "black"
+        "art": "sf-tree",
+        "mode": "center"
       }
     },
     {
@@ -272,7 +256,9 @@
       "options": {
         "art": "space-invaders-1..4",
         "mode": "bounce",
-        "speed": 18.0
+        "speed": 18.0,
+        "poses": ",b",
+        "sequence_ms": 500.0
       }
     },
     {
@@ -310,15 +296,12 @@
     },
     {
       "kind": "py",
-      "name": "tunnel",
+      "name": "wheel",
       "seconds": 45.0,
       "fps": 40,
       "enabled": true,
-      "ms": 13.5,
-      "solo": false,
-      "options": {
-        "palette": "ice"
-      }
+      "ms": 13.1,
+      "solo": false
     },
     {
       "kind": "py",
@@ -331,12 +314,16 @@
     },
     {
       "kind": "py",
-      "name": "wheel",
-      "seconds": 45.0,
-      "fps": 40,
+      "name": "life",
+      "seconds": 45,
+      "fps": 30,
+      "ms": 19.3,
       "enabled": true,
-      "ms": 13.1,
-      "solo": false
+      "solo": false,
+      "options": {
+        "density": 6,
+        "palette": "fire"
+      }
     },
     {
       "kind": "py",
@@ -352,11 +339,11 @@
     },
     {
       "kind": "py",
-      "name": "sunset",
-      "seconds": 70.0,
-      "fps": 24,
+      "name": "goldengate",
+      "seconds": 45.0,
+      "fps": 30,
       "enabled": true,
-      "ms": 30.0,
+      "ms": 19.2,
       "solo": false
     },
     {
@@ -391,7 +378,7 @@
       "solo": false,
       "options": {
         "plasma_frames": 60,
-        "text": "SEQUOIA FABRICA  ✦  FLASCHENTASCHEN LIVES  ✦  320 X 64 OF PURE PHOTONS  ✦     "
+        "text": "SEQUOIA FABRICA  \u2726  FLASCHENTASCHEN LIVES  \u2726  320 X 64 OF PURE PHOTONS  \u2726     "
       }
     }
   ]

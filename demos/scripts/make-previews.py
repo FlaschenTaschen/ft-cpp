@@ -31,7 +31,7 @@ sys.path.insert(0, _DEMOS)
 
 import demoscene as ds
 import ftsched
-import preview_gif
+import preview_anim
 
 # Demos whose opening is not representative: a warmup is rendered and thrown
 # away so the preview shows the effect in its steady state rather than its
@@ -86,8 +86,8 @@ def bake(module_name, options, frames, fps, warmup, width, height):
 
 
 def save(shots, path, fps):
-    """See preview_gif: one palette across the clip, written atomically."""
-    return preview_gif.save(shots, path, fps)
+    """See preview_anim: one palette across the clip, written atomically."""
+    return preview_anim.save(shots, path, fps)
 
 
 def main():
@@ -113,7 +113,7 @@ def main():
 
     total = 0
     for name in names:
-        path = os.path.join(args.out, name + ".gif")
+        path = os.path.join(args.out, name + preview_anim.SUFFIX)
         if os.path.exists(path) and not args.force:
             print("%-12s have it" % name)
             continue

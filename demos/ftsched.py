@@ -857,7 +857,7 @@ def add_arguments(ap):
     ap.add_argument("--lead", type=int, default=2,
                     help="segments to build ahead of the playhead")
     ap.add_argument("--previews", default=os.path.join(_HERE, "previews"),
-                    help="directory of <name>.gif previews for the web UI")
+                    help="directory of <name>.webp previews for the web UI")
 
 
 def load_state(path, entries, warn):
