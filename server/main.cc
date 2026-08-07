@@ -108,6 +108,8 @@ static int usage(const char *progname) {
             "\t-d                  : Become daemon\n"
 #endif
             "\t--layer-timeout <sec>: Layer timeout: clearing after non-activity (Default: 15)\n"
+            "\t--control-socket <path>: Accept display-wide commands (brightness,\n"
+            "\t                      blank, wipe) on this unix socket. Off by default.\n"
 #ifdef __linux__
             "\t--mdns <enabled|disabled> : Enable/disable mDNS service discovery (Default: disabled)\n"
             "\t--mdns-name <name>  : Display name for mDNS announcement (Default: \"FlaschenTaschen\")\n"
@@ -124,6 +126,7 @@ int main(int argc, char *argv[]) {
     int width = 45;
     int height = 35;
     int layer_timeout = 15;
+    std::string control_socket("");
     bool mdns_enabled = false;
     std::string mdns_name("FlaschenTaschen");
     std::string mdns_url("");
@@ -153,6 +156,7 @@ int main(int argc, char *argv[]) {
     enum LongOptionsOnly {
         OPT_LAYER_TIMEOUT = 1002,
         OPT_HD_TERMINAL = 1003,
+        OPT_CONTROL_SOCKET = 1004,
 #ifdef __linux__
         OPT_MDNS_ENABLED = 1010,
         OPT_MDNS_NAME = 1011,
@@ -166,6 +170,7 @@ int main(int argc, char *argv[]) {
         { "daemon",             no_argument,       NULL, 'd'},
 #endif
         { "layer-timeout",      required_argument, NULL,  OPT_LAYER_TIMEOUT },
+        { "control-socket",     required_argument, NULL,  OPT_CONTROL_SOCKET },
 #if FT_BACKEND == 2
         { "hd-terminal",        no_argument,       NULL,  OPT_HD_TERMINAL },
 #endif
@@ -193,6 +198,9 @@ int main(int argc, char *argv[]) {
 #endif
         case OPT_LAYER_TIMEOUT:
             layer_timeout = atoi(optarg);
+            break;
+        case OPT_CONTROL_SOCKET:
+            control_socket = optarg;
             break;
 #if FT_BACKEND == 2
         case OPT_HD_TERMINAL:
@@ -261,6 +269,13 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Same reasoning, plus one of its own: the socket has to be created while
+    // we are still root, because setting its permissions is impossible after
+    // the privilege drop further down.
+    if (!control_socket.empty() && !control_server_init(control_socket.c_str())) {
+        return 1;
+    }
+
 #ifdef __linux__
     ServiceDiscoveryThread* discovery_thread = NULL;
 #endif
@@ -295,6 +310,12 @@ int main(int argc, char *argv[]) {
         // that work here, so writers never wait on the panel refresh.
         display->StartDisplayThread(&mutex);
 
+        // After the display thread: brightness changes are applied by it, so
+        // there is no point accepting commands before it can act on them.
+        if (!control_socket.empty()) {
+            control_server_run_thread(&layered_display, display, &mutex);
+        }
+
 #ifdef __linux__
         // Create service discovery thread if enabled (after hardware is initialized
         // so we have the correct width/height from the display)
@@ -325,6 +346,9 @@ int main(int argc, char *argv[]) {
 #endif
 
         udp_server_run_blocking(&layered_display, &mutex);  // last server blocks.
+
+        // Before the display: it holds pointers to both of them.
+        control_server_shutdown();
 
         // Stop presenting before the layer GC thread and the display go away.
         display->StopDisplayThread();
