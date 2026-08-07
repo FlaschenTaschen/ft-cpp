@@ -36,6 +36,11 @@ payload describing every component at once, so this arrives as one device
 rather than eight loose entities. Note `default_entity_id` and not `object_id`
 -- the latter was removed in HA 2026.4, and its replacement includes the domain
 in the value.
+
+One payload for everything also means one mistake loses everything, and it does
+so quietly: a config HA refuses produces no entity, no repair issue, and one
+line in a log nobody is reading. See the comment above `base_availability` for
+the way that has already happened once.
 """
 
 import json
@@ -315,9 +320,26 @@ class MqttBridge(object):
             device["mdl"] = "HUB75 video wall, %dx%d" % (display["width"],
                                                          display["height"])
 
-        sched_availability = [
+        # Availability is stated on every component and never in the shared
+        # block, which looks like needless repetition and is not. Home
+        # Assistant's _merge_common_device_options() copies availability_topic
+        # from the shared block into any component that does not set it, and
+        # its schema declares availability_topic and availability as a
+        # vol.Exclusive group -- so a shared availability_topic plus a
+        # per-component availability list produces both keys in one config and
+        # HA rejects it. Not just that component: this is one payload, so every
+        # component in it is dropped, silently, with a single line in HA's log.
+        #
+        # Stating it per component makes the merge a no-op and the payload
+        # immune to which form the shared block happens to use.
+        base_availability = [
             {"topic": self.t("status"), "payload_available": "online",
              "payload_not_available": "offline"},
+        ]
+        # Anything driven by ftsched needs the scheduler up as well, so it goes
+        # unavailable on its own while the light stays live. availability_mode
+        # "all" is what makes it both topics rather than either.
+        sched_availability = base_availability + [
             {"topic": self.t("sched/status"), "payload_available": "online",
              "payload_not_available": "offline"},
         ]
@@ -340,6 +362,7 @@ class MqttBridge(object):
                 "brightness_value_template": "{{ value_json.bri }}",
                 "brightness_scale": 255,
                 "icon": "mdi:wall",
+                "availability": base_availability,
             },
             "playing": {
                 "p": "switch",
@@ -389,6 +412,9 @@ class MqttBridge(object):
                 "command_topic": self.t("set/wipe"),
                 "payload_press": "PRESS",
                 "icon": "mdi:eraser",
+                # Wiping is a compositor operation, so this one outlives the
+                # scheduler along with the light.
+                "availability": base_availability,
             },
             "now_playing": {
                 "p": "sensor",
@@ -429,9 +455,6 @@ class MqttBridge(object):
             "o": {"name": "ftctl",
                   "url": "https://github.com/FlaschenTaschen/ft-cpp"},
             "state_topic": self.t("state"),
-            "availability_topic": self.t("status"),
-            "payload_available": "online",
-            "payload_not_available": "offline",
             "qos": 1,
             "cmps": components,
         }
