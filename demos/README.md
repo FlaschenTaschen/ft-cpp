@@ -934,6 +934,93 @@ $ python3 esper.py --cycle 40 --speed 1.2       # the short version
 $ python3 esper.py --no-commands                # just the photograph moving
 ```
 
+### chladni
+
+![chladni](screenshots/chladni.png)
+
+Cymatics: sand on a vibrating plate. Drive a metal plate at one of its
+resonances and the sand does not scatter, it migrates — grains sitting on an
+antinode are thrown up and land somewhere else, grains that happen to land on a
+nodal line, where the plate is not moving, stay put — and within a few seconds
+the sand has drawn the mode shape. Then the drive frequency sweeps to the next
+resonance, the figure comes apart and reassembles into a different one, and
+that reorganisation is the part worth watching.
+
+**The panel's shape is the reason to do this rather than a compromise to work
+around.** The Chladni figures everyone has seen are square-plate ones, where
+the two modes that superpose are `(n,m)` and `(m,n)` — degenerate because the
+plate is symmetric, which is where the familiar `cos(nπx)cos(mπy) −
+cos(mπx)cos(nπy)` comes from. On a 5:1 plate that symmetry is gone: swapping
+the indices no longer gives the same frequency, so a mode cannot be paired with
+its own transpose. What you can do instead is solve for the pairs that *are*
+degenerate — with `a` half-waves along the long axis and `b` across, the
+frequency goes as `(a/5)² + b²`, so `(a,b)` and `(c,d)` are degenerate exactly
+when `a² + 25b² = c² + 25d²`. Whole families fall out of that: (10,1)/(5,2),
+(20,2)/(10,4), (25,4)/(20,5). Because the two members of a pair can have wildly
+different aspect — one term fine along the plate and coarse across it, the
+other the reverse — the figures are far more varied than the square-plate ones,
+and the six in the rotation were chosen by rendering every exactly-degenerate
+pair up to 30 half-waves and looking at them. The rejects were mostly too fine:
+six half-waves across 64 rows is a 10 px feature that turns to hash the moment
+grains land on it.
+
+Everything per mode is precomputed, and that is what makes it affordable. Each
+term is an outer product of two 1-D cosine tables, so a whole field is two
+outer products and a subtract; `build()` bakes the field, `|s|` and both
+components of its gradient for all six modes as flat arrays. A frame during a
+hold — about two thirds of the run — is then two gathers and a `bincount` over
+a few thousand grains, a decay and a palette lookup, with no trigonometry in it
+at all. Only during a sweep is a field derived, and even then it is a dozen
+whole-array passes over 20480 pixels.
+
+Two details carry the look. The random kick a grain gets is **proportional to
+the local amplitude**, so a grain on a node is in dead air and stops while a
+grain on an antinode is being thrown around; a constant jitter blurs every
+nodal line into a band and nothing ever settles. But amplitude-proportional
+noise alone goes to *zero* on a node, so a grain that arrives stops dead in the
+pixel it landed in, forever — legible, but the lines come out dotted with the
+gaps frozen in place for the whole hold, which reads as a dashed line somebody
+drew. A small amplitude-independent `--creep` keeps settled grains shuffling
+*along* the trough they are in (across it they are pushed straight back), and
+that is the difference between the two; `--creep 0` is the control, and it
+drops the lit fraction of the panel by more than half.
+
+The sweep interpolates the two mode *fields* and takes the gradient of the
+blend, rather than blending the two precomputed gradient fields. The nodal set
+of a superposition is a real curve that moves continuously from one figure to
+the other and the grains can follow it; averaging two gradients instead gives
+every grain two places to go at once and it splits the difference into a smear.
+Jitter is boosted through the middle of a sweep, since a plate driven between
+two resonances is mostly just shaking — which is what makes a transition read
+as the sand coming apart and re-settling rather than as a crossfade between two
+pictures.
+
+Grains land in a deposit buffer with a half-life in *seconds*, so a nodal line
+builds up bright instead of flickering as a few loose pixels, and the amount
+deposited is derived from the decay rather than given — `--gain` means "grains
+per pixel that read as white" and stays true whatever `--grains` and
+`--persist` are set to. Under the sand, `--plate` paints the vibration itself
+very dimly, so an antinode is dark steel rather than dead black and the figure
+sits on something.
+
+It costs **0.20 ms a frame on a desktop** (p95, 320x64, 5000 grains, 30 fps),
+of which the sweep frames are the expensive ones; `build()` is 21 ms. It has
+**not** been measured on a Pi 3, and that is the number that decides what frame
+rate it should run at. The whole cycle is six modes at 5.5 s held plus 2.5 s
+sweeping, so 48 s, which fits a normal slot with the wrap landing on a mode
+change like any other. `build()` settles the sand for a hundred steps before
+returning, so frame zero is a figure rather than a cloud.
+
+The mode set is picked for a 5:1 plate; it renders correctly at any
+`--width`/`--height`, but on a squarer canvas the same six figures are simply
+squashed rather than replaced by ones suited to that aspect.
+
+```console
+$ python3 chladni.py --palette copper --grains 8000
+$ python3 chladni.py --hold 3 --sweep 4         # more sweeping, less sitting
+$ python3 chladni.py --creep 0 --plate 0        # the frozen, dotted control
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
