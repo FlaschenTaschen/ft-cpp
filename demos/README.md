@@ -934,6 +934,64 @@ $ python3 esper.py --cycle 40 --speed 1.2       # the short version
 $ python3 esper.py --no-commands                # just the photograph moving
 ```
 
+### sort
+
+![sort](screenshots/sort.png)
+
+Sorting algorithms racing, one array element per column. Quicksort, radix,
+bubble and heapsort take it in turns on the same 320 values, each announced by
+a small label, each ending in the classic ascending confirmation sweep.
+
+**The panel is the array.** 320 columns is a 320-element array with a pixel to
+spare, so nothing is aggregated, scaled or sampled away — every comparison the
+algorithm makes is a column you can point at, and a wide letterbox is the
+shape an array wants to be anyway. Value is carried twice, by bar height and
+by hue, because 64 rows is only six bits of height and from across a room a
+field of one-pixel bars is a texture rather than a signal. Hue is what
+actually reads at this size: a shuffled array is confetti, a nearly-sorted one
+is visibly a rainbow with a few wrong stripes in it, and a partition settling
+appears as a smooth ramp inside a region of noise. `--style band` drops the
+bars for a full-height colour field, which carries further down a big room but
+lights every pixel flat out and loses the contrast that makes the working
+region stand out; the bars are the default for that reason.
+
+**The steps had to be decoupled from the frames.** Bubble sort on 320 elements
+is 50,830 steps, quicksort 4,580 and radix 960; one step per frame would run
+bubble for half an hour and be done with radix in half a minute, and there is
+no single rate that suits both. So each algorithm is run to completion in
+`build()` and recorded as a flat trace — at most two writes and a highlight
+state per step — and `render()` plays back as many steps as its segment's
+clock says have happened. Each algorithm then takes the same wall time
+whatever it costs, and the visible *rate* is what tells you how much work it
+is doing: quicksort strolls, bubble sort tears along and still only just gets
+there. Recording rather than stepping live is also what keeps `render()` a
+function of `t`, since the trace is replayed from a per-segment snapshot: a
+restart at t=0, a seek or a different frame rate all land on the same picture.
+
+Without the working state drawn there is nothing here but bars moving, so the
+pivot and partition bounds, radix's write cursor with the sorted prefix
+growing behind it, bubble's pair and its shrinking unsorted region and
+heapsort's sift path are all lit — two cursor columns full height, the active
+region lifted out of the dim. Between algorithms the array is thrown back in
+the air by an animated Fisher-Yates rather than cut to a fresh permutation.
+
+Cheap, and structurally so: a frame builds one index image and does one
+`np.take` through a table holding six tiers of the palette, which is where the
+highlighting comes from as well. **0.07 ms a frame measured on a desktop** —
+the Pi figure has not been taken yet, but the per-frame work is a handful of
+whole-array passes over 20,480 pixels and nothing else.
+
+The trace does cost memory rather than time: bubble's 50,830 steps are eight
+`int16` per step, about 800 kB, and the whole default set is a little over a
+megabyte of index-and-value pairs. Storing frames instead of steps would be
+two orders of magnitude worse.
+
+```console
+$ python3 sort.py --algorithms quicksort,merge,insertion --style band
+$ python3 sort.py --algorithms bubble --cycle 90        # just the slow one
+$ python3 sort.py --element-px 2 --palette magma --no-labels
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
