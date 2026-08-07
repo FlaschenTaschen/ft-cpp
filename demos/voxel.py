@@ -16,14 +16,21 @@ out to Twin Peaks, Angel Island and the Berkeley hills -- baked into
 is written down. Sea level is stored as exactly zero, so the Bay and the
 Pacific are a comparison rather than a second map.
 
+Two bridges stand in it as objects, depth-tested against the landscape: the
+Golden Gate a kilometre or two off, and the Bay Bridge's western crossing
+eleven kilometres east, which at that range is a silver line low on the haze
+with two nubs on it. That is what it looks like from the Headlands, and
+making it any more legible than that would mean making it wrong.
+
 Nothing here is a helicopter. The flier is a glider circling a thermal off
-Hawk Hill: a long lazy loop with the bank swinging either way, the horizon
-tilting behind a wing that stays where it is, other birds working the same
-lift, and the light low and warm. No instruments and nothing to aim at.
+Hawk Hill: a long lazy loop, the bank rolling smoothly from one side to the
+other and back over a minute and a half, the horizon tilting behind a wing
+that stays where it is, other birds working the same lift, and the light low
+and warm. No instruments and nothing to aim at.
 
 Run:  python3 voxel.py --host 127.0.0.1
       python3 voxel.py --light dusk --fog 1.4
-      python3 voxel.py --loop 90 --radius 550 --altitude 520
+      python3 voxel.py --loop 120 --radius 550 --altitude 520
       python3 voxel.py --no-wing --birds 0 --steps 64
 """
 
@@ -38,6 +45,71 @@ import demoscene as ds
 f32 = ds.f32
 
 DEM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voxel-dem.npz")
+
+# --------------------------------------------------------------------------
+# The bridges.
+#
+# Two of them, and they are described rather than drawn: a table of real
+# dimensions, a real position and bearing, and a colour, from which build()
+# bakes a height profile and render() paints it. One compositor handles both,
+# and would handle a third.
+#
+# The Golden Gate is in metres converted from the feet goldengate.py works in
+# -- 4200 ft of main span between the towers, 1125 ft of side span either
+# side, 526 ft of tower over a deck 220 ft above the water -- so the two demos
+# cannot drift apart.
+#
+# The Bay Bridge is the western crossing, and the whole point of including it
+# is that it is *not* a second Golden Gate: two suspension spans back to back
+# meeting at a central anchorage, which gives a tower-cable-tower-anchorage-
+# tower-cable-tower silhouette nothing like a single span, and silver-grey
+# steel rather than International Orange. At the eleven kilometres it is seen
+# from here the colour carries most of the recognition. Its eastern span is
+# not modelled: it is a further two kilometres behind Yerba Buena Island and
+# at this range would be under a pixel tall behind the island that hides it.
+#
+# Dimensions, feet: main spans 2310 either side of the central anchorage, side
+# spans 1160, towers 519 above the water, upper deck 220 above the water.
+# --------------------------------------------------------------------------
+
+FT = 0.3048
+
+BRIDGES = [
+    dict(
+        name="golden gate",
+        # The strait runs roughly east-west and the bridge crosses it a few
+        # degrees off true north, the Marin end very slightly west of the Fort
+        # Point end.
+        lat=37.8199, lon=-122.4783, bearing=353.0,
+        deck=220.0 * FT, tower=(220.0 + 526.0) * FT, anchor=26.0,
+        camber=11.0, thick=16.0, depth=11.0,
+        # Anchorage, tower, tower, anchorage. `sag` is where the cable hangs
+        # to between one support and the next: on the main span the vertex
+        # sits *on* the deck at midspan, which is the one detail that makes a
+        # silhouette read as this bridge and not any suspension bridge, and it
+        # is the same call goldengate.py makes.
+        spans=[1125.0 * FT, 4200.0 * FT, 1125.0 * FT],
+        sag=[None, "deck", None],
+        rgb=((198.0, 70.0, 38.0), (126.0, 52.0, 30.0), (232.0, 104.0, 56.0))),
+    dict(
+        name="bay bridge west",
+        # Rincon Hill to Yerba Buena Island: 37.7908 N 122.3880 W to
+        # 37.8080 N 122.3640 W, which is a bearing of 48 degrees and a
+        # midpoint of 37.7994 N 122.3760 W. Only the suspended 6940 ft is
+        # modelled; the approach viaducts at either end are ordinary elevated
+        # roadway and do not survive the range.
+        lat=37.7994, lon=-122.3760, bearing=48.0,
+        deck=220.0 * FT, tower=519.0 * FT, anchor=30.0,
+        camber=8.0, thick=14.0, depth=14.0,
+        # Two main spans meeting at the central anchorage, which is a squat
+        # concrete block the cables die into well below the tower tops -- so
+        # it is a support like the towers, just a much shorter one.
+        spans=[1160.0 * FT, 2310.0 * FT, 2310.0 * FT, 1160.0 * FT],
+        sag=[None, "deck", "deck", None],
+        centre=125.0,
+        rgb=((178.0, 182.0, 192.0), (104.0, 108.0, 120.0),
+             (208.0, 212.0, 220.0))),
+]
 
 # --------------------------------------------------------------------------
 # The palette is one flat table and every pixel on screen is one index into
@@ -68,8 +140,14 @@ SKY_SPAN = 3 * 40.0         # thirds of a row from the horizon to the top colour
 # treatment is the single compare `index < NSHADE * NFOG`, which only works
 # because water owns the bottom of the table.
 CLS_WATER, CLS_LOW, CLS_MID, CLS_HIGH = 0, 1, 2, 3
-CLS_TOWER, CLS_DECK, CLS_CABLE, CLS_BIRD = 4, 5, 6, 7
-NCLS = 8
+CLS_BIRD = 4
+# Each bridge owns three consecutive classes -- tower, deck, cable -- starting
+# here, so a structure's palette entries are one base number and the
+# compositor paints `base + part` without knowing which bridge it is drawing.
+CLS_STEEL0 = 5
+NPART = 3                   # tower, deck, cable
+P_TOWER, P_DECK, P_CABLE = 0, 1, 2
+NCLS = CLS_STEEL0 + NPART * len(BRIDGES)
 
 # Water shades are not a hillshade. Shade 0 is the flat surface, 1 the chop,
 # 2 and 3 the sun's glitter -- reserved so the per-frame bump can be an
@@ -125,31 +203,30 @@ LIGHTS = {
         ambient=0.34, diffuse=0.74, warm=(1.22, 0.82, 0.64)),
 }
 
-# --------------------------------------------------------------------------
-# The Golden Gate Bridge, in metres converted from the feet goldengate.py
-# works in: 4200 ft of main span between the towers, 1125 ft of side span
-# either side, 526 ft of tower over a deck 220 ft above the water. Same
-# numbers, same International Orange. What differs is that here it is an
-# object standing in a landscape and has to be depth-tested against it.
-# --------------------------------------------------------------------------
-
-MAIN_SPAN = 1280.2
-SIDE_SPAN = 342.9
-DECK_H = 67.1
-TOWER_H = DECK_H + 160.3
-BRIDGE_LEN = 2 * SIDE_SPAN + MAIN_SPAN
-S_TOWER = SIDE_SPAN / BRIDGE_LEN                # tower position along s
-TOWER_THICK = 16.0                              # along the deck, metres
-ANCHOR_H = 26.0
-
-ORANGE = (198.0, 70.0, 38.0)
-ORANGE_LIT = (232.0, 104.0, 56.0)
-ORANGE_DECK = (126.0, 52.0, 30.0)
-
-# Midspan and bearing of the real bridge. The strait runs roughly east-west
-# and the bridge crosses it a few degrees off true north, the Marin end very
-# slightly west of the Fort Point end.
-BRIDGE_LAT, BRIDGE_LON, BRIDGE_BEARING = 37.8199, -122.4783, 353.0
+# The flight path, and the one number that turns it into a bank angle.
+#
+# WOBBLE is the second harmonic's amplitude as a fraction of --radius, and
+# ROLL_GAIN converts the resulting rate of turn (rad/s, and scale-invariant --
+# it does not depend on --radius) into the tangent of a displayed roll. The
+# gain is measured rather than chosen: over the default loop the rate of turn
+# runs to about 0.128 rad/s at the 95th percentile, and 0.105/0.128 is what
+# puts that percentile exactly on the limiter's knee. It was 22.0, which is
+# fifty times too big -- a signal 40 to 60 times the clamp, so 99.4% of the
+# loop sat pinned hard over at one limit or the other and the horizon flipped
+# between them as a square wave.
+WOBBLE = 0.36
+# Where the wobble sits relative to the circle, and it is not a free knob: it
+# decides which way the glider is pointing during the shallow part of the turn,
+# and the shallow part is where the heading dwells. At pi the dwell lands
+# facing east, so the Gate and the city stay in frame for nearly half the loop
+# instead of the fifth of it a uniform sweep would give.
+WOBBLE_PHASE = math.pi
+ROLL_GAIN = 0.82
+# Six degrees. A coordinated turn at this radius and speed really is banked
+# about eighteen, and eighteen is unusable on a panel five times wider than it
+# is tall -- the horizon rises about five pixels per degree of roll and leaves
+# through the corner before you reach ten.
+ROLL_LIMIT = 0.105
 
 # Where the glider circles: over the water at the mouth of the strait, the
 # Headlands to the north, the bridge and the city to the east, Mount
@@ -181,16 +258,18 @@ def add_arguments(ap):
                     help="mean height above sea level, metres")
     ap.add_argument("--climb", type=float, default=95.0,
                     help="how far the thermals lift and drop you, metres")
-    ap.add_argument("--loop", type=float, default=72.0,
+    ap.add_argument("--loop", type=float, default=90.0,
                     help="seconds for one circuit of the flight path")
     ap.add_argument("--radius", type=float, default=390.0,
                     help="radius of that circuit, metres")
     ap.add_argument("--bank", type=float, default=1.0,
                     help="how far the horizon tilts in the turns")
+    ap.add_argument("--roll-lag", type=float, default=1.2,
+                    help="seconds the wing takes to roll into a turn")
     ap.add_argument("--phase", type=float, default=0.0,
                     help="where in the circuit to start, 0..1")
     ap.add_argument("--no-bridge", dest="bridge", action="store_false",
-                    help="the Gate without the bridge over it")
+                    help="the bay with none of its bridges built")
     ap.add_argument("--no-wing", dest="wing", action="store_false",
                     help="no glider wing in the frame")
     ap.add_argument("--birds", type=int, default=3,
@@ -336,13 +415,15 @@ def build_palette(light, fog_gain):
     base[CLS_WATER, W_GLINT] = glint * 0.30 + water * 0.70
     base[CLS_WATER, W_GLINT + 1:] = glint * 0.62 + water * 0.38
 
-    # The bridge is a class like any other, which is the whole trick that
-    # makes it cost nothing: painting it is writing an integer into the index
-    # image before the gather, so it picks up the right amount of haze for
-    # its distance without a single colour operation.
-    for c, rgb in ((CLS_TOWER, ORANGE), (CLS_DECK, ORANGE_DECK),
-                   (CLS_CABLE, ORANGE_LIT), (CLS_BIRD, (18.0, 16.0, 20.0))):
-        base[c] = np.array(rgb, f32)[None, :]
+    # A bridge is a class like any other, which is the whole trick that makes
+    # it cost nothing: painting it is writing an integer into the index image
+    # before the gather, so it picks up the right amount of haze for its
+    # distance without a single colour operation. Three classes per bridge,
+    # laid out consecutively so the compositor addresses them as base + part.
+    base[CLS_BIRD] = np.array((18.0, 16.0, 20.0), f32)[None, :]
+    for b, spec in enumerate(BRIDGES):
+        for part, rgb in enumerate(spec["rgb"]):
+            base[CLS_STEEL0 + NPART * b + part] = np.array(rgb, f32)[None, :]
 
     # Haze. Every colour above, faded towards the horizon colour over NFOG
     # steps, so distance costs the frame nothing at all: the depth step picks
@@ -365,6 +446,88 @@ def build_palette(light, fog_gain):
     np.clip(above, 0.0, 1.0, out=above)
     pal[SKY0:] = ramp(light["sky"], 1.0 - above)
     return np.clip(pal, 0.0, 253.0).astype(f32)
+
+
+def cable_span(ss, s0, s1, h0, h1, sag=None):
+    """One length of main cable, as a height over `ss` in 0..1 along the deck.
+
+    Two shapes, and the difference is the whole silhouette. With `sag` -- a
+    suspended span -- the cable is a parabola hanging to that height at the
+    centre and rising to h0 and h1 at the supports, which is the real curve of
+    a cable under a uniform deck load. Without it -- a side span, or the run
+    out to an anchorage -- the cable goes more or less straight from the tower
+    down into the ground, and the 0.8 power is the slight bow in it. The
+    caller is expected to put s0 at the tower end so the bow falls the right
+    way.
+    """
+    u = np.clip((ss - s0) / (s1 - s0), 0.0, 1.0)
+    if sag is None:
+        return h0 + (h1 - h0) * u ** 0.8
+    x = 2.0 * u - 1.0
+    return (sag + (h0 - sag) * np.clip(-x, 0.0, 1.0) ** 2
+            + (h1 - sag) * np.clip(x, 0.0, 1.0) ** 2)
+
+
+def bake_bridge(spec, index, bbox, mx, my, shape, nodes=193):
+    """Turn one entry of BRIDGES into everything the compositor needs.
+
+    The result is deliberately flat and read-only: an anchor point and a span
+    vector in the demo's metres-east/metres-south frame, height profiles for
+    the deck and the cable sampled along the span, where the supports are, and
+    the three palette base indices. Doing it here rather than per frame is why
+    a second bridge costs the frame nothing but the pixels it covers.
+    """
+    lengths = [float(x) for x in spec["spans"]]
+    total = sum(lengths)
+    # Support positions along s, and their heights. The two ends are
+    # anchorages; interior supports are towers, except the middle one of an
+    # odd number when the spec names a `centre` -- which is the Bay Bridge's
+    # central anchorage, a support the cables die into far below tower height.
+    edges = np.cumsum([0.0] + lengths) / total
+    inner = len(lengths) - 1
+    heights = [spec["anchor"]]
+    for i in range(inner):
+        h = spec["tower"]
+        if "centre" in spec and inner % 2 == 1 and i == inner // 2:
+            h = spec["centre"]
+        heights.append(h)
+    heights.append(spec["anchor"])
+
+    ss = np.linspace(0.0, 1.0, nodes, dtype=f32)
+    # A little camber, high in the middle, because a deck drawn dead flat
+    # against a sagging cable reads as a mistake even when nobody can say why.
+    deck = (spec["deck"] - spec["camber"] * (2.0 * ss - 1.0) ** 2).astype(f32)
+    cable = np.zeros_like(ss)
+    for i, sag in enumerate(spec["sag"]):
+        s0, s1 = float(edges[i]), float(edges[i + 1])
+        h0, h1 = heights[i], heights[i + 1]
+        if sag is None:
+            # Run it from the tower end outward, so cable_span's bow is the
+            # right way round whichever end of the bridge this is.
+            seg = (cable_span(ss, s1, s0, h1, h0) if i == 0
+                   else cable_span(ss, s0, s1, h0, h1))
+        else:
+            seg = cable_span(ss, s0, s1, h0, h1, sag=deck)
+        cable = np.where((ss >= s0) & (ss <= s1), seg, cable)
+
+    br = math.radians(spec["bearing"])
+    bu, bv = math.sin(br), -math.cos(br)
+    u, v = world_of(spec["lat"], spec["lon"], bbox, mx, my, shape)
+    u += mx                                       # into padded coordinates
+    v += my
+    base = np.int32((CLS_STEEL0 + NPART * index) * (NSHADE * NFOG))
+    return dict(
+        name=spec["name"],
+        ax=u - bu * 0.5 * total, ay=v - bv * 0.5 * total,
+        ex=bu * total, ey=bv * total,
+        ss=ss, deck=deck, cable=cable.astype(f32),
+        top=max(heights), length=total,
+        # Only the real towers get piers drawn up from the water; an anchorage
+        # is a block on the shore and there is nothing to draw under it.
+        towers=np.array([float(edges[i + 1]) for i in range(inner)
+                         if heights[i + 1] == spec["tower"]], f32),
+        hw=spec["thick"] / total, depth=spec["depth"],
+        pidx=base + np.array([0, NFOG, 2 * NFOG], np.int32) * NSHADE)
 
 
 def haze_band(z, far):
@@ -414,17 +577,23 @@ def build_wing(W, H):
     rows that does not read as a wing at all -- it reads as a lens vignette,
     a dark arch over the picture. What reads is the *lines*: two straight
     spars going back and out to the tips, entering the frame only in the outer
-    thirds, so the middle of the panel -- where the horizon, the sun and the
+    quarters, so the middle of the panel -- where the horizon, the sun and the
     skyline are -- is left completely alone. The nose is ahead of you and
     above the top edge, which is why the spars leave through the sides.
+
+    They are steeper and thicker than the first attempt at them. Shallow
+    one-pixel spars crossing most of the width did not read as a wing, they
+    read as two scratches on the sky; swept hard into the top corners at two
+    pixels wide they read as structure overhead. It is the same wing -- what
+    changed is how much of it the panel is being shown.
     """
     sy = H / 64.0
     x = np.arange(W, dtype=f32)
     y = np.arange(H, dtype=f32)[:, None]
     cx = 0.5 * W
     d = np.abs(x - cx) / (0.5 * W)
-    edge = (-8.0 + d * 20.0) * sy
-    spar = max(1.0, 1.2 * sy)
+    edge = (-20.0 + d * 42.0) * sy
+    spar = max(1.0, 2.2 * sy)
     cov = np.clip(np.minimum(y + 0.5, edge + spar) - np.maximum(y - 0.5, edge),
                   0.0, 1.0)
     # A sliver of sail above each spar rather than a filled corner. Backlit
@@ -503,11 +672,8 @@ def build(args):
     inv_mx, inv_my = f32(1.0 / mx), f32(1.0 / my)
 
     loop_u, loop_v = world_of(LOOP_LAT, LOOP_LON, bbox, mx, my, shape)
-    bri_u, bri_v = world_of(BRIDGE_LAT, BRIDGE_LON, bbox, mx, my, shape)
     loop_u += mx
     loop_v += my                                  # into padded coordinates
-    bri_u += mx
-    bri_v += my
 
     # --- camera -------------------------------------------------------------
     focal = 0.5 * W / math.tan(0.5 * math.radians(
@@ -562,25 +728,9 @@ def build(args):
                           188.0, 255.0).astype(np.uint8)
     glint_off = np.full((H, W), 255, np.uint8)     # sun behind: nothing lights
 
-    # --- bridge ---------------------------------------------------------------
-    br = math.radians(BRIDGE_BEARING)
-    bu, bv = math.sin(br), -math.cos(br)          # towards the Marin end
-    half = 0.5 * BRIDGE_LEN
-    br_ax, br_ay = bri_u - bu * half, bri_v - bv * half     # s = 0, Fort Point
-    br_ex, br_ey = 2.0 * bu * half, 2.0 * bv * half         # the whole span
-    ss = np.linspace(0.0, 1.0, 129, dtype=f32)
-    deck_t = (DECK_H - 11.0 * (2.0 * ss - 1.0) ** 2).astype(f32)
-    q = np.abs(ss - 0.5) / (0.5 - S_TOWER)
-    # Between the towers the main cable is a parabola whose vertex sits *on*
-    # the deck at midspan. That one detail is most of what makes a silhouette
-    # read as this bridge rather than any suspension bridge, and it is the
-    # same call goldengate.py makes. Outside them it falls to the anchorages.
-    outer = np.clip((q - 1.0) / (0.5 / (0.5 - S_TOWER) - 1.0), 0.0, 1.0)
-    cable_t = np.where(q <= 1.0,
-                       deck_t + (TOWER_H - deck_t) * np.clip(q, 0.0, 1.0) ** 2,
-                       TOWER_H + (ANCHOR_H - TOWER_H) * outer ** 0.8).astype(f32)
-    br_tower = np.array([S_TOWER, 1.0 - S_TOWER], f32)
-    br_pidx = np.array([CLS_TOWER, CLS_DECK, CLS_CABLE], np.int32) * (NSHADE * NFOG)
+    # --- bridges --------------------------------------------------------------
+    bridges = ([bake_bridge(spec, i, bbox, mx, my, shape)
+                for i, spec in enumerate(BRIDGES)] if args.bridge else [])
 
     # --- birds ----------------------------------------------------------------
     bird_masks = [np.array([[ch != ' ' for ch in r] for r in p], bool)
@@ -638,41 +788,75 @@ def build(args):
     out = np.empty((H, W, 3), np.uint8)
     nbins = (H + 1) * W
     watermax = np.int32(NSHADE * NFOG)
-    need_z = bool(args.bridge or nbirds)
+    need_z = bool(bridges or nbirds)
 
     period = max(args.loop, 8.0)
     radius = max(args.radius, 40.0)
+
+    def path(a):
+        """The curve, and its first two derivatives, at phase angle `a`.
+
+        Two harmonics: one circuit per loop, plus a wobble at *twice* that.
+        It was three times, and that was the whole reason the bank snapped.
+        Curvature is built out of the second derivative, and a harmonic at
+        k times the fundamental carries a factor of k-squared into it -- nine
+        for the third, four for the second. With a wobble amplitude of 0.24 r
+        the third harmonic was contributing more than twice the curvature of
+        the circle it was supposed to be decorating, so the turn genuinely
+        lurched: it was not a display problem, the flight path was wrong.
+        Halving the harmonic and raising the amplitude to 0.36 r gets the same
+        excursion in *position* -- the wobble is still plainly there, and the
+        bank still reverses briefly on the shallow side -- with the curvature
+        varying by about a factor of two over the loop instead of twenty.
+        """
+        s1, c1 = math.sin(a), math.cos(a)
+        b = 2.0 * a + WOBBLE_PHASE
+        s2, c2 = math.sin(b), math.cos(b)
+        r2 = WOBBLE * radius
+        return (loop_u + radius * s1 + r2 * s2,
+                loop_v + 0.82 * radius * c1 + 0.7 * r2 * c2,
+                radius * c1 + 2.0 * r2 * c2,
+                -0.82 * radius * s1 - 2.0 * 0.7 * r2 * s2,
+                -radius * s1 - 4.0 * r2 * s2,
+                -0.82 * radius * c1 - 4.0 * 0.7 * r2 * c2)
 
     def camera(t):
         """Where the glider is and which way it is pointing.
 
         A closed curve rather than an integrated heading, so the path is
         exactly periodic: a segment that overruns the loop point lands back
-        where it started instead of drifting off the map. Two harmonics -- one
-        circuit per loop plus a smaller three-per-loop wobble -- because a
-        constant-bank circle is what a thermal actually is and is dull to
-        watch, whereas this steepens, shallows and briefly reverses.
+        where it started instead of drifting off the map.
 
         Heading and bank come from the first and second derivatives of that
         same curve rather than being animated separately, so the wing is
         always banked into the turn it is really making. All of it is `math`
         on plain floats: a float32 numpy scalar costs about thirty times more
         per operation, which fsn.py measured the hard way.
+
+        The bank is read off the curve a second or so *behind* where the
+        glider is, which is the wing's roll inertia: a real one does not adopt
+        a new bank the instant the air asks for it, it rolls in over about a
+        second. A first-order lag would need an integrator and integrator
+        state, and render() has to stay a pure function of t or the demo
+        cannot be seeked. Evaluating the same closed curve at t - lag is the
+        same thing done analytically -- every harmonic comes out shifted by
+        its own share of the delay -- and it is still exactly periodic.
         """
         w = 2.0 * math.pi / period
-        a = w * t + args.phase * 2.0 * math.pi
-        s1, c1 = math.sin(a), math.cos(a)
-        s3, c3 = math.sin(3.0 * a + 0.9), math.cos(3.0 * a + 0.9)
-        r2 = 0.24 * radius
-        u = loop_u + radius * s1 + r2 * s3
-        v = loop_v + 0.82 * radius * c1 + 0.7 * r2 * c3
-        du = w * (radius * c1 + 3.0 * r2 * c3)
-        dv = w * (-0.82 * radius * s1 - 3.0 * 0.7 * r2 * s3)
-        ddu = w * w * (-radius * s1 - 9.0 * r2 * s3)
-        ddv = w * w * (-0.82 * radius * c1 - 9.0 * 0.7 * r2 * c3)
+        ph = args.phase * 2.0 * math.pi
+        lag = max(args.roll_lag, 0.0)
+        u, v, du, dv, _, _ = path(w * t + ph)
+        _, _, ldu, ldv, lddu, lddv = path(w * (t - lag) + ph)
+        du *= w
+        dv *= w
         sp2 = max(du * du + dv * dv, 1e-6)
         psi = math.atan2(dv, du)
-        kappa = (du * ddv - dv * ddu) / sp2       # rate of turn
+        # Rate of turn, in rad/s: the cross product over the *square* of the
+        # speed rather than the cube, so this is dpsi/dt and not the geometric
+        # curvature. That makes it independent of --radius, which is what lets
+        # ROLL_GAIN be one number rather than something scaled per flight.
+        lsp2 = max(ldu * ldu + ldv * ldv, 1e-6)
+        kappa = w * (ldu * lddv - ldv * lddu) / lsp2
         # Thermals, on periods that do not share a factor with the circuit,
         # so the two never line up into an obvious cycle.
         z = (args.altitude
@@ -683,7 +867,7 @@ def build(args):
         return u, v, z, psi, kappa, math.atan2(dz, math.sqrt(sp2))
 
     # ----------------------------------------------------------------------
-    # The bridge, composited into the *index* image rather than into colour.
+    # A bridge, composited into the *index* image rather than into colour.
     #
     # A heightmap cannot have sky under a road deck, so this is an object, and
     # an object in front of a raycast has to be depth-tested against it or a
@@ -696,15 +880,21 @@ def build(args):
     #
     # Then it is painted as class numbers, so the towers pick up exactly the
     # haze their distance earns with no colour arithmetic at all.
+    #
+    # Nothing below knows which bridge it is drawing; everything that differs
+    # between the Gate and the Bay -- the profile, the support positions, the
+    # colours -- came out of bake_bridge(). That is the only reason a second
+    # structure was a table entry rather than a second copy of this function.
     # ----------------------------------------------------------------------
 
-    def draw_bridge(camu, camv, camz, fu, fv, ru, rv):
+    def draw_bridge(b, camu, camv, camz, fu, fv, ru, rv):
+        b_ax, b_ay, b_ex, b_ey = b["ax"], b["ay"], b["ex"], b["ey"]
         dx = colx * f32(ru) + f32(fu)
         dy = colx * f32(rv) + f32(fv)
-        det = br_ex * dy - br_ey * dx
-        qx, qy = br_ax - camu, br_ay - camv
+        det = b_ex * dy - b_ey * dx
+        qx, qy = b_ax - camu, b_ay - camv
         with np.errstate(divide="ignore", invalid="ignore"):
-            tz = (br_ex * qy - br_ey * qx) / det
+            tz = (b_ex * qy - b_ey * qx) / det
             sp = (qy * dx - qx * dy) / det
         ok = (np.abs(det) > 1e-9) & (tz > near) & (sp >= 0.0) & (sp <= 1.0)
         nz = np.nonzero(ok)[0]
@@ -715,23 +905,24 @@ def build(args):
         sp, tz, ok = sp[sl], tz[sl], ok[sl]
         n = c1 - c0
         sc = f32(focal) / tz
-        deck = np.interp(sp, ss, deck_t)
-        cable = np.interp(sp, ss, cable_t)
+        deck = np.interp(sp, b["ss"], b["deck"])
+        cable = np.interp(sp, b["ss"], b["cable"])
         base = horiz[sl] + camz * sc
         r_deck = base - deck * sc
         r_cable = base - cable * sc
-        r_top = base - TOWER_H * sc
-        # A tower is only 16 m thick along the deck, which from a kilometre
-        # out is well under a pixel. Widen it to whatever covers a column and
-        # a half, the same call goldengate.py makes for the cables: at this
-        # size the silhouette is the whole point and a tower that keeps
-        # dropping out between columns reads as a flicker, not as accuracy.
+        r_top = base - b["top"] * sc
+        # A tower is only a dozen or so metres thick along the deck, which
+        # from a kilometre out is well under a pixel. Widen it to whatever
+        # covers a column and a half, the same call goldengate.py makes for
+        # the cables: at this size the silhouette is the whole point and a
+        # tower that keeps dropping out between columns reads as a flicker,
+        # not as accuracy.
         dsdc = np.abs(np.diff(sp, append=sp[-1] if n > 1 else 0.0))
-        hw = np.maximum(TOWER_THICK / BRIDGE_LEN, 1.5 * dsdc)
-        istow = ((np.abs(sp - br_tower[0]) < hw)
-                 | (np.abs(sp - br_tower[1]) < hw)) & ok
-        # Suspenders every third column, which at any distance this bridge is
-        # ever seen from is denser than the real 50 ft spacing would resolve.
+        hw = np.maximum(b["hw"], 1.5 * dsdc)
+        istow = (np.abs(sp[None, :] - b["towers"][:, None])
+                 < hw[None, :]).any(axis=0) & ok
+        # Suspenders every third column, which at any distance either of these
+        # bridges is seen from is denser than the real 50 ft spacing resolves.
         issus = ok & ((colidx[sl] % 3) == 0)
 
         r0 = int(max(0, math.floor(min(float(np.min(r_top[istow]))
@@ -744,16 +935,17 @@ def build(args):
         vis = zbuf[r0:r1, sl] > tz[None, :]
         dst = pidx[r0:r1, sl]
         fb = np.rint(np.clip(tz / far, 0.0, 1.0) * (NFOG - 1)).astype(np.int32)
-        thick = np.maximum(1.0, 11.0 * sc)
+        thick = np.maximum(1.0, b["depth"] * sc)
+        bp = b["pidx"]
 
-        def paint(top, bot, cls, sel):
+        def paint(top, bot, part, sel):
             m = (yy >= top[None, :]) & (yy <= bot[None, :]) & sel[None, :] & vis
-            np.putmask(dst, m, (br_pidx[cls] + fb)[None, :])
+            np.putmask(dst, m, (bp[part] + fb)[None, :])
 
-        paint(r_cable, r_deck, 2, issus)                      # the curtain
-        paint(r_top, base + 2.0 * sc, 0, istow)               # towers and piers
-        paint(r_deck, r_deck + thick, 1, ok)                  # roadway
-        paint(r_cable - 0.5, r_cable + 0.5, 2, ok)            # main cable
+        paint(r_cable, r_deck, P_CABLE, issus)                # the curtain
+        paint(r_top, base + 2.0 * sc, P_TOWER, istow)         # towers and piers
+        paint(r_deck, r_deck + thick, P_DECK, ok)             # roadway
+        paint(r_cable - 0.5, r_cable + 0.5, P_CABLE, ok)      # main cable
 
     def draw_birds(t, camu, camv, camz, fu, fv, ru, rv):
         pose = bird_masks[int(t * 6.0) % len(bird_masks)]
@@ -800,15 +992,20 @@ def build(args):
         # rotation of the rays. At a 27 degree vertical field that is well
         # inside where the approximation shows, and it makes both of them
         # free: every projection below already adds this per-column number.
-        # A coordinated turn at this radius and speed really is banked about
-        # eighteen degrees. Eighteen degrees is unusable here: the panel is
-        # five times wider than it is tall, so the horizon crosses it with a
-        # rise of five pixels per degree of roll and leaves through the corner
-        # before you get to ten. What has to read is *which way* you are
-        # banking and that it keeps changing, so the tilt is scaled to about a
-        # sixth of true and clamped at six degrees -- which still walks the
-        # horizon a third of the way up the panel from one edge to the other.
-        roll = math.atan(max(min(kappa * 22.0 * args.bank, 0.105), -0.105))
+        # What has to read is *which way* you are banking and that it keeps
+        # changing, so the tilt is scaled well down from true and eased into a
+        # limit at six degrees -- which still walks the horizon a third of the
+        # way up the panel from one edge to the other.
+        #
+        # tanh rather than min/max. A hard clamp has a corner in it, and a
+        # corner in the roll is a corner in the horizon's motion: it stops
+        # dead. The soft limiter has the same slope through zero and the same
+        # asymptote, and the approach to the bound is smooth, so an unusually
+        # tight moment reads as the turn tightening rather than as a stop.
+        # With the gain above it barely engages at all; it is there for
+        # --bank, --loop and --roll-lag well away from their defaults.
+        x = kappa * ROLL_GAIN * args.bank
+        roll = math.atan(ROLL_LIMIT * math.tanh(x / ROLL_LIMIT))
         h0 = 0.5 * H + math.tan(pitch) * focal
         np.multiply(colf - 0.5 * W, f32(math.tan(roll)), out=horiz)
         a_hz += f32(h0)
@@ -923,8 +1120,8 @@ def build(args):
 
         if need_z:
             np.take(Zbuf, idx, out=zbuf)
-        if args.bridge:
-            draw_bridge(camu, camv, camz, fu, fv, ru, rv)
+        for b in bridges:
+            draw_bridge(b, camu, camv, camz, fu, fv, ru, rv)
         if nbirds:
             draw_birds(t, camu, camv, camz, fu, fv, ru, rv)
 

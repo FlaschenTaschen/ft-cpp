@@ -981,30 +981,82 @@ end and nothing in the frame computes RGB. Distance haze is free, because the
 depth step chooses a band and the band is already the right colour. The chop
 and the sun's glitter on the water are an integer *add* on the pixels that are
 water — a brighter shade is `+NFOG` — and they pick up the correct haze for
-their distance without knowing anything about it. The bridge is a class like
+their distance without knowing anything about it. A bridge is a class like
 any other, so painting it is writing class numbers into that index image before
 the gather.
 
-**The bridge has to be an object.** A heightmap cannot have sky under a road
-deck. Geometry is the real thing in feet, the same numbers `goldengate` uses —
-4200 ft of main span, 526 ft of tower over a deck 220 ft above the water — and
-the same detail carries the silhouette: the main cable's vertex sits *on* the
-deck at midspan, which is most of what makes it read as this bridge rather than
-a generic suspension bridge. Each column's ray is intersected with the vertical
-plane of the deck, a 2x2 solve vectorised across the whole width, which gives
-that column's position along the span and its distance from the eye together;
-and since the raycast has already left a depth per pixel, hiding it behind Lime
-Point is one compare. Sail past and the headland eats the far end of it, which
-is what says the bridge is *in* the landscape rather than drawn over it.
+**The bridges have to be objects.** A heightmap cannot have sky under a road
+deck. Each column's ray is intersected with the vertical plane of the deck, a
+2x2 solve vectorised across the whole width, which gives that column's position
+along the span and its distance from the eye together; and since the raycast
+has already left a depth per pixel, hiding it behind Lime Point is one compare.
+Sail past and the headland eats the far end of it, which is what says the
+bridge is *in* the landscape rather than drawn over it.
+
+There are two of them, and that is why the geometry is a table rather than
+code: a name, a latitude, a bearing, a list of span lengths in feet and three
+colours, from which the same compositor draws either. The Golden Gate is the
+real thing in the units `goldengate` uses — 4200 ft of main span, 526 ft of
+tower over a deck 220 ft above the water — with the detail that carries the
+silhouette, the main cable's vertex sitting *on* the deck at midspan, which is
+most of what makes it read as this bridge rather than a generic suspension
+bridge.
+
+**The Bay Bridge is eleven kilometres away and it is meant to look it.** The
+western crossing, 2310 ft of main span either side of the central anchorage, in
+silver-grey steel rather than International Orange — and the colour does most
+of the work, because what survives the range is a pale line low on the haze
+about twenty pixels long with two small nubs on it where the towers are. That
+is what it looks like from the Marin Headlands on a clear evening, and the
+temptation to scale it up or drag it closer is the temptation to draw something
+that is not there. It fits inside the existing depth budget with room to spare
+(13 km far plane against 10.5 to 11.7 km of bridge), so nothing had to be
+extended and nothing had to be re-baked; the eastern span is left out because
+Yerba Buena Island is in front of it. It costs about 0.05 ms a frame on a
+desktop, all of it in the twenty-odd columns it covers.
 
 **The wing does not move, and that is the physics.** In a coordinated turn the
 pilot and the wing keep the same relationship and it is the world that tilts,
 so the two spars are a static overlay costing one composite and the horizon
-rolls behind them. The bank itself is scaled well down from true: a turn at
-this radius really is banked about eighteen degrees, and on a panel five times
-wider than it is tall the horizon rises about five pixels per degree of roll
-and leaves through the corner before you reach ten. What has to read is which
-way you are banking and that it keeps changing.
+rolls behind them. They are swept hard into the top corners; drawn shallower
+and thinner, crossing most of the width, they read as two scratches on the sky
+rather than as structure overhead. The bank itself is scaled well down from
+true: a turn at this radius really is banked about eighteen degrees, and on a
+panel five times wider than it is tall the horizon rises about five pixels per
+degree of roll and leaves through the corner before you reach ten.
+
+**The bank was a square wave, and the flight path was the reason.** The bank
+comes from the curvature of the flight path, and the path carried a wobble at
+three times the circuit rate. Curvature comes out of the second derivative,
+where a harmonic at k times the fundamental picks up a factor of k², so at nine
+times the weight the wobble was contributing more curvature than the circle it
+decorated: the signal arriving at the roll clamp was forty to sixty times the
+clamp, and 99% of the loop sat pinned hard over at one limit or the other, with
+the horizon flipping between them in a couple of frames. It was not a display
+problem. The glider was genuinely lurching, and no amount of smoothing applied
+after the clamp could have helped.
+
+So the wobble is now a second harmonic — a factor of four rather than nine —
+at a larger amplitude, which keeps the same excursion in position while the
+curvature varies by about a factor of two over the loop instead of twenty. The
+gain onto the roll was measured rather than guessed, at the value that puts the
+95th percentile of the turn rate on the limiter's knee, and the limiter is
+`limit · tanh(x/limit)` rather than a clamp, because a clamp has a corner in it
+and a corner in the roll is the horizon stopping dead. The measured result:
+roll runs −4.5° to +2.1°, reverses once a loop, and changes at a median of
+0.13°/s and never faster than 0.7°/s, where before it was flat at zero for 99%
+of the loop and 117°/s for the rest.
+
+A real wing has roll inertia and takes about a second to roll into a turn, so
+the bank is read off the curve a second behind where the glider is. Doing that
+with an integrator would have put state in `render()`, which has to stay a pure
+function of `t` or the demo cannot be seeked; evaluating the same closed curve
+at `t − lag` is the same thing analytically, shifts every harmonic by its own
+share of the delay, and stays exactly periodic. And the wobble's phase against
+the circle is not a free knob: it decides which way the glider is pointing
+during the shallow part of the turn, where the heading dwells, and pointing
+that dwell east keeps the Gate and the city in frame for nearly half the loop
+instead of the fifth of it an even sweep gives.
 
 Two things that only showed up by looking at frames. The sky ramp is indexed in
 *thirds* of a row rather than whole ones — with whole rows, the sheared horizon
@@ -1017,11 +1069,13 @@ collapses into one diagonal gradient.
 The flight path is a closed curve rather than an integrated heading, so a
 segment that overruns the loop lands back where it started instead of drifting
 off the map, and heading, bank and pitch are all derivatives of that same curve.
-`--steps` is the cost knob and the only one that matters.
+One circuit takes a minute and a half; `--steps` is the cost knob and the only
+one that matters.
 
 ```console
 $ python3 voxel.py --light dusk --fog 1.4
-$ python3 voxel.py --loop 90 --radius 550 --altitude 520
+$ python3 voxel.py --loop 120 --radius 550 --altitude 520
+$ python3 voxel.py --bank 1.6 --roll-lag 0        # steeper, and no roll inertia
 $ python3 voxel.py --no-wing --birds 0 --steps 64
 $ python3 scripts/make-voxel-dem.py            # re-bake the terrain (needs Pillow)
 ```
