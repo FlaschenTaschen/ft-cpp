@@ -1,0 +1,31 @@
+<?xml version="1.0" standalone='no'?><!--*-nxml-*-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+
+<!-- The wall's web interface, as an ordinary _http._tcp service.
+     Install:
+       sudo cp deploy/avahi-betelgeuse-http.service \
+               /etc/avahi/services/betelgeuse-http.service
+     avahi-daemon picks it up without a restart.
+
+     ft_server already advertises _flaschen-taschen._udp with a ui= field, but
+     that is only useful to something that knows what FlaschenTaschen is. This
+     is for everything else: Safari's Bonjour list, avahi-browse, a phone's
+     network scanner. Somebody who wanders in and looks for what is on the
+     network finds a web page rather than nothing.
+
+     Static XML rather than another registration inside ft_server, because this
+     describes nginx and has no business being nginx's job or the display
+     server's. avahi already reads these files; nothing needs to be written.
+
+     Note this is deliberately NOT tied to nginx being up: avahi has no way to
+     health-check it, and a service record that lies for the few seconds of a
+     reload is a better trade than one that needs a daemon to maintain it. -->
+
+<service-group>
+  <name replace-wildcards="yes">Flaschen Taschen on %h</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>80</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>

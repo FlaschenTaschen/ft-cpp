@@ -171,6 +171,25 @@ it, `sudo systemctl disable --now ftindex.service` is the missing step above, an
 the stale unit in `/etc/systemd/system` can go with it. `tailscale serve --bg
 --https=443 http://127.0.0.1:80` is unaffected.
 
+Optionally, advertise the web interface to things that have never heard of
+FlaschenTaschen — Safari's Bonjour list, `avahi-browse`, a phone scanning the
+network:
+
+```sh
+sudo cp deploy/avahi-betelgeuse-http.service \
+        /etc/avahi/services/betelgeuse-http.service
+```
+
+`ft_server` separately advertises `_flaschen-taschen._udp` with `ui=` pointing at
+this same panel, and sets bit 4 of its feature mask when `--control-socket` is
+configured, so a FlaschenTaschen client can tell that brightness and blanking are
+available before trying them. Check both with:
+
+```sh
+avahi-browse -rt _flaschen-taschen._udp
+avahi-browse -rt _http._tcp
+```
+
 The panel then shows a display row under the transport controls. It is hidden
 whenever `/api/display` does not answer, so `ftsched` served straight off :8081
 looks exactly as it did.
