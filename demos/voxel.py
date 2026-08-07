@@ -41,7 +41,8 @@ mean making them wrong.
 Run:  python3 voxel.py --host 127.0.0.1
       python3 voxel.py --light dusk --fog 1.4
       python3 voxel.py --loop 420 --altitude -60
-      python3 voxel.py --no-wing --no-tower --birds 0 --steps 64
+      python3 voxel.py --no-tower --birds 0 --steps 64
+      python3 voxel.py --wing
 """
 
 import math
@@ -402,6 +403,8 @@ def add_arguments(ap):
                     help="the bay with none of its bridges built")
     ap.add_argument("--no-tower", dest="tower", action="store_false",
                     help="leave Sutro Tower off the ridge")
+    ap.add_argument("--wing", dest="wing", action="store_true", default=False,
+                    help="frame the shot with the glider's leading edge")
     ap.add_argument("--no-wing", dest="wing", action="store_false",
                     help="no glider wing in the frame")
     ap.add_argument("--birds", type=int, default=3,

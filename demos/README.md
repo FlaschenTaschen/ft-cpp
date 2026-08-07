@@ -1090,14 +1090,19 @@ either a tour nobody watches to the end, or a demo that circles one thermal and
 reads as rotation rather than travel, which is what this was before. Flying
 lower makes a given speed read faster, so a good part of the apparent motion is
 bought with height rather than with speed; and `--loop` is one flag away if you
-want it slower. The wing stays.
+want it slower.
 
-**The wing does not move, and that is the physics.** In a coordinated turn the
-pilot and the wing keep the same relationship and it is the world that tilts, so
-the two spars are a static overlay costing one composite and the horizon rolls
-behind them. They are swept hard into the top corners; drawn shallower and
-thinner, crossing most of the width, they read as two scratches on the sky
-rather than as structure overhead. The bank itself is scaled well down from
+**The wing is off by default, and that is a change of mind.** In a coordinated
+turn the pilot and the wing keep the same relationship and it is the world that
+tilts, so the two spars can be a static overlay costing one composite while the
+horizon rolls behind them — a cheap way to frame the shot, and `--wing` still
+does it. But they were drawn for a demo that circled one point. The tour changes
+heading far more often, and against a picture whose whole subject is the
+landscape going past, two fixed diagonals across the sky stop reading as
+structure overhead and start reading as scaffolding over the view. The frame is
+better without them.
+
+The bank is independent of that, and is scaled well down from
 true: at this speed the turns really are banked most of the way over, and on a
 panel five times wider than it is tall the horizon rises about five pixels per
 degree of roll and leaves through the corner before you reach ten.
