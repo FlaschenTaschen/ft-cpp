@@ -506,6 +506,12 @@ def main():
     ap.add_argument("--node-id", default="betelgeuse",
                     help="stable id; it ends up in the HA entity ids")
     ap.add_argument("--friendly-name", default="Betelgeuse")
+    ap.add_argument("--motd-file", default=None,
+                    help="render the login banner here whenever the state a "
+                         "person would notice changes; see ftmotd.py for why "
+                         "this is not computed at login time")
+    ap.add_argument("--motd-lan-url", default="http://betelgeuse.local/")
+    ap.add_argument("--motd-tailnet-url", default="")
     ap.add_argument("--public-url", default=None,
                     help="how Home Assistant can reach this wall's web page, "
                          "e.g. http://betelgeuse.local/ -- used for the "
@@ -527,6 +533,19 @@ def main():
 
     host, port = parse_addr(args.listen)
     httpd = Server((host, port), bridge, args.previews)
+
+    if args.motd_file:
+        import ftmotd
+        writer = ftmotd.Writer(args.motd_file, args.previews,
+                              os.path.dirname(args.motd_file) or "/run/ft-motd",
+                              {"lan": args.motd_lan_url,
+                               "tailnet": args.motd_tailnet_url})
+
+        def repaint_motd():
+            snap = bridge.snapshot()
+            writer.update(snap["display"], snap["scheduler"])
+
+        bridge.add_listener(repaint_motd)
 
     mqtt_bridge = None
     if args.mqtt_host:

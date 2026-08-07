@@ -40,6 +40,8 @@ ExecStart=/usr/bin/python3 /home/pi/ft-cpp/demos/ftctl.py \
     --scheduler http://127.0.0.1:8081 \
     --previews /home/pi/ft-cpp/demos/previews \
     --state-file /var/lib/ftctl/desired.json \
+    --motd-file /run/ft-motd/banner.ansi \
+    --motd-tailnet-url https://betelgeuse.cloudforest-perch.ts.net \
     --node-id betelgeuse --friendly-name Betelgeuse \
     --public-url=${FTCTL_PUBLIC_URL} \
     --mqtt-host=${FTCTL_MQTT_HOST} \
@@ -65,6 +67,13 @@ RestartSec=3
 
 StateDirectory=ftctl
 StateDirectoryMode=0755
+
+# The login banner is rendered here rather than computed at login: on a Pi 3 that
+# would cost seconds of interpreter startup and subprocesses before every prompt.
+# systemd makes the directory and removes it on stop, so a stale banner cannot
+# outlive the daemon that would have kept it true.
+RuntimeDirectory=ft-motd
+RuntimeDirectoryMode=0755
 
 # It talks to a unix socket, two local HTTP ports and a broker, and reads its
 # own checkout. Nothing else.
