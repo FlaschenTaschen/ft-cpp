@@ -1,0 +1,66 @@
+# The wall itself: the daemon that owns the panel and composites every client
+# onto it. Install on betelgeuse with:
+#
+#   sudo cp server/ft_server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl restart ft_server.service
+#
+# This replaces the older arrangement of ExecStart=/bin/bash /home/pi/start-ft.sh.
+# The flags are the same ones that script passed, minus one bug: it ended with
+# `2>&1 /dev/null`, which redirects stderr to stdout and then hands /dev/null to
+# the server as a positional argument. Harmless -- getopt ignores it -- but it
+# also meant the intended discard never happened, so everything went to the
+# journal anyway. It does so deliberately now.
+#
+# Keep /home/pi/start-ft.sh around until this has survived a reboot; going back
+# is one ExecStart line.
+
+[Unit]
+Description=Flaschen Taschen display server
+Documentation=https://github.com/FlaschenTaschen/ft-cpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Root, and it stays root long enough to set up realtime threads and the GPIO
+# the panel hangs off, then drops itself to daemon:daemon. Which is also why
+# there is almost no sandboxing here: it needs /dev/mem and SCHED_FIFO, and
+# most of the hardening that suits ftsched would simply stop it working.
+#
+# --led-* are the panel's electrical facts, unchanged: five 64x64 chained,
+# brightness 80, refresh capped at 75 Hz with 8 PWM bits, which is the
+# combination this wall settled on for a flicker-free camera image.
+ExecStart=/home/pi/bin/ft-server \
+    --led-rows=64 --led-cols=64 --led-chain=5 --led-brightness=80 \
+    --led-slowdown-gpio=1 --led-limit-refresh=75 --led-pwm-bits=8 \
+    --layer-timeout 15 \
+    --control-socket /run/ft/control.sock \
+    --mdns enabled --mdns-name Betelgeuse \
+    --mdns-url https://wiki.sequoiafabrica.org/wiki/FlaschenTaschen
+
+# --led-brightness is the boot default for the dimmer, not a ceiling: whatever
+# last set brightness over the control socket wins, and nothing here remembers
+# it across a restart. ftctl does that, and re-applies it when it notices the
+# generation in `get` has changed.
+
+# /run/ft, made by systemd and removed again on stop, which is also how a stale
+# socket gets cleaned up after the power goes out -- the usual way this machine
+# stops. The server creates the socket while still root and chmods it 0666, so
+# ftctl running as pi can reach it; the directory is root-owned and 0755.
+RuntimeDirectory=ft
+RuntimeDirectoryMode=0755
+
+# It blanks the display on SIGTERM. Give it the moment that takes rather than
+# killing it and leaving the last frame lit.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
