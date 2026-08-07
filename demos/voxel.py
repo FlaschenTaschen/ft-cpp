@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A hang glider over the Golden Gate, in voxel space.
+"""A hang glider's tour of San Francisco Bay, in voxel space.
 
 Comanche-style terrain: for every screen column, march a ray out along the
 ground, look up the height of the real San Francisco Bay under it, and work
@@ -9,29 +9,39 @@ trick for drawing landscape in real time and it is still the right one for a
 budget rather than by any amount of geometry, and because a heightmap of the
 Bay Area is a 200 kB file.
 
-The terrain is not noise. It is USGS 3DEP elevation, 45 m cells over a 35 km
-square holding Mount Tamalpais, the Marin Headlands, the strait, San Francisco
-out to Twin Peaks, Angel Island and the Berkeley hills -- baked into
-`voxel-dem.npz` by `scripts/make-voxel-dem.py`, which is where the provenance
-is written down. Sea level is stored as exactly zero, so the Bay and the
-Pacific are a comparison rather than a second map.
+The terrain is not noise. It is USGS 3DEP elevation over a 35 x 44 km box
+holding Mount Tamalpais, the Marin Headlands, the strait, San Francisco out to
+Twin Peaks and San Bruno Mountain, Angel Island, Alcatraz, Yerba Buena and the
+Berkeley hills -- baked into `voxel-dem.npz` by `scripts/make-voxel-dem.py`,
+which is where the provenance is written down. Sea level is stored as exactly
+zero, so the Bay and the Pacific are a comparison rather than a second map.
 
-Two bridges stand in it as objects, depth-tested against the landscape: the
-Golden Gate a kilometre or two off, and the Bay Bridge's western crossing
-eleven kilometres east, which at that range is a silver line low on the haze
-with two nubs on it. That is what it looks like from the Headlands, and
-making it any more legible than that would mean making it wrong.
+The flier does not circle. It flies a tour: in off the Pacific with the Gate
+opening ahead, through it *between the towers* and under the cables, east
+along the city front with Alcatraz opening to port, out toward Treasure Island
+and the Bay Bridge, north up the bay past Angel Island and round its north end,
+back south-west over Sausalito and up over Hawk Hill with Tamalpais on the
+horizon, then out past Point Bonita to the open sea and round. Twenty-nine
+kilometres of it, and every heading has something in it -- which is the whole
+point, because a circle over open water reads as rotation rather than as going
+anywhere.
 
-Nothing here is a helicopter. The flier is a glider circling a thermal off
-Hawk Hill: a long lazy loop, the bank rolling smoothly from one side to the
-other and back over a minute and a half, the horizon tilting behind a wing
-that stays where it is, other birds working the same lift, and the light low
-and warm. No instruments and nothing to aim at.
+Which is also the one dishonest thing here, said out loud: twenty-nine
+kilometres in three and a half minutes is 138 m/s, about eleven times what a
+hang glider does. A wing that stayed honest to 13 m/s would need thirty-seven
+minutes to fly this, and nobody is watching that. `--loop` is right there.
+
+Two bridges and one mast stand in the landscape as objects, depth-tested
+against it: the Golden Gate, which you fly through; the Bay Bridge's western
+crossing, a silver line low on the haze with two nubs on it; and Sutro Tower,
+which is five pixels of trident on the ridge behind the city. That is what
+they look like from here, and making them any more legible than that would
+mean making them wrong.
 
 Run:  python3 voxel.py --host 127.0.0.1
       python3 voxel.py --light dusk --fog 1.4
-      python3 voxel.py --loop 120 --radius 550 --altitude 520
-      python3 voxel.py --no-wing --birds 0 --steps 64
+      python3 voxel.py --loop 420 --altitude -60
+      python3 voxel.py --no-wing --no-tower --birds 0 --steps 64
 """
 
 import math
@@ -112,6 +122,70 @@ BRIDGES = [
 ]
 
 # --------------------------------------------------------------------------
+# And one mast.
+#
+# Sutro Tower, 298 m of it standing on a 255 m ridge, which makes the top of
+# it the highest thing in San Francisco by a couple of hundred metres and the
+# only part of the city that is legible from the far side of the bay. The
+# skyline itself was tried and left out: downtown from six kilometres is four
+# rows of very slightly lighter grey against a hazy hill, which is to say it
+# is nothing, and drawing it bigger would be drawing something that is not
+# there. The tower is different -- it is a shape, and the shape is the whole
+# recognition.
+#
+# The sprite is sunset.py's, unchanged, for the same reason the Golden Gate's
+# dimensions are goldengate.py's: three prongs on a lattice body with flanged
+# platforms stepping out to a splayed tripod base. Without the trident top and
+# the stepped taper it is any old transmitter mast; with them it is Sutro at a
+# handful of pixels. It is drawn fatter than life -- the real tower is about
+# six times taller than it is wide and this is closer to one and a half --
+# because at the range it is seen from here a faithful width is under a pixel
+# and a tower that keeps dropping out between columns reads as a flicker
+# rather than as accuracy. That is the same call the bridge towers get.
+# --------------------------------------------------------------------------
+
+SUTRO = [
+    "      X      ",
+    "   X  X  X   ",
+    "   X  X  X   ",
+    "   X  X  X   ",
+    "   X  X  X   ",
+    "  XXXXXXXXX  ",
+    "   X  X  X   ",
+    "   X  X  X   ",
+    "  XXXXXXXXX  ",
+    "   X  X  X   ",
+    "   X  X  X   ",
+    "  XXXXXXXXX  ",
+    "  X   X   X  ",
+    "  X   X   X  ",
+    " XXXXXXXXXXX ",
+    " X    X    X ",
+    " X    X    X ",
+    "XXXXXXXXXXXXX",
+    "X     X     X",
+    "X     X     X",
+]
+
+MASTS = [
+    dict(name="sutro tower", lat=37.7552, lon=-122.4528, height=298.0,
+         art=SUTRO, rgb=(104.0, 84.0, 82.0)),
+]
+
+# The size range it is drawn at. Below five rows the trident is gone and what
+# is left is a three-pixel smudge; above twenty-two it would be bigger than the
+# source art and only upscaled mush. The lower bound was six for a while, which
+# was the size at which it still reads properly -- and that was wrong, because
+# the tower crosses that threshold *during* a pass and dropped out for a single
+# frame on the way, which is a blink. A landmark that is slightly too small is
+# better than one that flickers, so the bound is where it stops being drawn at
+# all rather than where it stops being pretty.
+#
+# From most of the tour Sutro is either behind you or too far, so it is on
+# screen for about fourteen seconds a loop, in two passes.
+MAST_MIN, MAST_MAX = 5, 22
+
+# --------------------------------------------------------------------------
 # The palette is one flat table and every pixel on screen is one index into
 # it. The layout is arithmetic rather than a lookup:
 #
@@ -141,10 +215,11 @@ SKY_SPAN = 3 * 40.0         # thirds of a row from the horizon to the top colour
 # because water owns the bottom of the table.
 CLS_WATER, CLS_LOW, CLS_MID, CLS_HIGH = 0, 1, 2, 3
 CLS_BIRD = 4
+CLS_MAST = 5                # Sutro; one flat colour, it is five pixels tall
 # Each bridge owns three consecutive classes -- tower, deck, cable -- starting
 # here, so a structure's palette entries are one base number and the
 # compositor paints `base + part` without knowing which bridge it is drawing.
-CLS_STEEL0 = 5
+CLS_STEEL0 = 6
 NPART = 3                   # tower, deck, cable
 P_TOWER, P_DECK, P_CABLE = 0, 1, 2
 NCLS = CLS_STEEL0 + NPART * len(BRIDGES)
@@ -203,36 +278,93 @@ LIGHTS = {
         ambient=0.34, diffuse=0.74, warm=(1.22, 0.82, 0.64)),
 }
 
-# The flight path, and the one number that turns it into a bank angle.
-#
-# WOBBLE is the second harmonic's amplitude as a fraction of --radius, and
-# ROLL_GAIN converts the resulting rate of turn (rad/s, and scale-invariant --
-# it does not depend on --radius) into the tangent of a displayed roll. The
-# gain is measured rather than chosen: over the default loop the rate of turn
-# runs to about 0.128 rad/s at the 95th percentile, and 0.105/0.128 is what
-# puts that percentile exactly on the limiter's knee. It was 22.0, which is
-# fifty times too big -- a signal 40 to 60 times the clamp, so 99.4% of the
-# loop sat pinned hard over at one limit or the other and the horizon flipped
-# between them as a square wave.
-WOBBLE = 0.36
-# Where the wobble sits relative to the circle, and it is not a free knob: it
-# decides which way the glider is pointing during the shallow part of the turn,
-# and the shallow part is where the heading dwells. At pi the dwell lands
-# facing east, so the Gate and the city stay in frame for nearly half the loop
-# instead of the fifth of it a uniform sweep would give.
-WOBBLE_PHASE = math.pi
+# The one number that turns the flight path into a bank angle. It converts the
+# rate of turn (rad/s, and scale-invariant -- it does not depend on how big the
+# circuit is) into the tangent of a displayed roll, and it is measured rather
+# than chosen: it puts the 95th percentile of the turn rate exactly on the
+# limiter's knee. It was 22.0 once, which is fifty times too big -- a signal 40
+# to 60 times the clamp, so 99.4% of the loop sat pinned hard over at one limit
+# or the other and the horizon flipped between them as a square wave.
 ROLL_GAIN = 0.82
-# Six degrees. A coordinated turn at this radius and speed really is banked
-# about eighteen, and eighteen is unusable on a panel five times wider than it
-# is tall -- the horizon rises about five pixels per degree of roll and leaves
-# through the corner before you reach ten.
+# Six degrees. The turns on the tour, flown at the speed the tour is flown at,
+# are banked most of the way over -- and anything past about ten degrees is
+# unusable on a panel five times wider than it is tall, because the horizon
+# rises five pixels per degree of roll and leaves through the corner. What has
+# to read is which way you are banking and that it keeps changing, not how far.
 ROLL_LIMIT = 0.105
 
-# Where the glider circles: over the water at the mouth of the strait, the
-# Headlands to the north, the bridge and the city to the east, Mount
-# Tamalpais on the northwest horizon and the Pacific behind. Every heading
-# from here has something in it, which is the entire reason for this spot.
-LOOP_LAT, LOOP_LON = 37.8215, -122.4990
+# --------------------------------------------------------------------------
+# The tour.
+#
+# Latitude, longitude, height above the water, and what the leg is there for.
+# Read it top to bottom and it is the flight: in off the Pacific, through the
+# Gate, east along the city front, north up the bay, round Angel Island, home
+# over the Headlands and back out to sea. It is a *closed* list -- the last
+# point flows into the first -- because the path has to be exactly periodic in
+# t, and 28.9 km of it, which at the default loop is 138 m/s.
+#
+# The heights are the interesting column, and they were the hardest thing here
+# to get right. Parallax -- which is all that says you are moving -- goes as
+# one over the distance to what you pass, so the instinct is to fly as low as
+# possible. That was tried, at 130 to 200 m the whole way round, and it is
+# wrong: on a panel 64 rows tall, an eye at 150 m over a bay 10 km wide puts
+# every far shore inside two pixels of the horizon and the picture becomes a
+# flat line with water under it. There is nothing to have parallax *against*.
+#
+# The second reason is worse, and it is the one that is easy to miss. At this
+# focal length a 64 row panel has a *25 degree vertical field*, so anything
+# nearer than about four and a half times your height is below the bottom edge
+# of the frame. Alcatraz was routed past at 200 m and eight hundred metres
+# abeam, which is not subtle -- it is invisible, and it took a contact sheet to
+# notice, because a frame with an island missing from it looks exactly like a
+# frame with no island in it.
+#
+# So the height goes with what is beside you, and so does the stand-off. The
+# Gate is flown at 145 m, between the deck at 67 and the tower tops at 227, so
+# the transit really does pass under the cables and between the towers; the
+# open crossings are 235 to 265, where you look *down* on the bay and Alcatraz,
+# Angel Island and the Berkeley hills are separately visible instead of stacked
+# on one line; and the landmarks are passed at one to two kilometres rather
+# than at three hundred metres. Hawk Hill at 350 is the same trick: 270 m of
+# headland with the glider 80 m over it, close enough to feel and high enough
+# to see Tamalpais behind it.
+# --------------------------------------------------------------------------
+
+TOUR = [
+    (37.8060, -122.5030, 230.0),   # in off the Pacific, the Gate opening ahead
+    (37.8199, -122.4783, 145.0),   # THE GATE, between the towers
+    (37.8130, -122.4380, 205.0),   # east along the city front, Alcatraz to port
+    (37.8160, -122.4030, 235.0),   # off the Wharf; Treasure Island, Bay Bridge
+    (37.8450, -122.3970, 250.0),   # left, north up the bay
+    (37.8690, -122.4180, 265.0),   # Angel Island two kilometres to port
+    (37.8700, -122.4600, 265.0),   # round its north end, Tamalpais on the bow
+    (37.8480, -122.4850, 300.0),   # south-west over Richardson Bay to Sausalito
+    (37.8300, -122.4950, 350.0),   # over Hawk Hill, the whole bay astern
+    (37.8120, -122.5230, 265.0),   # out past Point Bonita to the open sea
+    (37.8000, -122.5180, 235.0),   # the turn at sea, and round
+]
+
+# How hard the route is smoothed, in harmonics: the width of the Gaussian that
+# rolls the circuit's Fourier coefficients off. The waypoints above are corners
+# and a glider does not fly corners; six harmonics of roll-off rounds them into
+# turns of half a kilometre to a kilometre's radius. It is also what keeps the
+# bank honest, because the curve stays smooth to every order and the second
+# derivative the roll is built out of has no steps in it anywhere. An
+# interpolating spline would have passed exactly through the waypoints and put
+# a discontinuity in that second derivative at every one of them -- eleven
+# places a loop where the wing would snap from one bank to another.
+ROUTE_SIGMA = 6.0
+# Where the series is cut. Three sigma, past which the Gaussian has taken the
+# coefficients to a thousandth and they are not worth the multiply.
+ROUTE_HARMONICS = 18
+# Resolution of the arc-length fit. 1024 samples over 25 km is a 24 m step,
+# well under anything the curve does.
+ROUTE_SAMPLES = 1024
+# Reparameterisation passes; see fit_route(). Twelve takes the variation in
+# ground speed round the loop from 60% to about 5%, and that matters: a curve
+# whose speed surges and stalls between waypoints is exactly the lurching this
+# demo already fixed once.
+ROUTE_PASSES = 12
 
 _BAYER8 = np.array([
     [0, 32, 8, 40, 2, 34, 10, 42], [48, 16, 56, 24, 50, 18, 58, 26],
@@ -248,20 +380,18 @@ def add_arguments(ap):
                     help="haze density, 0 clear to ~2 socked in")
     ap.add_argument("--steps", type=int, default=96,
                     help="depth samples per column; the whole cost knob")
-    ap.add_argument("--far", type=float, default=13000.0,
+    ap.add_argument("--far", type=float, default=17000.0,
                     help="far plane, metres")
     ap.add_argument("--near", type=float, default=120.0,
                     help="near plane, metres")
     ap.add_argument("--fov", type=float, default=96.0,
                     help="horizontal field of view, degrees")
-    ap.add_argument("--altitude", type=float, default=430.0,
-                    help="mean height above sea level, metres")
-    ap.add_argument("--climb", type=float, default=95.0,
-                    help="how far the thermals lift and drop you, metres")
-    ap.add_argument("--loop", type=float, default=90.0,
-                    help="seconds for one circuit of the flight path")
-    ap.add_argument("--radius", type=float, default=390.0,
-                    help="radius of that circuit, metres")
+    ap.add_argument("--altitude", type=float, default=0.0,
+                    help="raise or lower the whole tour, metres")
+    ap.add_argument("--climb", type=float, default=24.0,
+                    help="how far the air lifts and drops you, metres")
+    ap.add_argument("--loop", type=float, default=210.0,
+                    help="seconds for one circuit of the tour")
     ap.add_argument("--bank", type=float, default=1.0,
                     help="how far the horizon tilts in the turns")
     ap.add_argument("--roll-lag", type=float, default=1.2,
@@ -270,10 +400,12 @@ def add_arguments(ap):
                     help="where in the circuit to start, 0..1")
     ap.add_argument("--no-bridge", dest="bridge", action="store_false",
                     help="the bay with none of its bridges built")
+    ap.add_argument("--no-tower", dest="tower", action="store_false",
+                    help="leave Sutro Tower off the ridge")
     ap.add_argument("--no-wing", dest="wing", action="store_false",
                     help="no glider wing in the frame")
     ap.add_argument("--birds", type=int, default=3,
-                    help="other birds working the same thermal")
+                    help="other birds strung out along the same route")
     ap.add_argument("--dither", type=float, default=1.0,
                     help="ordered dither depth in LSBs (0 = off)")
     ap.add_argument("--seed", type=int, default=1937,
@@ -312,6 +444,132 @@ def world_of(lat, lon, bbox, mx, my, shape):
     u = (lon - lon0) / (lon1 - lon0) * shape[1] * mx
     v = (lat1 - lat) / (lat1 - lat0) * shape[0] * my
     return u, v
+
+
+# --------------------------------------------------------------------------
+# The route, as a Fourier series.
+#
+# A closed flight path has to be three things at once: exactly periodic, so a
+# segment that overruns the loop lands back where it started; smooth to the
+# second derivative, because that is what the bank is built out of; and
+# uniform in arc length, because otherwise the glider surges and stalls
+# between waypoints. A Fourier series is all three for free -- it is periodic
+# by construction and infinitely differentiable, and its derivatives are
+# closed-form rather than divided differences -- and the arc-length part is
+# the only one that takes any work, which is done once here.
+#
+# It is also the same object the flight path has always been in this file.
+# What used to be two hand-written harmonics is now twelve fitted ones.
+# --------------------------------------------------------------------------
+
+def series_of(z, harmonics, sigma=None):
+    """Fit `z`, sampled evenly round one turn, as sum(c_k exp(i k a)).
+
+    Returns the constant term and the positive and negative coefficients, k
+    running 1..harmonics in both. `z` may be complex -- the route is (east,
+    south) as one complex number -- so the two halves are independent and
+    there is no conjugate symmetry to exploit.
+
+    With `sigma` the coefficients are rolled off by a Gaussian rather than cut
+    off at the last one, and the difference is not cosmetic. A sharp cutoff is
+    a rectangular window, which rings: the curve acquires a ripple at the
+    cutoff frequency all the way round, and since the bank is built out of the
+    second derivative -- where a harmonic at k times the fundamental picks up
+    a factor of k squared -- a ripple far too small to see in the flight path
+    is a wobble you cannot miss in the horizon. A Gaussian rolls off with no
+    ringing at all, and it is exactly the shape a corner takes if you let it
+    diffuse, which is a good description of what a wing does to a corner.
+    """
+    c = np.fft.fft(np.asarray(z, complex)) / len(z)
+    k = int(harmonics)
+    w = 1.0
+    if sigma:
+        w = np.exp(-0.5 * (np.arange(1, k + 1, dtype=float) / sigma) ** 2)
+    return complex(c[0]), c[1:k + 1] * w, c[-k:][::-1] * w
+
+
+def series_at(ser, a):
+    """Evaluate a fitted series at an array of phases. Build time only."""
+    c0, cp, cm = ser
+    e = np.exp(1j * np.outer(np.asarray(a, float),
+                             np.arange(1, len(cp) + 1, dtype=float)))
+    return c0 + e.dot(cp) + np.conj(e).dot(cm)
+
+
+def resample_closed(p, h, n):
+    """n points evenly spaced *along* the closed curve through p, with h."""
+    p = np.append(p, p[:1])
+    h = np.append(h, h[:1])
+    s = np.concatenate([[0.0], np.cumsum(np.abs(np.diff(p)))])
+    want = np.linspace(0.0, s[-1], n, endpoint=False)
+    return (np.interp(want, s, p.real) + 1j * np.interp(want, s, p.imag),
+            np.interp(want, s, h), float(s[-1]))
+
+
+def fit_route(pts, alt, harmonics=ROUTE_HARMONICS, sigma=ROUTE_SIGMA,
+              samples=ROUTE_SAMPLES, passes=ROUTE_PASSES):
+    """Waypoints in, a smooth arc-length-parameterised circuit out.
+
+    Two separate jobs, and doing them in one step is what went wrong first
+    time. The *shape* is settled once, by fitting the polyline and rolling the
+    coefficients off with the Gaussian: that is what rounds the corners. Then
+    the *parameterisation* is fixed, by evaluating the curve densely,
+    resampling it at even arc length along itself and refitting -- with no
+    roll-off this time, because the curve is already band-limited and a plain
+    refit is very nearly lossless. Smoothing again on every pass instead is a
+    heat flow, and a heat flow shrinks a closed curve: twelve passes of it
+    took a 26 km tour down to 7 km, which looked entirely reasonable until
+    somebody measured it.
+
+    What the reparameterisation buys is a constant ground speed. Without it
+    the glider slows to a crawl through the tight turns and sprints down the
+    straights, which is precisely the lurch this file spent a commit removing.
+
+    Returns the position series, the altitude series, and the circuit length
+    in metres -- which is the number the ground speed comes out of.
+    """
+    z, hz, _ = resample_closed(np.asarray(pts, complex),
+                               np.asarray(alt, float), samples)
+    dense = np.linspace(0.0, 2.0 * math.pi, 8 * samples, endpoint=False)
+    pos = series_of(z, harmonics, sigma)
+    hgt = series_of(hz, harmonics, sigma)
+    for _ in range(max(0, int(passes))):
+        z, hz, _ = resample_closed(series_at(pos, dense),
+                                   series_at(hgt, dense).real, samples)
+        pos, hgt = series_of(z, harmonics), series_of(hz, harmonics)
+    _, _, length = resample_closed(series_at(pos, dense),
+                                   series_at(hgt, dense).real, samples)
+    return pos, hgt, length
+
+
+def series_evaluator(ser):
+    """A scalar `a -> (value, d/da, d2/da2)` for use inside render().
+
+    Plain Python complex arithmetic on plain floats: a float32 numpy scalar
+    costs about thirty times more per operation, which fsn.py measured the
+    hard way, and this runs a few times a frame. The powers of exp(ia) come
+    out of one multiply each rather than one call to exp each, so the whole
+    evaluation costs two trig calls however many harmonics there are, and
+    exp(-ika) is the conjugate of exp(ika) because the modulus is one.
+    """
+    c0, cp, cm = ser
+    terms = list(zip(range(1, len(cp) + 1),
+                     (complex(v) for v in cp), (complex(v) for v in cm)))
+
+    def at(a):
+        e = complex(math.cos(a), math.sin(a))
+        p, d1, d2 = c0, 0j, 0j
+        w = 1.0 + 0j
+        for k, ck, dk in terms:
+            w *= e
+            up = ck * w
+            dn = dk * w.conjugate()
+            p += up + dn
+            d1 += k * (up - dn)
+            d2 -= k * k * (up + dn)
+        return p, d1 * 1j, d2
+
+    return at
 
 
 def hillshade(hgt, mx, my, az_deg, el_deg):
@@ -421,6 +679,7 @@ def build_palette(light, fog_gain):
     # distance without a single colour operation. Three classes per bridge,
     # laid out consecutively so the compositor addresses them as base + part.
     base[CLS_BIRD] = np.array((18.0, 16.0, 20.0), f32)[None, :]
+    base[CLS_MAST] = np.array(MASTS[0]["rgb"], f32)[None, :]
     for b, spec in enumerate(BRIDGES):
         for part, rgb in enumerate(spec["rgb"]):
             base[CLS_STEEL0 + NPART * b + part] = np.array(rgb, f32)[None, :]
@@ -528,6 +787,30 @@ def bake_bridge(spec, index, bbox, mx, my, shape, nodes=193):
                          if heights[i + 1] == spec["tower"]], f32),
         hw=spec["thick"] / total, depth=spec["depth"],
         pidx=base + np.array([0, NFOG, 2 * NFOG], np.int32) * NSHADE)
+
+
+def bake_mast(spec, ground, bbox, mx, my, shape):
+    """A mast as a stack of silhouettes, one per whole pixel of height.
+
+    Built here rather than scaled per frame, and by nearest neighbour rather
+    than by anything smoother, because the art is a one-pixel lattice: any
+    interpolation turns the gaps between the legs into grey and the tower
+    stops being a lattice at all. It only approaches slowly, so a sprite per
+    integer height is a couple of dozen tiny arrays and the frame does a
+    lookup.
+    """
+    art = np.array([[c != ' ' for c in row] for row in spec["art"]], bool)
+    ah, aw = art.shape
+    table = []
+    for h in range(MAST_MIN, MAST_MAX + 1):
+        w = max(1, int(round(h * aw / float(ah))))
+        rows = (np.arange(h) * ah) // h
+        cols = (np.arange(w) * aw) // w
+        table.append(np.ascontiguousarray(art[rows][:, cols]))
+    u, v = world_of(spec["lat"], spec["lon"], bbox, mx, my, shape)
+    return dict(name=spec["name"], u=u + mx, v=v + my,
+                height=float(spec["height"]), ground=float(ground),
+                spr=table, pidx=np.int32(CLS_MAST * NSHADE * NFOG))
 
 
 def haze_band(z, far):
@@ -671,9 +954,20 @@ def build(args):
     # to the array.
     inv_mx, inv_my = f32(1.0 / mx), f32(1.0 / my)
 
-    loop_u, loop_v = world_of(LOOP_LAT, LOOP_LON, bbox, mx, my, shape)
-    loop_u += mx
-    loop_v += my                                  # into padded coordinates
+    # --- the tour ------------------------------------------------------------
+    # Waypoints to padded map metres, then one smooth closed circuit through
+    # them. Everything about where the glider is and which way it is pointing
+    # comes off this curve and its derivatives; nothing integrates.
+    wp = []
+    for lat, lon, _ in TOUR:
+        u, v = world_of(lat, lon, bbox, mx, my, shape)
+        wp.append(complex(u + mx, v + my))
+    route, route_z, route_len = fit_route(wp, [z for _, _, z in TOUR])
+    at_pos = series_evaluator(route)
+    at_alt = series_evaluator(route_z)
+    # The trim is applied to the constant term, so --altitude shifts the whole
+    # tour without touching its shape or any of its derivatives.
+    alt_trim = float(args.altitude)
 
     # --- camera -------------------------------------------------------------
     focal = 0.5 * W / math.tan(0.5 * math.radians(
@@ -732,18 +1026,38 @@ def build(args):
     bridges = ([bake_bridge(spec, i, bbox, mx, my, shape)
                 for i, spec in enumerate(BRIDGES)] if args.bridge else [])
 
+    # --- masts ----------------------------------------------------------------
+    # The ridge a mast stands on comes out of the DEM rather than out of a
+    # table, so it cannot end up floating over the hill or buried in it if the
+    # terrain is ever re-baked at a different cell size.
+    masts = []
+    if args.tower:
+        for spec in MASTS:
+            gu, gv = world_of(spec["lat"], spec["lon"], bbox, mx, my, shape)
+            gc, gr = int(gu / mx) + 1, int(gv / my) + 1
+            g = float(hmap[max(0, gr - 1):gr + 2, max(0, gc - 1):gc + 2].max())
+            masts.append(bake_mast(spec, g, bbox, mx, my, shape))
+
     # --- birds ----------------------------------------------------------------
     bird_masks = [np.array([[ch != ' ' for ch in r] for r in p], bool)
                   for p in BIRD_POSES]
     nbirds = max(0, int(args.birds))
-    # They work the same lift, a few hundred metres off and lower down, which
-    # is what makes them a depth cue rather than decoration: you look down on
-    # them against the water and they cross in front of the headland.
-    bird_r = rng.uniform(180.0, 460.0, nbirds)
+    # Strung out along the tour rather than circling one thermal, because
+    # there is no longer one thermal: each bird hangs a fixed way ahead of or
+    # behind the glider on the same curve, circling a little as it goes. That
+    # keeps them a depth cue rather than decoration -- you look down on them
+    # against the water and they cross in front of a headland -- and it keeps
+    # them in frame, since a bird parked over Hawk Hill is out of sight for
+    # nine tenths of the loop.
+    bird_r = rng.uniform(90.0, 260.0, nbirds)
     bird_ph = rng.uniform(0.0, 2.0 * math.pi, nbirds)
-    bird_dz = rng.uniform(-150.0, -40.0, nbirds)
+    bird_dz = rng.uniform(-90.0, -25.0, nbirds)
     bird_rate = rng.uniform(0.055, 0.085, nbirds)
     bird_flap = rng.uniform(1.6, 2.6, nbirds)
+    # Where on the circuit, as a fraction of it. Small: a tenth of a 25 km
+    # tour is 2.5 km, which is already past the range a five-pixel bird has
+    # any business being drawn at.
+    bird_along = rng.uniform(-0.035, 0.045, nbirds)
     bird_pix = np.int32(CLS_BIRD * NSHADE * NFOG)
 
     # --- wing -----------------------------------------------------------------
@@ -788,83 +1102,62 @@ def build(args):
     out = np.empty((H, W, 3), np.uint8)
     nbins = (H + 1) * W
     watermax = np.int32(NSHADE * NFOG)
-    need_z = bool(bridges or nbirds)
+    need_z = bool(bridges or masts or nbirds)
 
     period = max(args.loop, 8.0)
-    radius = max(args.radius, 40.0)
-
-    def path(a):
-        """The curve, and its first two derivatives, at phase angle `a`.
-
-        Two harmonics: one circuit per loop, plus a wobble at *twice* that.
-        It was three times, and that was the whole reason the bank snapped.
-        Curvature is built out of the second derivative, and a harmonic at
-        k times the fundamental carries a factor of k-squared into it -- nine
-        for the third, four for the second. With a wobble amplitude of 0.24 r
-        the third harmonic was contributing more than twice the curvature of
-        the circle it was supposed to be decorating, so the turn genuinely
-        lurched: it was not a display problem, the flight path was wrong.
-        Halving the harmonic and raising the amplitude to 0.36 r gets the same
-        excursion in *position* -- the wobble is still plainly there, and the
-        bank still reverses briefly on the shallow side -- with the curvature
-        varying by about a factor of two over the loop instead of twenty.
-        """
-        s1, c1 = math.sin(a), math.cos(a)
-        b = 2.0 * a + WOBBLE_PHASE
-        s2, c2 = math.sin(b), math.cos(b)
-        r2 = WOBBLE * radius
-        return (loop_u + radius * s1 + r2 * s2,
-                loop_v + 0.82 * radius * c1 + 0.7 * r2 * c2,
-                radius * c1 + 2.0 * r2 * c2,
-                -0.82 * radius * s1 - 2.0 * 0.7 * r2 * s2,
-                -radius * s1 - 4.0 * r2 * s2,
-                -0.82 * radius * c1 - 4.0 * 0.7 * r2 * c2)
+    omega = 2.0 * math.pi / period
+    start_phase = args.phase * 2.0 * math.pi
+    roll_lag = max(args.roll_lag, 0.0)
 
     def camera(t):
         """Where the glider is and which way it is pointing.
 
-        A closed curve rather than an integrated heading, so the path is
+        A closed curve rather than an integrated heading, so the tour is
         exactly periodic: a segment that overruns the loop point lands back
-        where it started instead of drifting off the map.
+        where it started instead of drifting off the map, and two calls at the
+        same t give the same answer, which is what lets the demo be seeked.
 
         Heading and bank come from the first and second derivatives of that
         same curve rather than being animated separately, so the wing is
-        always banked into the turn it is really making. All of it is `math`
-        on plain floats: a float32 numpy scalar costs about thirty times more
-        per operation, which fsn.py measured the hard way.
+        always banked into the turn it is really making, and the nose is
+        always pointed along the track -- which is most of what makes a tour
+        read as going somewhere rather than as being swung around.
 
         The bank is read off the curve a second or so *behind* where the
         glider is, which is the wing's roll inertia: a real one does not adopt
         a new bank the instant the air asks for it, it rolls in over about a
         second. A first-order lag would need an integrator and integrator
-        state, and render() has to stay a pure function of t or the demo
-        cannot be seeked. Evaluating the same closed curve at t - lag is the
-        same thing done analytically -- every harmonic comes out shifted by
-        its own share of the delay -- and it is still exactly periodic.
+        state, and render() has to stay a pure function of t. Evaluating the
+        same closed curve at t - lag is the same thing done analytically --
+        every harmonic comes out shifted by its own share of the delay -- and
+        it is still exactly periodic.
         """
-        w = 2.0 * math.pi / period
-        ph = args.phase * 2.0 * math.pi
-        lag = max(args.roll_lag, 0.0)
-        u, v, du, dv, _, _ = path(w * t + ph)
-        _, _, ldu, ldv, lddu, lddv = path(w * (t - lag) + ph)
-        du *= w
-        dv *= w
+        a = omega * t + start_phase
+        p, d1, _ = at_pos(a)
+        _, ld1, ld2 = at_pos(a - omega * roll_lag)
+        du, dv = d1.real * omega, d1.imag * omega
         sp2 = max(du * du + dv * dv, 1e-6)
         psi = math.atan2(dv, du)
         # Rate of turn, in rad/s: the cross product over the *square* of the
         # speed rather than the cube, so this is dpsi/dt and not the geometric
-        # curvature. That makes it independent of --radius, which is what lets
-        # ROLL_GAIN be one number rather than something scaled per flight.
-        lsp2 = max(ldu * ldu + ldv * ldv, 1e-6)
-        kappa = w * (ldu * lddv - ldv * lddu) / lsp2
-        # Thermals, on periods that do not share a factor with the circuit,
-        # so the two never line up into an obvious cycle.
-        z = (args.altitude
-             + args.climb * (0.72 * math.sin(w * t * 0.63 + 1.1)
-                             + 0.34 * math.sin(w * t * 1.47 + 0.2)))
-        dz = args.climb * w * (0.4536 * math.cos(w * t * 0.63 + 1.1)
-                               + 0.4998 * math.cos(w * t * 1.47 + 0.2))
-        return u, v, z, psi, kappa, math.atan2(dz, math.sqrt(sp2))
+        # curvature. That makes it independent of how big the circuit is,
+        # which is what lets ROLL_GAIN be one number rather than something
+        # scaled per flight.
+        lsp2 = max(ld1.real * ld1.real + ld1.imag * ld1.imag, 1e-6)
+        kappa = omega * (ld1.real * ld2.imag - ld1.imag * ld2.real) / lsp2
+        # The route's own height profile, plus air that lifts and drops you.
+        # The two rates are whole numbers of cycles per circuit -- anything
+        # else would make the flight not quite close, and this one has to --
+        # but they are coprime and far apart, so nothing lines up into a
+        # visible beat inside a loop.
+        h, hd, _ = at_alt(a)
+        z = (h.real + alt_trim
+             + args.climb * (0.72 * math.sin(5.0 * a + 1.1)
+                             + 0.34 * math.sin(11.0 * a + 0.2)))
+        dz = omega * (hd.real
+                      + args.climb * (3.60 * math.cos(5.0 * a + 1.1)
+                                      + 3.74 * math.cos(11.0 * a + 0.2)))
+        return p.real, p.imag, z, psi, kappa, math.atan2(dz, math.sqrt(sp2))
 
     # ----------------------------------------------------------------------
     # A bridge, composited into the *index* image rather than into colour.
@@ -947,15 +1240,55 @@ def build(args):
         paint(r_deck, r_deck + thick, P_DECK, ok)             # roadway
         paint(r_cable - 0.5, r_cable + 0.5, P_CABLE, ok)      # main cable
 
+    def draw_mast(m, camu, camv, camz, fu, fv, ru, rv):
+        """One mast, as a depth-tested billboard.
+
+        Simpler than a bridge and for a good reason: a bridge is a kilometre
+        of object crossing the view, so every column of it is at its own
+        distance and has to be solved for. A mast is a point. One projection
+        settles where it is, one sprite settles what it looks like, and the
+        depth test is against a single number -- so Twin Peaks in front of it
+        hides it, which from most of this tour is exactly what happens.
+        """
+        du, dv = m["u"] - camu, m["v"] - camv
+        zc = du * fu + dv * fv
+        if zc < near or zc > far:
+            return
+        xs = 0.5 * W + focal * (du * ru + dv * rv) / zc
+        sc = focal / zc
+        hp = int(round(m["height"] * sc))
+        if hp < MAST_MIN or not (-W < xs < 2 * W):
+            return
+        spr = m["spr"][min(hp, MAST_MAX) - MAST_MIN]
+        bh, bw = spr.shape
+        # Same horizon shear the terrain uses, or the tower leans away from
+        # the hill it is standing on every time the wing is banked.
+        col = min(W - 1, max(0, int(xs)))
+        base = float(horiz[col]) + sc * (camz - m["ground"])
+        x0, y0 = int(round(xs)) - bw // 2, int(round(base)) - bh
+        cx0, cy0 = max(0, x0), max(0, y0)
+        cx1, cy1 = min(W, x0 + bw), min(H, y0 + bh)
+        if cx1 <= cx0 or cy1 <= cy0:
+            return
+        sub = spr[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
+        vis = sub & (zbuf[cy0:cy1, cx0:cx1] > zc)
+        fb = int(round(min(zc / far, 1.0) * (NFOG - 1)))
+        np.putmask(pidx[cy0:cy1, cx0:cx1], vis, m["pidx"] + fb)
+
     def draw_birds(t, camu, camv, camz, fu, fv, ru, rv):
         pose = bird_masks[int(t * 6.0) % len(bird_masks)]
         bh, bw = pose.shape
         for i in range(nbirds):
             a = 2.0 * math.pi * bird_rate[i] * t + bird_ph[i]
-            bu_ = loop_u + bird_r[i] * math.sin(a) * 1.6
-            bv_ = loop_v + bird_r[i] * math.cos(a) * 1.3
-            bz = (args.altitude + bird_dz[i]
-                  + 22.0 * math.sin(a * 3.0 + bird_flap[i]))
+            seat = omega * t + start_phase + 2.0 * math.pi * bird_along[i]
+            here, _, _ = at_pos(seat)
+            bu_ = here.real + bird_r[i] * math.sin(a) * 1.6
+            bv_ = here.imag + bird_r[i] * math.cos(a) * 1.3
+            # Height taken off the glider rather than off the route, which
+            # saves a second series evaluation per bird per frame and is the
+            # same number to within the handful of metres the route climbs
+            # over the couple of hundred a bird sits ahead of or behind you.
+            bz = camz + bird_dz[i] + 22.0 * math.sin(a * 3.0 + bird_flap[i])
             du, dv = bu_ - camu, bv_ - camv
             zc = du * fu + dv * fv
             if zc < near * 0.4 or zc > 3500.0:
@@ -1122,6 +1455,8 @@ def build(args):
             np.take(Zbuf, idx, out=zbuf)
         for b in bridges:
             draw_bridge(b, camu, camv, camz, fu, fv, ru, rv)
+        for m in masts:
+            draw_mast(m, camu, camv, camz, fu, fv, ru, rv)
         if nbirds:
             draw_birds(t, camu, camv, camz, fu, fv, ru, rv)
 

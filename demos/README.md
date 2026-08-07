@@ -938,30 +938,47 @@ $ python3 esper.py --no-commands                # just the photograph moving
 
 ![voxel](screenshots/voxel.png)
 
-A hang glider circling a thermal off Hawk Hill, over the real San Francisco
-Bay. Comanche-style voxel space: for every screen column, march a ray out
-along the ground, look up the height under it, and work out how far up the
-screen that lands. The nearest thing wins. It is the oldest trick for drawing
-landscape in real time and it is still the right one here, because the cost is
-set by the number of columns and the depth budget rather than by any amount of
-geometry.
+A hang glider's tour of San Francisco Bay: in off the Pacific, through the
+Golden Gate *between the towers*, across the front of the city with Alcatraz
+opening to port, north up the bay past Treasure Island and the Bay Bridge,
+round Angel Island, back west over Sausalito and up over Hawk Hill with
+Tamalpais on the horizon, then out past Point Bonita to the open sea and round.
+Comanche-style voxel space: for every screen column, march a ray out along the
+ground, look up the height under it, and work out how far up the screen that
+lands. The nearest thing wins. It is the oldest trick for drawing landscape in
+real time and it is still the right one here, because the cost is set by the
+number of columns and the depth budget rather than by any amount of geometry.
 
 **The terrain is real, and it is in the file.** 768x768 cells of USGS 3DEP
-elevation at about 45 m a cell, covering 37.68–37.99 N and 122.28–122.68 W —
-Mount Tamalpais on the northwest corner, the Marin Headlands over the strait,
-the Golden Gate, San Francisco out to Twin Peaks, Angel Island, the Berkeley
-hills. 3DEP is public domain; `scripts/make-voxel-dem.py` is the one-off bake
-that downloads it, fills the voids where the survey stops at the continental
-shelf, works out which of it is water and writes `voxel-dem.npz`, and the
-provenance is written down at the top of that script. The demo itself reads
-only the committed asset and needs nothing but numpy — no network, no GDAL.
-It comes to 206 kB because the heights are quantised to whole metres and
-stored as the horizontal *difference*: terrain is smooth, so the differences
-are small numbers around zero and DEFLATE eats them, four or five times better
-than it manages on the raw heights. Sea level is stored as exactly zero, so
-the Bay and the Pacific are a comparison rather than a second map. Mount
-Diablo is 30 km further east and did not fit at a cell size that still reads
-in the foreground.
+elevation at 45.8 x 57.6 m a cell, covering 37.635–38.035 N and 122.28–122.68 W
+— Mount Tamalpais in the north-west, the Marin Headlands over the strait, the
+Golden Gate, San Francisco out to Twin Peaks and San Bruno Mountain, Angel
+Island, Alcatraz, Yerba Buena, the Berkeley hills. 3DEP is public domain;
+`scripts/make-voxel-dem.py` is the one-off bake that downloads it, fills the
+voids where the survey stops at the continental shelf, works out which of it is
+water and writes `voxel-dem.npz`, and the provenance is written down at the top
+of that script. The demo itself reads only the committed asset and needs
+nothing but numpy — no network, no GDAL. It comes to 201 kB because the heights
+are quantised to whole metres and stored as the horizontal *difference*:
+terrain is smooth, so the differences are small numbers around zero and DEFLATE
+eats them, four or five times better than it manages on the raw heights. Sea
+level is stored as exactly zero, so the Bay and the Pacific are a comparison
+rather than a second map.
+
+**The map was labelled with the wrong box, and nothing looked wrong.** The bake
+asked the National Map's ImageServer for 0.4° of longitude by 0.31° of latitude
+as a square image. That service will not letterbox: when the bbox aspect and
+the image aspect disagree it silently widens the bbox until they match and
+returns *that*, with nothing in the response to say so. So the grid held 0.4° of
+latitude — 44 km of California — while the file said 34, and everything scaled
+from that header was wrong in proportion to how far it sat from the middle of
+the map. Alcatraz was 200 m out and looked fine. Mount Tamalpais was three
+kilometres south of where it is. The Bay Bridge got built a kilometre clear of
+Yerba Buena Island, in open water, which is the sort of thing you only catch by
+knowing where the bridge is meant to touch down. It is fixed in the header and
+in the script, and `fetch()` now refuses a bbox whose aspect does not match the
+image it is asking for, because that is the only check that would have caught
+it.
 
 **The depth march never loops over depth.** The obvious implementation walks
 the ray one step at a time per column, and that is a few thousand numpy calls a
@@ -981,103 +998,161 @@ end and nothing in the frame computes RGB. Distance haze is free, because the
 depth step chooses a band and the band is already the right colour. The chop
 and the sun's glitter on the water are an integer *add* on the pixels that are
 water — a brighter shade is `+NFOG` — and they pick up the correct haze for
-their distance without knowing anything about it. A bridge is a class like
-any other, so painting it is writing class numbers into that index image before
-the gather.
+their distance without knowing anything about it. A bridge is a class like any
+other, so painting it is writing class numbers into that index image before the
+gather.
 
 **The bridges have to be objects.** A heightmap cannot have sky under a road
 deck. Each column's ray is intersected with the vertical plane of the deck, a
 2x2 solve vectorised across the whole width, which gives that column's position
 along the span and its distance from the eye together; and since the raycast
 has already left a depth per pixel, hiding it behind Lime Point is one compare.
-Sail past and the headland eats the far end of it, which is what says the
-bridge is *in* the landscape rather than drawn over it.
-
 There are two of them, and that is why the geometry is a table rather than
 code: a name, a latitude, a bearing, a list of span lengths in feet and three
 colours, from which the same compositor draws either. The Golden Gate is the
 real thing in the units `goldengate` uses — 4200 ft of main span, 526 ft of
 tower over a deck 220 ft above the water — with the detail that carries the
-silhouette, the main cable's vertex sitting *on* the deck at midspan, which is
-most of what makes it read as this bridge rather than a generic suspension
-bridge.
+silhouette, the main cable's vertex sitting *on* the deck at midspan. The Bay
+Bridge is the western crossing, 2310 ft of main span either side of the central
+anchorage, in silver-grey steel rather than International Orange; at the three
+to eleven kilometres the tour sees it from, what survives is a pale line low on
+the haze with two nubs on it where the towers are, and the temptation to scale
+it up is the temptation to draw something that is not there. Its eastern span
+is left out because Yerba Buena Island is in front of it.
 
-**The Bay Bridge is eleven kilometres away and it is meant to look it.** The
-western crossing, 2310 ft of main span either side of the central anchorage, in
-silver-grey steel rather than International Orange — and the colour does most
-of the work, because what survives the range is a pale line low on the haze
-about twenty pixels long with two small nubs on it where the towers are. That
-is what it looks like from the Marin Headlands on a clear evening, and the
-temptation to scale it up or drag it closer is the temptation to draw something
-that is not there. It fits inside the existing depth budget with room to spare
-(13 km far plane against 10.5 to 11.7 km of bridge), so nothing had to be
-extended and nothing had to be re-baked; the eastern span is left out because
-Yerba Buena Island is in front of it. It costs about 0.05 ms a frame on a
-desktop, all of it in the twenty-odd columns it covers.
+**The Gate transit is the shot the route is built around.** The flight crosses
+the plane of the bridge 267 m from midspan — the main span runs 640 m either
+side of that — at 161 m above the water, which is between the deck at 67 m and
+the tower tops at 227 m. So it genuinely passes between the towers and under
+the cables, and for two seconds the deck is overhead and the suspenders are
+sliding past on both sides. Everything else about the waypoints was arranged
+around making that happen on the right heading.
+
+**Sutro Tower is there and it is five pixels.** 298 m of tower on a 255 m
+ridge, which makes it the only part of San Francisco legible from across the
+bay, so it is drawn: sunset.py's sprite unchanged, three prongs on a lattice
+body stepping out to a splayed tripod base, scaled by nearest neighbour into a
+table of silhouettes at every whole pixel height and depth-tested as a
+billboard against the raycast, so Twin Peaks in front of it hides it. The
+downtown skyline was tried and left out — from six kilometres it is four rows of
+very slightly lighter grey against a hazy hill, which is to say it is nothing.
+The one thing worth knowing about the size table is why its lower bound is
+where it is: the tower crosses the threshold *during* a pass, and set one pixel
+higher — at the size where it still reads as a trident — it dropped out for a
+single frame on the way past. A landmark slightly too small beats one that
+blinks.
+
+**The route is a Fourier series, and that is not a flourish.** A closed flight
+path has to be three things at once. Exactly periodic, so a segment that
+overruns the loop lands back where it started rather than drifting off the map
+— measured at 2 × 10⁻¹⁰ m of drift after thirty-seven loops. Smooth to the
+second derivative, because that is what the bank is built out of. And uniform in
+arc length, because otherwise the glider surges and stalls between waypoints, a
+lurch this file has already been fixed for once. A harmonic series is the first
+two for free, and its derivatives are closed-form rather than divided
+differences. An interpolating spline would have passed exactly through the
+waypoints and put a discontinuity in that second derivative at every one of
+them — eleven places a loop where the wing snaps from one bank to another.
+
+Two things it took two attempts to get right. The corners are rounded by
+rolling the coefficients off with a *Gaussian* rather than by cutting them off
+at the last one: a rectangular window rings, and since curvature carries a
+factor of k² a ripple far too small to see in the flight path is a wobble you
+cannot miss in the horizon. And the arc-length parameterisation is a separate
+pass that does *not* re-smooth — evaluate the curve densely, resample it at even
+spacing along itself, refit, twelve times. Smoothing again on every pass is a
+heat flow, and a heat flow shrinks a closed curve: it took a 26 km tour down to
+7 km, which looked entirely plausible until somebody measured it. Done properly
+the ground speed varies by 2.3% over the whole loop.
+
+**Height goes with what is beside you, and the instinct was backwards.**
+Parallax is the only thing that says you are moving, and it goes as one over the
+distance to what you pass, so the obvious move is to fly as low as possible.
+That was tried at 130–200 m the whole way round and it is wrong twice over.
+First, an eye at 150 m over a bay 10 km wide puts every far shore inside two
+pixels of the horizon: the picture becomes a flat line with water under it and
+there is nothing to have parallax *against*. Second, and this is the one that
+is easy to miss, a 320x64 panel at this focal length has a **25 degree vertical
+field** — so anything closer than about four and a half times your height is
+below the bottom of the frame. Alcatraz was routed past at 200 m, and at 800 m
+abeam it was not subtle, it was *invisible*. So the Gate is flown at 145 m
+between deck and tower tops, the open crossings at 235–265 where you look down
+on the bay and Alcatraz, Angel Island and the Berkeley hills are separately
+visible instead of stacked on one line, Hawk Hill at 350 with 80 m of air over
+it, and the landmarks are passed at one to two kilometres rather than at three
+hundred metres.
+
+**A hang glider cannot tour the bay in three minutes.** The circuit is 28.9 km
+and the loop is 210 seconds, which is 138 m/s — 496 km/h, about eleven times
+what a wing actually does. A real one at 13 m/s would need thirty-seven
+minutes. That is a deliberate trade and it is the right one: the alternative is
+either a tour nobody watches to the end, or a demo that circles one thermal and
+reads as rotation rather than travel, which is what this was before. Flying
+lower makes a given speed read faster, so a good part of the apparent motion is
+bought with height rather than with speed; and `--loop` is one flag away if you
+want it slower. The wing stays.
 
 **The wing does not move, and that is the physics.** In a coordinated turn the
-pilot and the wing keep the same relationship and it is the world that tilts,
-so the two spars are a static overlay costing one composite and the horizon
-rolls behind them. They are swept hard into the top corners; drawn shallower
-and thinner, crossing most of the width, they read as two scratches on the sky
+pilot and the wing keep the same relationship and it is the world that tilts, so
+the two spars are a static overlay costing one composite and the horizon rolls
+behind them. They are swept hard into the top corners; drawn shallower and
+thinner, crossing most of the width, they read as two scratches on the sky
 rather than as structure overhead. The bank itself is scaled well down from
-true: a turn at this radius really is banked about eighteen degrees, and on a
+true: at this speed the turns really are banked most of the way over, and on a
 panel five times wider than it is tall the horizon rises about five pixels per
 degree of roll and leaves through the corner before you reach ten.
 
-**The bank was a square wave, and the flight path was the reason.** The bank
-comes from the curvature of the flight path, and the path carried a wobble at
-three times the circuit rate. Curvature comes out of the second derivative,
+**The bank was a square wave once, and the flight path was the reason.** The
+bank comes from the curvature of the path, and the path used to carry a wobble
+at three times the circuit rate; curvature comes out of the second derivative,
 where a harmonic at k times the fundamental picks up a factor of k², so at nine
-times the weight the wobble was contributing more curvature than the circle it
-decorated: the signal arriving at the roll clamp was forty to sixty times the
-clamp, and 99% of the loop sat pinned hard over at one limit or the other, with
-the horizon flipping between them in a couple of frames. It was not a display
-problem. The glider was genuinely lurching, and no amount of smoothing applied
-after the clamp could have helped.
+times the weight the wobble contributed more curvature than the circle it
+decorated. The signal arriving at the roll clamp was forty to sixty times the
+clamp, 99% of the loop sat pinned hard over at one limit or the other, and the
+horizon flipped between them in a couple of frames. It was not a display
+problem. The glider was genuinely lurching, and no smoothing applied after the
+clamp could have helped.
 
-So the wobble is now a second harmonic — a factor of four rather than nine —
-at a larger amplitude, which keeps the same excursion in position while the
-curvature varies by about a factor of two over the loop instead of twenty. The
-gain onto the roll was measured rather than guessed, at the value that puts the
-95th percentile of the turn rate on the limiter's knee, and the limiter is
+The gain onto the roll was measured rather than guessed, at the value that puts
+the 95th percentile of the turn rate on the limiter's knee, and the limiter is
 `limit · tanh(x/limit)` rather than a clamp, because a clamp has a corner in it
-and a corner in the roll is the horizon stopping dead. The measured result:
-roll runs −4.5° to +2.1°, reverses once a loop, and changes at a median of
-0.13°/s and never faster than 0.7°/s, where before it was flat at zero for 99%
-of the loop and 117°/s for the rest.
-
-A real wing has roll inertia and takes about a second to roll into a turn, so
-the bank is read off the curve a second behind where the glider is. Doing that
-with an integrator would have put state in `render()`, which has to stay a pure
-function of `t` or the demo cannot be seeked; evaluating the same closed curve
-at `t − lag` is the same thing analytically, shifts every harmonic by its own
-share of the delay, and stays exactly periodic. And the wobble's phase against
-the circle is not a free knob: it decides which way the glider is pointing
-during the shallow part of the turn, where the heading dwells, and pointing
-that dwell east keeps the Gate and the city in frame for nearly half the loop
-instead of the fifth of it an even sweep gives.
+and a corner in the roll is the horizon stopping dead. On the tour the same
+gain gives a roll running −5.6° to +2.6°, changing at a median of 0.19°/s and
+never faster than 1.3°/s, with the soft limiter engaged for 6% of the loop —
+against 0.13 to 0.71°/s on the old thermal circuit, which is the price of
+actually turning corners instead of circling, and still nothing like a snap.
+A real wing has roll inertia and takes about a second to roll in, so the bank is
+read off the curve a second behind where the glider is. Doing that with an
+integrator would have put state in `render()`, which has to stay a pure function
+of `t` or the demo cannot be seeked; evaluating the same closed curve at
+`t − lag` is the same thing analytically, shifts every harmonic by its own share
+of the delay, and stays exactly periodic.
 
 Two things that only showed up by looking at frames. The sky ramp is indexed in
 *thirds* of a row rather than whole ones — with whole rows, the sheared horizon
 steps the index by one somewhere along the width and draws a vertical seam
 straight down a gradient this smooth. And the haze colour is deliberately
-darker and greyer than the sky above it: matched to the sky, which is the
-honest thing for thick haze, the skyline stops existing and the whole picture
-collapses into one diagonal gradient.
+darker and greyer than the sky above it: matched to the sky, which is the honest
+thing for thick haze, the skyline stops existing and the whole picture collapses
+into one diagonal gradient.
 
-The flight path is a closed curve rather than an integrated heading, so a
-segment that overruns the loop lands back where it started instead of drifting
-off the map, and heading, bank and pitch are all derivatives of that same curve.
-One circuit takes a minute and a half; `--steps` is the cost knob and the only
-one that matters.
+The far plane is 17 km rather than 13, which is what it takes to have Mount
+Tamalpais on the horizon at all — from the Sausalito leg it is 13.4 km off, and
+at 784 m it is the highest thing in the model. That costs about 0.04 ms a frame,
+because the depth schedule is geometric and stretching it only makes the steps
+slightly coarser rather than adding any. On this desktop the whole frame is
+0.71 ms mean and 0.90 ms at the 95th percentile at `--steps 96`, against 0.61
+and 0.73 before; of the difference, roughly a third is the longer far plane, a
+third Sutro Tower, and a third evaluating an eighteen-harmonic curve several
+times a frame. The Pi 3 budget is 20 ms and cannot be measured from here.
+`--steps` is the cost knob and the only one that really matters.
 
 ```console
 $ python3 voxel.py --light dusk --fog 1.4
-$ python3 voxel.py --loop 120 --radius 550 --altitude 520
-$ python3 voxel.py --bank 1.6 --roll-lag 0        # steeper, and no roll inertia
-$ python3 voxel.py --no-wing --birds 0 --steps 64
-$ python3 scripts/make-voxel-dem.py            # re-bake the terrain (needs Pillow)
+$ python3 voxel.py --loop 420 --altitude -60    # half speed, and lower
+$ python3 voxel.py --bank 1.6 --roll-lag 0      # steeper, and no roll inertia
+$ python3 voxel.py --no-wing --no-tower --birds 0 --steps 64
+$ python3 scripts/make-voxel-dem.py     # re-bake the terrain (needs Pillow)
 ```
 
 ## demoscene.py
