@@ -10,10 +10,13 @@ with a switch. So it is both, as several entities on one device:
   switch  Playing         the rotation, paused or not (ftsched)
   select  Demo            jump to a named effect (ftsched)
   button  Next            advance (ftsched)
-  button  Wipe            clear every layer (ft_server)
-  button  Restart         restart the rotation (ftsched)
   sensor  Now playing     what is on
+  sensor  Frame rate      how it is doing (diagnostic)
   image   Now playing     a picture of what is on
+
+Wipe and Restart rotation were here and are not any more: neither did anything
+you could see from the room. They remain on the control socket and in the panel.
+Not everything a daemon can do earns a place in a room's controls.
 
 On/off and brightness are deliberately separate channels, and off is never
 brightness 0 -- which is what both AWTRIX and WLED settled on, for the good
@@ -73,6 +76,25 @@ HEARTBEAT_SECONDS = 60
 # second and the broker got three retained publishes a second forever. Frame
 # rate has the same problem more subtly -- it wobbles by a tenth constantly.
 SIGNIFICANT = ("on", "bri", "dimmer", "playing", "demo")
+
+# Entities this used to publish and no longer does. They are named here rather
+# than simply deleted because Home Assistant will not drop an entity it has
+# already registered just because it stopped being described -- see the end of
+# _publish_discovery(). Sent on every discovery publish, which costs one extra
+# retained message per connect and makes the removal self-healing for anyone
+# whose HA was down when they upgraded.
+#
+# Safe to empty once no installation still has these:
+#
+#   Restart rotation -- ftsched's restart is invalidate_from(index + 1) plus the
+#     same skip() that Next does, so on the wall it was indistinguishable from
+#     Next. The queue rebuild it adds only matters after editing the rotation,
+#     which happens in the panel, not from a phone.
+#   Wipe -- clears every layer in ft_server, and ftsched repaints layer 0 at
+#     30-60 fps, so the wall was back inside one frame. It is a real tool for a
+#     stuck client, which is a thing you do at the panel with the scheduler
+#     stopped, not a button worth a place in a room's controls.
+RETIRED = (("restart", "button"), ("wipe", "button"))
 
 
 def start(bridge, args):
@@ -164,8 +186,7 @@ class MqttBridge(object):
                             self.node))
         client.publish(self.t("status"), "online", qos=1, retain=True)
         self._publish_discovery()
-        for suffix in ("power", "brightness", "playing", "demo", "next",
-                       "wipe", "restart"):
+        for suffix in ("power", "brightness", "playing", "demo", "next"):
             client.subscribe(self.t("set/" + suffix), qos=1)
         # Whatever we last knew, immediately, so the entities are not blank
         # until the next poll. Everything is re-asserted after a reconnect
@@ -213,10 +234,8 @@ class MqttBridge(object):
                 b.scheduler.command("jump", index=index)
         elif topic == "next":
             b.scheduler.command("next")
-        elif topic == "restart":
-            b.scheduler.command("restart")
-        elif topic == "wipe":
-            b.wipe()
+        # No restart or wipe: see RETIRED. Both are still on the control socket
+        # and in the panel, which is where they belong.
 
     def _index_of(self, name):
         sched = self.bridge.snapshot()["scheduler"] or {}
@@ -395,27 +414,6 @@ class MqttBridge(object):
                 "availability": sched_availability,
                 "availability_mode": "all",
             },
-            "restart": {
-                "p": "button",
-                "name": "Restart rotation",
-                "unique_id": self.node + "_restart",
-                "command_topic": self.t("set/restart"),
-                "payload_press": "PRESS",
-                "device_class": "restart",
-                "availability": sched_availability,
-                "availability_mode": "all",
-            },
-            "wipe": {
-                "p": "button",
-                "name": "Wipe",
-                "unique_id": self.node + "_wipe",
-                "command_topic": self.t("set/wipe"),
-                "payload_press": "PRESS",
-                "icon": "mdi:eraser",
-                # Wiping is a compositor operation, so this one outlives the
-                # scheduler along with the light.
-                "availability": base_availability,
-            },
             "now_playing": {
                 "p": "sensor",
                 "name": "Now playing",
@@ -450,14 +448,27 @@ class MqttBridge(object):
                 "availability_mode": "all",
             }
 
-        payload = {
-            "dev": device,
-            "o": {"name": "ftctl",
-                  "url": "https://github.com/FlaschenTaschen/ft-cpp"},
-            "state_topic": self.t("state"),
-            "qos": 1,
-            "cmps": components,
-        }
-        topic = "%s/device/%s/config" % (
-            args.mqtt_discovery_prefix.rstrip("/"), self.node)
-        self.client.publish(topic, json.dumps(payload), qos=1, retain=True)
+        def send(cmps):
+            payload = {
+                "dev": device,
+                "o": {"name": "ftctl",
+                      "url": "https://github.com/FlaschenTaschen/ft-cpp"},
+                "state_topic": self.t("state"),
+                "qos": 1,
+                "cmps": cmps,
+            }
+            topic = "%s/device/%s/config" % (
+                args.mqtt_discovery_prefix.rstrip("/"), self.node)
+            self.client.publish(topic, json.dumps(payload), qos=1, retain=True)
+
+        # Dropping a component from the payload does not delete the entity --
+        # Home Assistant keeps what it already registered. It has to be told,
+        # by an update carrying the component with nothing but its platform,
+        # and only then by an update that leaves it out. So retirements are
+        # announced once and then forgotten.
+        if RETIRED:
+            tombstones = dict(components)
+            for name, platform in RETIRED:
+                tombstones[name] = {"p": platform}
+            send(tombstones)
+        send(components)

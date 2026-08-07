@@ -128,8 +128,7 @@ as one device rather than eight loose entities.
 | `light.betelgeuse` | the display: on/off and brightness |
 | `switch` Playing | the rotation, paused or not |
 | `select` Demo | jump to a named effect |
-| `button` Next / Restart rotation | the rotation |
-| `button` Wipe | clear every layer, all clients |
+| `button` Next | advance the rotation |
 | `sensor` Now playing, Frame rate | what is on, and how it is doing |
 | `image` Now playing | a picture of it |
 
@@ -138,11 +137,29 @@ which is what AWTRIX and WLED both settled on, because people expect off to
 remember how bright it was. It matters more here than on a strip: a HUB75 panel
 at minimum duty cycle is not off, it is dim and banding.
 
-Pause is a separate entity from power on purpose. Holding a frame on a lit wall
-and blanking a wall that is still rotating are both things people want, and one
-entity cannot say both. By default turning the light off also pauses the
-rotation, which is policy that lives in `ftctl` and nowhere else; the
+Pause is a separate entity from power on purpose. Staying on one effect while the
+wall is lit, and blanking a wall that is still rotating, are both things people
+want, and one entity cannot say both. By default turning the light off also
+pauses the rotation, which is policy that lives in `ftctl` and nowhere else; the
 `--no-pause-when-off` flag turns it off.
+
+Note what pause does and does not do. `ftsched` calls `show.hold(dt)` — *the
+effect keeps running, the slot just never ends.* So Playing off does not freeze
+the picture; it stops the changeover. Toggling it looks like nothing happened,
+and the difference only shows up 45 seconds later when the wall does not move
+on. That is the intended behaviour and it is worth knowing before diagnosing it
+as a broken switch.
+
+**Wipe and Restart rotation are deliberately not here.** Restart is
+`invalidate_from(index + 1)` plus the same `skip()` as Next, so from the room it
+was Next with a different label; its queue rebuild only matters right after
+editing the rotation, which happens at the panel. Wipe clears every layer in
+`ft_server`, and `ftsched` repaints layer 0 at 30–60 fps, so the wall is back
+inside a single frame — it is a real tool for a stuck client, used with the
+scheduler stopped, not a button for a room. Both remain on the control socket
+and in the panel. Removing them from Home Assistant takes two publishes, not
+none: see `RETIRED` in `ftctl_mqtt.py`, because HA does not drop an entity it has
+registered merely because you stopped describing it.
 
 Everything that needs `ftsched` carries its own availability topic, so when the
 scheduler is down those entities go unavailable on their own and the light stays
