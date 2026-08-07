@@ -127,9 +127,21 @@ class MqttBridge(object):
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc != 0:
-            sys.stderr.write("ftctl: MQTT refused connection, rc=%s\n" % rc)
+            # 4 is bad credentials and 5 is not authorised, which are the two
+            # worth naming: both look identical from the outside.
+            sys.stderr.write("ftctl: MQTT refused connection, rc=%s (%s)\n"
+                             % (rc, {1: "bad protocol version",
+                                     2: "client id rejected",
+                                     3: "broker unavailable",
+                                     4: "bad username or password",
+                                     5: "not authorised"}.get(rc, "see paho rc")))
             return
         self._connected = True
+        sys.stderr.write("ftctl: MQTT connected to %s:%d, publishing discovery "
+                         "to %s/device/%s/config\n"
+                         % (self.args.mqtt_host, self.args.mqtt_port,
+                            self.args.mqtt_discovery_prefix.rstrip("/"),
+                            self.node))
         client.publish(self.t("status"), "online", qos=1, retain=True)
         self._publish_discovery()
         for suffix in ("power", "brightness", "playing", "demo", "next",
@@ -142,6 +154,11 @@ class MqttBridge(object):
 
     def _on_disconnect(self, client, userdata, rc, properties=None):
         self._connected = False
+        # rc 0 is our own disconnect(); anything else is the broker or the
+        # network, and paho will reconnect on its own.
+        if rc != 0:
+            sys.stderr.write("ftctl: MQTT lost the broker (rc=%s), retrying\n"
+                             % rc)
 
     # -- inbound ----------------------------------------------------------
 

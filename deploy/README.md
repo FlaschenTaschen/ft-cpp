@@ -101,11 +101,22 @@ They do not belong in a file in the repository:
 sudo systemctl edit ftctl.service
 ```
 ```ini
-[Service]
+[Service]                          # <- this line matters, see below
 Environment=FTCTL_MQTT_HOST=mqtt.lan
 Environment=FTCTL_MQTT_USER=ftctl
 Environment=FTCTL_MQTT_PASS=...
 Environment=FTCTL_PUBLIC_URL=http://betelgeuse.local/
+```
+
+**Keep the `[Service]` header.** Without it systemd discards every `Environment=`
+line with an "Assignment outside of section" warning in the journal, `--mqtt-host`
+arrives empty, and the wall never turns up in Home Assistant. `journalctl -u ftctl`
+says which happened:
+
+```
+ftctl: MQTT connected to broker:1883, publishing discovery to homeassistant/device/betelgeuse/config
+ftctl: no --mqtt-host, so no Home Assistant; HTTP control API only
+ftctl: MQTT refused connection, rc=5 (not authorised)
 ```
 
 The wall then appears in Home Assistant by itself — discovery is the

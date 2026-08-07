@@ -530,6 +530,15 @@ def main():
         mqtt_bridge = ftctl_mqtt.start(bridge, args)
         if mqtt_bridge is None:
             sys.stderr.write("ftctl: MQTT not started; HTTP still serving\n")
+    else:
+        # Say so. Silence here is indistinguishable from a broker that is simply
+        # quiet, and the way this goes wrong in practice is a systemd drop-in
+        # whose Environment= lines sit above the [Service] header -- systemd
+        # discards them with a warning nobody is looking for, --mqtt-host arrives
+        # empty, and the wall never appears in Home Assistant with nothing at all
+        # to suggest why.
+        sys.stderr.write("ftctl: no --mqtt-host, so no Home Assistant; "
+                         "HTTP control API only\n")
 
     poller = threading.Thread(target=bridge.run)
     poller.daemon = True
