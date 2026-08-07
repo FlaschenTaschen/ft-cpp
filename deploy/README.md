@@ -148,6 +148,26 @@ Everything that needs `ftsched` carries its own availability topic, so when the
 scheduler is down those entities go unavailable on their own and the light stays
 usable. That is the whole reason `ftctl` is its own daemon.
 
+**If entities do not appear, nothing here will tell you.** A discovery config
+Home Assistant refuses produces no entity, no repair issue, and no error `ftctl`
+can see — the publish succeeded, after all. The only trace is a line in HA's own
+log, and one payload describes every entity, so one bad key loses all of them at
+once. Check from the box rather than guessing:
+
+```sh
+sudo python3 tools/ftmqttcheck.py
+```
+
+It reads what is really retained on the broker and replays the parts of HA's
+validation that are easy to fall foul of: the device-level body is merged into
+every component that does not set a key itself, and `availability_topic` and
+`availability` are mutually exclusive — so a shared `availability_topic` lands on
+top of per-component `availability` lists and invalidates the lot. That is why
+availability is stated on every component here and never in the shared body. It
+also lists stale per-component discovery topics from any older scheme, which
+drift out of agreement with the device payload; publish an empty retained
+payload to a discovery topic to delete it.
+
 **Traffic.** Anything a person changes is published at once; otherwise nothing
 is sent until the heartbeat (`--mqtt-heartbeat`, 60s). Idle, that is about
 0.05 messages a second. The rotation moving to its next effect counts as a
