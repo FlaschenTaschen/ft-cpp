@@ -1,0 +1,157 @@
+<!-- The landing page for the wall. Served by ftindex.py, which substitutes
+     the {{...}} placeholders; there is no client-side templating and no
+     JavaScript at all, because this page has to work first time on whatever
+     phone walks into the room. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Flaschen Taschen</title>
+<style>
+/* Deliberately the same palette as the control panel: someone who taps
+   through should feel they stayed in the same place. */
+:root {
+  --bg: #0b0d12;
+  --card: #151922;
+  --line: #262c3a;
+  --text: #e8ecf4;
+  --dim: #8891a5;
+  --live: #ffb03a;
+  --on: #45d17a;
+  --bad: #e35d6a;
+  --pad: 16px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  padding: 0 var(--pad) calc(32px + env(safe-area-inset-bottom));
+}
+main { max-width: 44rem; margin: 0 auto; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+header { padding: 40px 0 8px; }
+h1 {
+  font-size: clamp(28px, 8vw, 44px);
+  font-weight: 700; letter-spacing: -.02em; margin: 0 0 6px;
+}
+h1 .sub { display: block; font-size: 14px; font-weight: 600; letter-spacing: .16em;
+          text-transform: uppercase; color: var(--live); margin-bottom: 10px; }
+.lede { color: var(--dim); margin: 0; }
+
+/* ---- status ---------------------------------------------------------- */
+.status {
+  margin: 22px 0 0; padding: 13px 15px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.dot.ok  { background: var(--on);  box-shadow: 0 0 0 4px rgba(69,209,122,.16); }
+.dot.bad { background: var(--bad); box-shadow: 0 0 0 4px rgba(227,93,106,.16); }
+.dim { color: var(--dim); }
+
+/* ---- the button that is the whole point ------------------------------ */
+.cta {
+  display: block; margin: 18px 0 0; padding: 17px 20px;
+  background: var(--live); color: #1a1200;
+  border-radius: 12px; text-decoration: none;
+  font-size: 18px; font-weight: 700; text-align: center;
+}
+.cta small { display: block; font-weight: 500; font-size: 13px; opacity: .74; margin-top: 2px; }
+.cta:hover, .cta:focus { filter: brightness(1.07); }
+
+h2 {
+  font-size: 13px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--dim); margin: 36px 0 10px;
+}
+p { margin: 0 0 12px; }
+a { color: var(--live); }
+
+pre {
+  margin: 0 0 12px; padding: 13px 15px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  overflow-x: auto;                    /* long commands scroll, the page does not */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13.5px; line-height: 1.55; color: #cbd3e4;
+}
+pre .c { color: var(--dim); }
+
+dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; }
+dt { color: var(--dim); }
+dd { margin: 0; }
+
+footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line);
+         color: var(--dim); font-size: 13px; }
+</style>
+
+<main>
+  <header>
+    <h1><span class="sub">Sequoia Fabrica</span>Flaschen&nbsp;Taschen</h1>
+    <p class="lede">A 320&times;64 LED wall. It plays a rotation of
+      demos on a loop, and it will draw whatever anyone on this network sends it.</p>
+  </header>
+
+  <p class="status"><span class="dot" id="dot"></span><span id="status">asking the scheduler&hellip;</span></p>
+
+  <a class="cta" href="/">Open the control panel
+    <small>see what is queued, skip ahead, turn a demo off</small></a>
+
+  <h2>Send it your own pixels</h2>
+  <p>The wall listens on UDP and speaks a one-frame-per-datagram dialect of
+     PPM. There is no handshake, no authentication and no session &mdash; a
+     datagram that arrives is drawn.</p>
+  <p>Draw on a <b>layer</b>, not on the bare wall. Layers stack like
+     transparencies on a projector: the <span class="mono">#FT: x y z</span>
+     line puts you on layer <span class="mono">z</span>, above the demos,
+     where black is see-through. Layer 0 is the one the rotation is painting
+     sixty times a second, so anything you send there is overwritten before
+     you can look up.</p>
+  <pre><span class="c"># a red square on layer 5, from anything that can write to a socket</span>
+python3 -c 'import socket
+f = b"P6\n64 64\n#FT: 128 0 5\n255\n" + bytes([255,0,0]) * 64 * 64
+socket.socket(2, 2).sendto(f, ("<span class="host">betelgeuse</span>", 1337))'</pre>
+  <p>A layer nobody refreshes is dropped after 15 seconds, so whatever you
+     leave behind cleans itself up &mdash; and to keep something on screen you
+     resend it, which is why the demos are a loop rather than a drawing.</p>
+  <dl>
+    <dt>Host</dt><dd class="mono"><span class="host">betelgeuse</span></dd>
+    <dt>Port</dt><dd class="mono">1337/udp</dd>
+    <dt>Size</dt><dd class="mono">320&times;64</dd>
+    <dt>Layers</dt><dd class="mono">0&ndash;15, topmost non-black wins</dd>
+  </dl>
+
+  <footer>
+    Clients, demos and the protocol in full:
+    <a href="https://github.com/FlaschenTaschen/ft-cpp">github.com/FlaschenTaschen/ft-cpp</a>
+  </footer>
+</main>
+<script>
+// This page used to be rendered by ftindex, a Python front door that templated
+// the hostname in and asked ftsched what was playing. nginx serves it flat now,
+// so the two live bits are filled in here instead. Everything else was already
+// static.
+for (const el of document.querySelectorAll(".host")) {
+    el.textContent = location.hostname || "betelgeuse";
+}
+fetch("api/state", {cache: "no-store"}).then(r => {
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+}).then(s => {
+    const now = s.now || {}, health = s.health || {};
+    const live = (s.rotation || []).filter(r => r.enabled).length;
+    document.getElementById("dot").className = "dot ok";
+    document.getElementById("status").innerHTML =
+        "now playing <b></b> <span class=\"dim\"></span>";
+    document.querySelector("#status b").textContent = now.name || "?";
+    document.querySelector("#status .dim").textContent =
+        " \u00b7 " + ((now.position || 0) + 1) + " of " + live +
+        " \u00b7 " + Math.round(health.actual_fps || 0) + " fps";
+}).catch(() => {
+    document.getElementById("dot").className = "dot bad";
+    document.getElementById("status").textContent =
+        "the scheduler is not answering";
+});
+</script>
+
