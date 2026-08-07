@@ -38,7 +38,14 @@ ExecStart=/home/pi/bin/ft-server \
     --layer-timeout 15 \
     --control-socket /run/ft/control.sock \
     --mdns enabled --mdns-name Betelgeuse \
-    --mdns-url https://wiki.sequoiafabrica.org/wiki/FlaschenTaschen
+    --mdns-url https://wiki.sequoiafabrica.org/wiki/FlaschenTaschen \
+    --mdns-ui http://betelgeuse.local/
+
+# --mdns-url is the wiki page about the wall; --mdns-ui is the wall's own panel.
+# Two fields because they answer different questions, and something looking for
+# an API should not have to guess which kind of URL it got. Passing
+# --control-socket also sets bit 4 of the advertised feature mask, so a client
+# can tell that brightness and blanking are available here before trying.
 
 # --led-brightness is the boot default for the dimmer, not a ceiling: whatever
 # last set brightness over the control socket wins, and nothing here remembers

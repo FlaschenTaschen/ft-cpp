@@ -203,12 +203,13 @@ _flaschen-taschen._udp
 | 1 | 0x0002 | Multi-layer support | Server supports 16 layers with compositing and `offset_z` |
 | 2 | 0x0004 | Offset/partial updates | Server supports `offset_x`, `offset_y` per packet for partial updates |
 | 3 | 0x0008 | Layer timeout/GC | Server has layer garbage collection (automatic clearing after inactivity) |
-| 4-15 | — | Reserved | Reserved for future feature definitions |
+| 4 | 0x0010 | Display control | Server accepts display-wide commands: global brightness, blanking, and clearing every layer |
+| 5-15 | — | Reserved | Reserved for future feature definitions |
 
 **Constraints:**
 - Hexadecimal format with `0x` prefix (case-insensitive, e.g., `0x000F` or `0x000f`)
 - 16-bit value range (0x0000 to 0xFFFF)
-- Bits 4-15 reserved for future use
+- Bits 5-15 reserved for future use
 - Clients must ignore unknown bits gracefully (assume not supported)
 
 **Examples:**
@@ -219,7 +220,7 @@ features=0x0007  # No layer timeout (bits 0-2 only)
 features=0x0003  # Multi-packet and multi-layer only (bits 0-1)
 features=0x0001  # Multi-packet only (bit 0)
 features=0x0000  # No features (minimal server)
-features=0x001F  # All currently-defined + 1 hypothetical future feature (bits 0-4)
+features=0x001F  # All currently-defined features including display control
 ```
 
 **Why Hexadecimal?**
@@ -230,18 +231,27 @@ Hex format makes the bitmask structure immediately visible to developers:
 - Easier to visually combine flags (e.g., `0x0001 | 0x0002 = 0x0003`)
 - Standard for representing capability flags in systems programming
 
-**C++ Server:** Always advertises `features=15` (0x000F) when running on actual hardware, as the C++ codebase supports all currently-defined features:
+**C++ Server:** Advertises `features=0x001F` on hardware with a control socket
+configured, and `0x000F` without one. Bit 4 is conditional on `--control-socket`
+having been passed, because a client that sees the bit and then finds nothing
+listening is worse off than one that never saw it:
 - Multi-packet: `udp-flaschen-taschen.cc` splits large displays
 - Multi-layer: `CompositeFlaschenTaschen` with 16 layers
 - Offset/partial: Packet header includes `offset_x`, `offset_y`, `offset_z`
 - Layer timeout: `CompositeFlaschenTaschen::StartLayerGarbageCollection()`
+- Display control: `control-server.cc`, when `--control-socket` is given
+
+Note what bit 4 advertises is the **capability**, not a way in. The control
+channel itself is a unix socket, so nothing on the network could connect to it
+even if its path were published. A client that wants to use it remotely goes
+through HTTP, at the base URL in `ui=`.
 
 **Swift Server:** Advertises features based on implementation; typically `features=15` for full implementations.
 
 **Future-Proofing:**
 
 The 16-bit format allows for up to 16 different capability flags. When new features are added:
-1. Define a new bit position (e.g., Bit 4 = 0x0010)
+1. Define a new bit position (e.g., Bit 5 = 0x0020)
 2. Increment the version in TXT `version` field
 3. Servers advertising the new feature set the bit
 4. Clients checking for the feature test the bit and gracefully degrade if not present
@@ -292,6 +302,34 @@ let supportsLayerGC = (features & 0x0008) != 0
 - Informational; helps users access documentation or control panel
 - Optional; clients must handle missing or empty `url` gracefully
 - If omitted, clients assume no HTTP interface available
+
+---
+
+#### `ui` (optional)
+
+**Description:** Base URL of this display's own web interface — the control
+panel, and any HTTP API it fronts.
+
+**Format:** Full URL string (http or https), with or without a trailing slash
+
+**Examples:**
+- `ui=http://betelgeuse.local/`
+- `ui=https://betelgeuse.tailnet.ts.net/`
+
+**Why this is separate from `url`:** `url` is documented as "the server
+interface **or** documentation", and installations do use it for a wiki page
+about the wall, which is a genuinely useful but quite different thing from a
+machine-readable base URL. `ui` is unambiguous: whatever is there is this
+display's own interface, on this display, right now.
+
+**Notes:**
+- A client that found `features` bit 4 set and wants to change brightness or
+  blank the display remotely does it here — `POST {ui}api/display`. The control
+  channel itself is a unix socket and is not reachable from the network.
+- The panel is at the root of it.
+- Optional and possibly empty; a display may have no web interface at all.
+- Unauthenticated in the reference deployment. It is a wall in a workshop, on a
+  LAN or a tailnet. Do not assume otherwise, and do not put it on the internet.
 
 ---
 

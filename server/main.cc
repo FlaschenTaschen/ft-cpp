@@ -114,6 +114,8 @@ static int usage(const char *progname) {
             "\t--mdns <enabled|disabled> : Enable/disable mDNS service discovery (Default: disabled)\n"
             "\t--mdns-name <name>  : Display name for mDNS announcement (Default: \"FlaschenTaschen\")\n"
             "\t--mdns-url <url>    : HTTP URL for display (optional)\n"
+            "\t--mdns-ui <url>     : URL of this wall's own control panel,\n"
+            "\t                      advertised as ui= (optional)\n"
 #endif
             );
 #if FT_BACKEND == 1
@@ -130,6 +132,7 @@ int main(int argc, char *argv[]) {
     bool mdns_enabled = false;
     std::string mdns_name("FlaschenTaschen");
     std::string mdns_url("");
+    std::string mdns_ui("");
 #if FT_BACKEND != 2
     bool as_daemon = false;
 #endif
@@ -161,6 +164,7 @@ int main(int argc, char *argv[]) {
         OPT_MDNS_ENABLED = 1010,
         OPT_MDNS_NAME = 1011,
         OPT_MDNS_URL = 1012,
+        OPT_MDNS_UI = 1013,
 #endif
     };
 
@@ -178,6 +182,7 @@ int main(int argc, char *argv[]) {
         { "mdns",               required_argument, NULL,  OPT_MDNS_ENABLED },
         { "mdns-name",          required_argument, NULL,  OPT_MDNS_NAME },
         { "mdns-url",           required_argument, NULL,  OPT_MDNS_URL },
+        { "mdns-ui",            required_argument, NULL,  OPT_MDNS_UI },
 #endif
         { 0,                    0,                 0,    0  },
     };
@@ -216,6 +221,9 @@ int main(int argc, char *argv[]) {
             break;
         case OPT_MDNS_URL:
             mdns_url = optarg;
+            break;
+        case OPT_MDNS_UI:
+            mdns_ui = optarg;
             break;
 #endif
         default:
@@ -326,10 +334,21 @@ int main(int argc, char *argv[]) {
                 width,
                 height,
                 mdns_url.empty() ? "" : mdns_url.c_str(),
+                mdns_ui.empty() ? "" : mdns_ui.c_str(),
                 FT_VERSION,
                 g_backend_name,
                 g_platform_name,
-                0x000F  // features: all currently-defined capabilities
+                // The wire-protocol features are always all of them here. The
+                // display-control bit is conditional on the socket actually
+                // being open, because a client that sees the bit and then finds
+                // nothing listening is worse off than one that never saw it.
+                //
+                // Note what is advertised is the *capability*, not the socket:
+                // that is a unix socket and nothing on the network could connect
+                // to it anyway. Where to reach it over HTTP is ui=, since the
+                // thing that fronts it is the panel.
+                kFeaturesWireProtocol |
+                (control_socket.empty() ? 0 : kFeatureDisplayControl)
             );
             discovery_thread->Start(0, 0);  // 0 priority = not real-time, 0 affinity = any CPU
             fprintf(stderr, "Service discovery: %s (%dx%d) port 1337 [%s/%s]\n",
