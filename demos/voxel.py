@@ -48,6 +48,7 @@ Run:  python3 voxel.py --host 127.0.0.1
 import math
 import os
 import sys
+from bisect import bisect_right
 
 import numpy as np
 
@@ -56,6 +57,48 @@ import demoscene as ds
 f32 = ds.f32
 
 DEM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voxel-dem.npz")
+
+# --------------------------------------------------------------------------
+# What a frame costs, on the Pi 3 this has to run on, and the three numpy
+# facts the rest of the file is arranged around. None of them shows in the
+# code that uses them and between them they are worth about eighteen
+# milliseconds a frame here, so they are written down rather than left to be
+# rediscovered.
+#
+# Measured on that machine: a numpy call costs 55 to 80 us whatever size the
+# array is, and one pass over a float32 array costs about 19 ns an element. So
+# a frame is roughly (calls x 60 us) + (elements touched x 20 ns), and both
+# terms are worth real effort. An integer pass is three times cheaper than a
+# float one; a scattered gather is three times dearer.
+#
+# On top of that, a *dispatched* numpy function -- anything routed through
+# __array_function__, which is np.copyto, np.take, np.cumsum, np.min,
+# np.searchsorted and most of the namespace that is not a ufunc -- pays 25 to
+# 70 us more on the way in, and there were forty of them in a frame. Where the
+# same thing exists as an ndarray method it is written that way instead:
+# `a.cumsum(...)`, `x.min()`, `pal.take(...)`, `ok.nonzero()`, and `a[...] = b`
+# for np.copyto. Ufuncs -- np.multiply, np.add, np.rint, np.minimum and the
+# rest -- are not dispatched, and are used freely.
+#
+# And two named cases. np.clip() has two Python-level deprecation checks
+# standing in front of it that cost a quarter of a millisecond a call, more
+# than the clip does; the ufunc underneath also does in one pass what a
+# maximum/minimum pair does in two. It has moved namespace once already, so it
+# is fetched by name with the pair behind it as a fallback. And np.take
+# defaults to mode="raise", which bounds-checks every index with the error
+# path inline: every index here is in range by construction, so mode="clip" --
+# which therefore cannot give a different answer -- is 25% to 40% quicker.
+# --------------------------------------------------------------------------
+
+try:
+    _clip = np._core.umath.clip          # numpy >= 2
+except AttributeError:
+    try:
+        _clip = np.core.umath.clip       # numpy < 2
+    except AttributeError:               # pragma: no cover - moved again
+        def _clip(a, lo, hi, out=None):
+            out = np.maximum(a, lo, out=out)
+            return np.minimum(out, hi, out=out)
 
 # --------------------------------------------------------------------------
 # The bridges.
@@ -575,6 +618,29 @@ def series_evaluator(ser):
     return at
 
 
+def series_position(ser):
+    """The same series, evaluated for the point alone.
+
+    The camera wants the curve and its first two derivatives, and pays about
+    ten complex operations a harmonic for them; something that only wants to
+    be somewhere pays three. There are three birds a frame and one glider, so
+    the cheap version is most of the calls.
+    """
+    c0, cp, cm = ser
+    terms = list(zip((complex(v) for v in cp), (complex(v) for v in cm)))
+
+    def at(a):
+        e = complex(math.cos(a), math.sin(a))
+        p = c0
+        w = 1.0 + 0j
+        for ck, dk in terms:
+            w *= e
+            p += ck * w + dk * w.conjugate()
+        return p
+
+    return at
+
+
 def hillshade(hgt, mx, my, az_deg, el_deg):
     """Cosine of the angle between the surface normal and the sun, 0..1.
 
@@ -708,6 +774,45 @@ def build_palette(light, fog_gain):
     np.clip(above, 0.0, 1.0, out=above)
     pal[SKY0:] = ramp(light["sky"], 1.0 - above)
     return np.clip(pal, 0.0, 253.0).astype(f32)
+
+
+def fixed_palette(pal, dith):
+    """The palette and the dither, re-expressed as a uint16 add and a shift.
+
+    The last thing a frame does is `trunc(pal[index] + dither)`, and in float
+    that is three passes over 240 kB of colour: gather it, add the dither
+    plane, truncate to bytes. Nearly all of that traffic is carrying fractions
+    that only ever decide one bit each, and on a Pi 3 it is seven milliseconds.
+
+    So it is done in fixed point instead, and *exactly*, not approximately.
+    The dither cells are (2b+1)/128 for b in 0..63, so at any whole `--dither`
+    every dither value is a multiple of 1/128, and then
+
+        floor(p + c/128) == (floor(p*128) + c) >> 7
+
+    for integer c -- because floor(p*128) is under p*128 by less than one, and
+    adding less than one to an integer cannot carry it over a multiple of 128.
+    The palette becomes floor(p*128) in uint16, the dither plane becomes c
+    beside it, and the frame is one gather, one add and one shift, all 16 bit.
+
+    Returns (pal16, cdith), or None if the identity would not hold -- which is
+    the honest answer for a fractional `--dither`, and the caller keeps the
+    float path. It is *verified* rather than argued: every palette entry
+    against every dither cell, once, here. The claim being made is that the
+    picture does not change by a single bit, so it is worth checking rather
+    than reasoning about.
+    """
+    d = np.unique(dith)
+    c = np.rint(d.astype(np.float64) * 128.0)
+    v = np.floor(pal.astype(np.float64) * 128.0)
+    if c.min() < 0.0 or v.min() < 0.0 or v.max() + c.max() > 65535.0:
+        return None
+    want = np.trunc(pal[:, :, None] + d.astype(f32)[None, None, :])
+    got = (v[:, :, None] + c[None, None, :]) // 128.0
+    if not np.array_equal(want, got):
+        return None
+    cd = np.rint(dith.astype(np.float64) * 128.0).astype(np.uint16)
+    return v.astype(np.uint16), cd
 
 
 def cable_span(ss, s0, s1, h0, h1, sag=None):
@@ -951,7 +1056,12 @@ def build(args):
     del hgt, sea
     MH, MW = hmap.shape
     hflat = np.ascontiguousarray(hmap.reshape(-1))
-    cflat = np.ascontiguousarray(cmap.reshape(-1).astype(np.int32))
+    # Left as the uint8 it was baked as, rather than widened to int32 for the
+    # convenience of the gather that reads it. It is a 600 kB table read at
+    # twenty thousand scattered addresses a frame and every one of them is a
+    # cache line; at int32 the same table is 2.4 MB and the misses cost four
+    # times as much. One narrowing pass on the way out is far cheaper.
+    cflat = np.ascontiguousarray(cmap.reshape(-1))
     # Sample coordinates are metres from the padded corner, so the border
     # cell is already in the arithmetic and the clamp below is a plain clamp
     # to the array.
@@ -967,6 +1077,7 @@ def build(args):
         wp.append(complex(u + mx, v + my))
     route, route_z, route_len = fit_route(wp, [z for _, _, z in TOUR])
     at_pos = series_evaluator(route)
+    at_where = series_position(route)
     at_alt = series_evaluator(route_z)
     # The trim is applied to the constant term, so --altitude shifts the whole
     # tour without touching its shape or any of its derivatives.
@@ -989,12 +1100,28 @@ def build(args):
     Z = (near * (far / near) ** np.linspace(0.0, 1.0, N, dtype=f32)).astype(f32)
     invZ = (f32(focal) / Z)[:, None]
     Zbuf = np.concatenate([Z, [1e9]]).astype(f32)   # sentinel: sky is infinite
+    # The same schedule as a plain Python list, for the objects that place one
+    # scalar depth in it. np.searchsorted costs fifteen times what bisect does
+    # for a single value, nearly all of it spent getting into numpy and back
+    # out, and it happens five or six times a frame.
+    Zlist = [float(v) for v in Zbuf]
     fogb = np.concatenate([haze_band(Z, far), [NFOG - 1]]).astype(np.int32)
     Zcol = Z[:, None]
 
     pal = build_palette(light, max(args.fog, 0.0))
     dith = (np.tile((_BAYER8 + 0.5) / 64.0, (H // 8 + 1, W // 8 + 1))[:H, :W, None]
             .astype(f32) * f32(args.dither))
+    # The fixed-point form of the same two tables. `fixed` is None if it would
+    # not be bit-for-bit the float answer, and the wing wants a float frame to
+    # multiply through anyway, so the float path stays and is what those cases
+    # get. See fixed_palette().
+    fixed = None if args.wing else fixed_palette(pal, dith)
+    if fixed is not None:
+        pal16, cdith = fixed
+        # Three real planes rather than an (H,W,1) broadcast, for the reason
+        # the wing gives below: broadcasting a trailing 1 against three
+        # channels is several times slower here than the plain arithmetic.
+        cdith = np.ascontiguousarray(np.repeat(cdith, 3, axis=2))
 
     # --- water ---------------------------------------------------------------
     # Two tileable noise fields stored doubled, so scrolling them is a plain
@@ -1052,16 +1179,22 @@ def build(args):
     # against the water and they cross in front of a headland -- and it keeps
     # them in frame, since a bird parked over Hawk Hill is out of sight for
     # nine tenths of the loop.
-    bird_r = rng.uniform(90.0, 260.0, nbirds)
-    bird_ph = rng.uniform(0.0, 2.0 * math.pi, nbirds)
-    bird_dz = rng.uniform(-90.0, -25.0, nbirds)
-    bird_rate = rng.uniform(0.055, 0.085, nbirds)
-    bird_flap = rng.uniform(1.6, 2.6, nbirds)
+    #
+    # Kept as plain Python floats rather than as the arrays they were drawn
+    # from. Every one of them is only ever used one at a time in scalar
+    # arithmetic, and a numpy float64 scalar costs an order of magnitude more
+    # per operation than a Python one -- which for the twenty-odd operations
+    # it takes to place one bird, three times a frame, was a millisecond.
+    bird_r = [float(v) for v in rng.uniform(90.0, 260.0, nbirds)]
+    bird_ph = [float(v) for v in rng.uniform(0.0, 2.0 * math.pi, nbirds)]
+    bird_dz = [float(v) for v in rng.uniform(-90.0, -25.0, nbirds)]
+    bird_rate = [float(v) for v in rng.uniform(0.055, 0.085, nbirds)]
+    bird_flap = [float(v) for v in rng.uniform(1.6, 2.6, nbirds)]
     # Where on the circuit, as a fraction of it. Small: a tenth of a 25 km
     # tour is 2.5 km, which is already past the range a five-pixel bird has
     # any business being drawn at.
-    bird_along = rng.uniform(-0.035, 0.045, nbirds)
-    bird_pix = np.int32(CLS_BIRD * NSHADE * NFOG)
+    bird_along = [float(v) for v in rng.uniform(-0.035, 0.045, nbirds)]
+    bird_pix = int(CLS_BIRD * NSHADE * NFOG)
 
     # --- wing -----------------------------------------------------------------
     wing_pre, wing_inv = build_wing(W, H) if args.wing else (None, None)
@@ -1077,7 +1210,6 @@ def build(args):
     su = np.empty((N, W), f32)
     sv = np.empty((N, W), f32)
     tt = np.empty((N, W), f32)
-    hs = np.empty((N, W), f32)
     mi = np.zeros((N + 1, W), np.int32)           # row N is the sky sentinel
     miv = mi[:N]
     miflat = mi.reshape(-1)
@@ -1090,18 +1222,13 @@ def build(args):
     idx = np.empty((H, W), np.int32)
     pidx = np.empty((H, W), np.int32)
     gath = np.empty((H, W), np.int32)
-    # A second index scratch purely so that no np.take() has the same array as
-    # both its indices and its destination. numpy happens to survive that here
-    # -- an int32 index array is not intp, so it gets copied on the way in --
-    # but it is undefined, and it would stop being true the day this ran on a
-    # 32-bit Pi where int32 *is* intp.
-    cell = np.empty((H, W), np.int32)
-    bump = np.empty((H, W), np.int32)
+    bump = np.empty((H, W), np.uint8)
     aux8 = np.empty((H, W), bool)
     mask = np.empty((H, W), bool)
     rows_i3 = np.arange(H, dtype=np.int32)[:, None] * SKY_SUB
-    zbuf = np.empty((H, W), f32)
+    hist32 = np.empty((H + 1) * W, np.int32)
     buf = np.empty((H, W, 3), f32)
+    buf16 = None if fixed is None else np.empty((H, W, 3), np.uint16)
     out = np.empty((H, W, 3), np.uint8)
     nbins = (H + 1) * W
     watermax = np.int32(NSHADE * NFOG)
@@ -1174,6 +1301,13 @@ def build(args):
     # because the raycast already left a depth per pixel, hiding the bridge
     # behind Lime Point is one compare.
     #
+    # That compare is made in *step numbers* rather than in metres. The march
+    # leaves `idx`, the depth step each pixel stopped at, and the schedule Z is
+    # increasing, so "the terrain here is further away than the bridge" is
+    # `idx >= searchsorted(Z, tz)` -- the same answer as comparing depths, off
+    # one 320-column gather to turn `idx` into a depth buffer that nothing else
+    # wanted. The searchsorted is over the depth budget, once per column.
+    #
     # Then it is painted as class numbers, so the towers pick up exactly the
     # haze their distance earns with no colour arithmetic at all.
     #
@@ -1185,21 +1319,52 @@ def build(args):
 
     def draw_bridge(b, camu, camv, camz, fu, fv, ru, rv):
         b_ax, b_ay, b_ex, b_ey = b["ax"], b["ay"], b["ex"], b["ey"]
-        dx = colx * f32(ru) + f32(fu)
-        dy = colx * f32(rv) + f32(fv)
-        det = b_ex * dy - b_ey * dx
+        # Where the two ends of it are, in plain scalars, before a single array
+        # is touched. For most of the tour a bridge is behind you or off the
+        # side of the frame, and settling that from two endpoints is a dozen
+        # floating point operations against twenty passes over the width. When
+        # it *is* on screen the same two numbers bound the columns it can
+        # possibly cover, and the solve below runs over those and no others --
+        # which for the Bay Bridge, seen from eleven kilometres and thirty
+        # columns wide, is a tenth of the work it was doing.
+        #
+        # A straight segment cannot re-enter the frustum between its ends: if
+        # both are behind the near plane the whole thing is, and if both are in
+        # front then its image is the segment between their two screen columns.
+        # So both tests are exact rather than conservative, and the column
+        # bounds are widened by one either way for the half-pixel between a
+        # column's index and the ray through its centre.
+        c0, c1 = 0, W
         qx, qy = b_ax - camu, b_ay - camv
+        e1u, e1v = qx + b_ex, qy + b_ey
+        z0 = qx * fu + qy * fv
+        z1 = e1u * fu + e1v * fv
+        if z0 <= near and z1 <= near:
+            return
+        if z0 > near and z1 > near:
+            xa = 0.5 * W + focal * (qx * ru + qy * rv) / z0
+            xb = 0.5 * W + focal * (e1u * ru + e1v * rv) / z1
+            if xa > xb:
+                xa, xb = xb, xa
+            c0 = max(0, int(math.floor(xa)))
+            c1 = min(W, int(math.ceil(xb)) + 1)
+            if c1 - c0 < 2:
+                return
+        cx = colx[c0:c1]
+        dx = cx * f32(ru) + f32(fu)
+        dy = cx * f32(rv) + f32(fv)
+        det = b_ex * dy - b_ey * dx
         with np.errstate(divide="ignore", invalid="ignore"):
             tz = (b_ex * qy - b_ey * qx) / det
             sp = (qy * dx - qx * dy) / det
         ok = (np.abs(det) > 1e-9) & (tz > near) & (sp >= 0.0) & (sp <= 1.0)
-        nz = np.nonzero(ok)[0]
+        nz = ok.nonzero()[0]
         if len(nz) < 2:
             return
-        c0, c1 = int(nz[0]), int(nz[-1]) + 1
-        sl = slice(c0, c1)
-        sp, tz, ok = sp[sl], tz[sl], ok[sl]
-        n = c1 - c0
+        lo, hi = int(nz[0]), int(nz[-1]) + 1
+        sl = slice(c0 + lo, c0 + hi)
+        sp, tz, ok = sp[lo:hi], tz[lo:hi], ok[lo:hi]
+        n = hi - lo
         sc = f32(focal) / tz
         deck = np.interp(sp, b["ss"], b["deck"])
         cable = np.interp(sp, b["ss"], b["cable"])
@@ -1213,7 +1378,12 @@ def build(args):
         # the cables: at this size the silhouette is the whole point and a
         # tower that keeps dropping out between columns reads as a flicker,
         # not as accuracy.
-        dsdc = np.abs(np.diff(sp, append=sp[-1] if n > 1 else 0.0))
+        # np.diff() for two subtractions and a concatenate is a millisecond of
+        # Python a frame here, which is more than the whole rest of the bridge.
+        dsdc = np.empty(n, f32)
+        np.subtract(sp[1:], sp[:-1], out=dsdc[:-1])
+        dsdc[-1] = 0.0
+        np.abs(dsdc, out=dsdc)
         hw = np.maximum(b["hw"], 1.5 * dsdc)
         istow = (np.abs(sp[None, :] - b["towers"][:, None])
                  < hw[None, :]).any(axis=0) & ok
@@ -1221,22 +1391,39 @@ def build(args):
         # bridges is seen from is denser than the real 50 ft spacing resolves.
         issus = ok & ((colidx[sl] % 3) == 0)
 
-        r0 = int(max(0, math.floor(min(float(np.min(r_top[istow]))
+        r0 = int(max(0, math.floor(min(float(r_top[istow].min())
                                        if istow.any() else 1e9,
-                                       float(np.min(r_cable[ok]))))))
-        r1 = int(min(H, math.ceil(float(np.max(r_deck[ok]))) + 2))
+                                       float(r_cable[ok].min())))))
+        r1 = int(min(H, math.ceil(float(r_deck[ok].max())) + 2))
         if r1 <= r0:
             return
         yy = np.arange(r0, r1, dtype=f32)[:, None]
-        vis = zbuf[r0:r1, sl] > tz[None, :]
+        vis = idx[r0:r1, sl] >= Zbuf.searchsorted(tz, "right")[None, :]
         dst = pidx[r0:r1, sl]
-        fb = np.rint(np.clip(tz / far, 0.0, 1.0) * (NFOG - 1)).astype(np.int32)
+        fb = np.rint(_clip(tz / far, f32(0.0), f32(1.0)) * (NFOG - 1)).astype(np.int32)
         thick = np.maximum(1.0, b["depth"] * sc)
         bp = b["pidx"]
 
         def paint(top, bot, part, sel):
-            m = (yy >= top[None, :]) & (yy <= bot[None, :]) & sel[None, :] & vis
-            np.putmask(dst, m, (bp[part] + fb)[None, :])
+            # Only the rows this part actually reaches. The four parts have
+            # wildly different heights -- the cable curtain fills the frame
+            # between cable and deck, while the roadway and the cable itself
+            # are a pixel or two -- and painting all four over the union of
+            # their extents was three quarters of the bridge's cost for two
+            # parts that could not possibly be there.
+            tops = top[sel]
+            if tops.size == 0:
+                return
+            lo = float(tops.min())
+            hi = float(bot[sel].max())
+            p0 = max(r0, int(math.floor(lo))) - r0
+            p1 = min(r1, int(math.ceil(hi)) + 1) - r0
+            if p1 <= p0:
+                return
+            y = yy[p0:p1]
+            m = ((y >= top[None, :]) & (y <= bot[None, :])
+                 & sel[None, :] & vis[p0:p1])
+            np.putmask(dst[p0:p1], m, (bp[part] + fb)[None, :])
 
         paint(r_cable, r_deck, P_CABLE, issus)                # the curtain
         paint(r_top, base + 2.0 * sc, P_TOWER, istow)         # towers and piers
@@ -1274,7 +1461,7 @@ def build(args):
         if cx1 <= cx0 or cy1 <= cy0:
             return
         sub = spr[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
-        vis = sub & (zbuf[cy0:cy1, cx0:cx1] > zc)
+        vis = sub & (idx[cy0:cy1, cx0:cx1] >= bisect_right(Zlist, zc))
         fb = int(round(min(zc / far, 1.0) * (NFOG - 1)))
         np.putmask(pidx[cy0:cy1, cx0:cx1], vis, m["pidx"] + fb)
 
@@ -1284,7 +1471,7 @@ def build(args):
         for i in range(nbirds):
             a = 2.0 * math.pi * bird_rate[i] * t + bird_ph[i]
             seat = omega * t + start_phase + 2.0 * math.pi * bird_along[i]
-            here, _, _ = at_pos(seat)
+            here = at_where(seat)
             bu_ = here.real + bird_r[i] * math.sin(a) * 1.6
             bv_ = here.imag + bird_r[i] * math.cos(a) * 1.3
             # Height taken off the glider rather than off the route, which
@@ -1304,7 +1491,7 @@ def build(args):
             x0, y0 = int(round(xs)) - bw // 2, int(round(ys)) - bh // 2
             if not (0 <= x0 and x0 + bw <= W and 0 <= y0 and y0 + bh <= H):
                 continue
-            if float(np.min(zbuf[y0:y0 + bh, x0:x0 + bw])) <= zc:
+            if int(idx[y0:y0 + bh, x0:x0 + bw].min()) < bisect_right(Zlist, zc):
                 continue
             fb = int(round(min(zc / far, 1.0) * (NFOG - 1)))
             np.putmask(pidx[y0:y0 + bh, x0:x0 + bw], pose, bird_pix + fb)
@@ -1318,7 +1505,7 @@ def build(args):
         # thing. Which is the good outcome; the bad one is when it does not.
         a_su, a_sv, a_tt, a_mi = su, sv, tt, miv
         a_bk, a_pi, a_ga, a_bp = bkey, pidx, gath, bump
-        a_hz, a_buf = horiz, buf
+        a_hz, a_buf, a_b16 = horiz, buf, buf16
 
         camu, camv, camz, psi, kappa, pitch = camera(t)
         fu, fv = math.cos(psi), math.sin(psi)
@@ -1347,7 +1534,7 @@ def build(args):
         a_hz += f32(h0)
         np.multiply(a_hz, f32(SKY_SUB), out=hrowf)
         np.rint(hrowf, out=hrowf)
-        np.copyto(hrow, hrowf, casting="unsafe")
+        hrow[...] = hrowf
         np.subtract(SKY_MID + SKY0, hrow, out=skyoff)
 
         # Where the sun is on screen, worked out before anything is drawn
@@ -1379,15 +1566,19 @@ def build(args):
         a_sv += f32(camv)
         a_su *= inv_mx
         a_sv *= inv_my
-        np.maximum(su, 0.0, out=su)
-        np.minimum(su, f32(MW - 1.001), out=su)
-        np.maximum(sv, 0.0, out=sv)
-        np.minimum(sv, f32(MH - 1.001), out=sv)
-        np.copyto(tmpi, sv, casting="unsafe")     # truncation, which is a floor
+        _clip(su, f32(0.0), f32(MW - 1.001), su)
+        _clip(sv, f32(0.0), f32(MH - 1.001), sv)
+        tmpi[...] = sv                            # truncation, which is a floor
         np.multiply(tmpi, MW, out=miv)
-        np.copyto(tmpi, su, casting="unsafe")
+        tmpi[...] = su
         a_mi += tmpi
-        np.take(hflat, miv, out=hs)
+        # Fancy indexing rather than np.take(out=), which is the one place in
+        # this file where allocating beats reusing: `hflat[miv]` is a fifth
+        # quicker than the same gather written with an output buffer, because
+        # take's out= path re-dispatches the whole thing through a cast that
+        # the plain index does not need. The buffer it returns is thrown away
+        # a few lines later either way.
+        hs = hflat[miv]
 
         # Screen row of every sample, then the highest reached so far.
         np.subtract(hs, f32(camz), out=tt)
@@ -1402,24 +1593,25 @@ def build(args):
         # histogram of the ceilings followed by a cumulative sum. This is the
         # whole reason the effect fits in a frame.
         np.ceil(tt, out=tt)
-        np.maximum(tt, 0.0, out=tt)
-        np.minimum(tt, f32(H), out=tt)
-        np.copyto(bkey, tt, casting="unsafe")
+        _clip(tt, f32(0.0), f32(H), tt)
+        bkey[...] = tt
         a_bk *= W
         a_bk += colidx
+        # bincount hands back platform ints, and a cumulative sum down 64 rows
+        # of them is 160 kB of traffic for counts that never exceed the depth
+        # budget. Narrowing first costs one pass over the bins and makes the
+        # scan itself three times quicker.
         hist = np.bincount(bkey.reshape(-1), minlength=nbins)[:nbins]
-        cum = np.cumsum(hist.reshape(H + 1, W)[:H], axis=0)
-        np.subtract(N, cum, out=cum)
-        np.copyto(idx, cum, casting="unsafe")
+        hist32[...] = hist
+        hist32.reshape(H + 1, W)[:H].cumsum(axis=0, dtype=np.int32, out=idx)
+        np.subtract(N, idx, out=idx)
 
         # ---- surface, haze and water ----------------------------------------
         np.multiply(idx, W, out=gath)
         a_ga += colidx
-        np.take(miflat, gath, out=cell)           # the map cell under the pixel
-        np.take(cflat, cell, out=pidx)            # its class and shade
+        pidx[...] = cflat[miflat[gath]]        # the class and shade under it
         a_pi *= NFOG
-        np.take(fogb, idx, out=gath)              # its haze band
-        a_pi += gath
+        a_pi += fogb[idx]                      # and its haze band
 
         # Water, in the same integer. A brighter shade is +NFOG on the index,
         # so the chop and the sun's glitter are an integer add on the pixels
@@ -1434,7 +1626,7 @@ def build(args):
         ox2, oy2 = int(t * 5.0) % nw, int(t * 2.0) % nh
         np.greater(tex1[oy:oy + H, ox:ox + W], gsl, out=mask)
         np.greater(tex2[oy2:oy2 + H, ox2:ox2 + W], np.uint8(206), out=aux8)
-        np.copyto(bump, mask)
+        bump[...] = mask
         a_bp *= 2                                 # glitter is two shades up
         a_bp += aux8
         a_bp *= NFOG
@@ -1446,16 +1638,13 @@ def build(args):
         # far above the horizon the pixel is, so it is one gather for the
         # whole frame and there is no compositing pass anywhere.
         np.add(rows_i3, skyoff, out=gath)
-        np.maximum(gath, SKY0, out=gath)
-        np.minimum(gath, SKY0 + NSKY - 1, out=gath)
+        _clip(gath, np.int32(SKY0), np.int32(SKY0 + NSKY - 1), gath)
         np.equal(idx, N, out=mask)
         # putmask, not copyto(where=): three times quicker for the same
         # traffic, because copyto's masked path is a scalar loop. Shapes
         # match, so there is no repeat to reason about.
         np.putmask(pidx, mask, gath)
 
-        if need_z:
-            np.take(Zbuf, idx, out=zbuf)
         for b in bridges:
             draw_bridge(b, camu, camv, camz, fu, fv, ru, rv)
         for m in masts:
@@ -1469,26 +1658,57 @@ def build(args):
         # until they see it once. Only worth a pass if something was drawn.
         if need_z:
             np.greater_equal(pidx, SKY0, out=mask)
-        np.take(pal, pidx, axis=0, out=buf)
 
-        # ---- the sun, seen through the sky -----------------------------------
-        # `mask` is still the sky mask, which is exactly the depth test the sun
-        # needs: it is at infinity, so anything at all in front of it wins --
-        # including the bridge deck, which is the point.
+        # Where the sun is going to land, in pixels, worked out before the
+        # frame is coloured because the fixed-point path below paints
+        # everything but that box and leaves it to be done in float.
+        sunbox = None
         if fdot > 0.05:
             x0, y0 = int(round(sun_x)) - sun_c, int(round(sun_y)) - sun_c
             cx0, cy0 = max(0, x0), max(0, y0)
             cx1, cy1 = min(W, x0 + sun_w), min(H, y0 + sun_h)
             if cx1 > cx0 and cy1 > cy0:
-                sub = buf[cy0:cy1, cx0:cx1]
+                sunbox = (x0, y0, cx0, cy0, cx1, cy1)
+
+        if fixed is not None:
+            # Gather, dither and quantise in one 16-bit sweep. See
+            # fixed_palette(): this is exactly `trunc(pal[pidx] + dith)`, done
+            # in half the memory traffic.
+            pal16.take(pidx, axis=0, out=buf16, mode="clip")
+            a_b16 += cdith
+            np.right_shift(buf16, 7, out=buf16)
+            out[...] = buf16
+            if sunbox is not None:
+                # The sun is the one thing in the frame that is not a palette
+                # entry -- it is added light, and it can go over full scale --
+                # so its box is redone the long way, in float, over the couple
+                # of thousand pixels it covers.
+                x0, y0, cx0, cy0, cx1, cy1 = sunbox
+                sub = pal[pidx[cy0:cy1, cx0:cx1]]
                 sub += (sun_spr[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
                         * mask[cy0:cy1, cx0:cx1, None])
-                # The only thing in the frame that can go over full scale, so
-                # it is also the only thing that gets clipped. Clamping the
-                # whole frame instead was two more passes over 61440 floats
-                # for pixels that were already in range by construction: the
-                # palette is built clipped and nothing else here adds.
                 np.minimum(sub, 254.0, out=sub)
+                sub += dith[cy0:cy1, cx0:cx1]
+                out[cy0:cy1, cx0:cx1] = sub
+            return out
+
+        pal.take(pidx, axis=0, out=buf, mode="clip")
+
+        # ---- the sun, seen through the sky -----------------------------------
+        # `mask` is still the sky mask, which is exactly the depth test the sun
+        # needs: it is at infinity, so anything at all in front of it wins --
+        # including the bridge deck, which is the point.
+        if sunbox is not None:
+            x0, y0, cx0, cy0, cx1, cy1 = sunbox
+            sub = buf[cy0:cy1, cx0:cx1]
+            sub += (sun_spr[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
+                    * mask[cy0:cy1, cx0:cx1, None])
+            # The only thing in the frame that can go over full scale, so it is
+            # also the only thing that gets clipped. Clamping the whole frame
+            # instead was two more passes over 61440 floats for pixels that
+            # were already in range by construction: the palette is built
+            # clipped and nothing else here adds.
+            np.minimum(sub, 254.0, out=sub)
 
         # The wing, and the dither, in two passes rather than three: the
         # dither is folded into the wing's premultiplied colour at build time,
@@ -1498,7 +1718,7 @@ def build(args):
             a_buf += wing_dith
         else:
             a_buf += dith
-        np.copyto(out, buf, casting="unsafe")     # truncates, as dither expects
+        out[...] = buf                            # truncates, as dither expects
         return out
 
     return render

@@ -1146,11 +1146,21 @@ Tamalpais on the horizon at all — from the Sausalito leg it is 13.4 km off, an
 at 784 m it is the highest thing in the model. That costs about 0.04 ms a frame,
 because the depth schedule is geometric and stretching it only makes the steps
 slightly coarser rather than adding any. On this desktop the whole frame is
-0.71 ms mean and 0.90 ms at the 95th percentile at `--steps 96`, against 0.61
-and 0.73 before; of the difference, roughly a third is the longer far plane, a
-third Sutro Tower, and a third evaluating an eighteen-harmonic curve several
-times a frame. The Pi 3 budget is 20 ms and cannot be measured from here.
-`--steps` is the cost knob and the only one that really matters.
+0.51 ms mean and 0.69 ms at the 95th percentile at `--steps 96`.
+
+The Pi 3 has since been measured, and it is the only number that matters: about
+45 ms at the median and 60 ms at the 95th percentile of CPU time over a whole
+loop, against 63 and 78 for the first version of this file (interleaved on the
+same run, because the machine drifts a few ms between them). That is a pass of
+optimisation that did not change a single pixel of the output, and it still does
+not fit 20 fps. Two things the desktop hid. `--steps` is **not** the cost knob it
+looks like — taking it from 96 to 32 saves only a quarter of the frame, because
+half the work is per output *pixel* (the palette gather, the dither, the haze and
+water, the two bridges) and does not care how many depth samples there were; the
+honest reduced setting is `--steps 64`, which is 37 ms median and barely
+distinguishable. And betelgeuse is under-voltage throttled to 600 MHz, half its
+rated clock — `vcgencmd get_throttled` says `0x50005` — so the fastest thing
+available to this demo is a better power supply, not a better inner loop.
 
 ```console
 $ python3 voxel.py --light dusk --fog 1.4
