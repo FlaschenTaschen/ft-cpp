@@ -55,17 +55,33 @@ This adds `--control-socket /run/ft/control.sock` and the `RuntimeDirectory` it
 needs, and drops the old `start-ft.sh` wrapper. Keep that script until this has
 survived a reboot; going back is one `ExecStart` line.
 
-Then `nc` is the whole client:
+The protocol is lines of text, so the client is whatever is to hand -- except
+that betelgeuse has no netcat (`apt install netcat-openbsd` if you want
+`nc -U /run/ft/control.sock`). `tools/ftc.py` is the fifteen lines that replace
+it:
 
 ```sh
-echo get              | nc -U /run/ft/control.sock
-echo "brightness 40"  | nc -U /run/ft/control.sock
-echo "blank on"       | nc -U /run/ft/control.sock
-echo wipe             | nc -U /run/ft/control.sock
+python3 tools/ftc.py get
+python3 tools/ftc.py brightness 40
+python3 tools/ftc.py blank on
+python3 tools/ftc.py wipe
 ```
 
-Nothing listens without the flag, so an unflagged server behaves exactly as
-before.
+`tools/ftstairs.py` holds a series of levels long enough to actually judge them,
+which is the only sane way to look at the bottom of the range:
+
+```sh
+python3 tools/ftstairs.py --freeze sunset --hold 10        # 100 60 30 15 5
+python3 tools/ftstairs.py --freeze sunset 40 20 10 5 --hold 15
+```
+
+Freezing matters: banding shows up in a still gradient and not at all in
+something moving, and a mostly-dark demo hides it entirely. A webcam will lie to
+you here too -- auto-exposure compensates as the wall dims, so 20% looks much
+like 80% on a stream. Look at the wall.
+
+Nothing listens without `--control-socket`, so an unflagged server behaves
+exactly as before.
 
 ### 2. ftctl
 
