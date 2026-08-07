@@ -148,6 +148,13 @@ Everything that needs `ftsched` carries its own availability topic, so when the
 scheduler is down those entities go unavailable on their own and the light stays
 usable. That is the whole reason `ftctl` is its own daemon.
 
+**Traffic.** Anything a person changes is published at once; otherwise nothing
+is sent until the heartbeat (`--mqtt-heartbeat`, 60s). Idle, that is about
+0.05 messages a second. The rotation moving to its next effect counts as a
+change, so expect a small burst every 45 seconds or so and near-silence between.
+Frame rate rides along with whatever publish happens next rather than causing
+one — it wobbles constantly and is only a diagnostic.
+
 ### 4. nginx
 
 ```sh

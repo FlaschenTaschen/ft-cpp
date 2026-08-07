@@ -499,6 +499,10 @@ def main():
     ap.add_argument("--mqtt-prefix", default="ft/betelgeuse",
                     help="topic prefix for this wall")
     ap.add_argument("--mqtt-discovery-prefix", default="homeassistant")
+    ap.add_argument("--mqtt-heartbeat", type=float, default=60.0,
+                    help="seconds between state publishes when nothing has "
+                         "changed; anything a person changes is published at "
+                         "once regardless")
     ap.add_argument("--node-id", default="betelgeuse",
                     help="stable id; it ends up in the HA entity ids")
     ap.add_argument("--friendly-name", default="Betelgeuse")

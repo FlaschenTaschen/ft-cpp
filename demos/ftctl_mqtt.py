@@ -53,9 +53,21 @@ except ImportError:
 RECONNECT_MIN = 1
 RECONNECT_MAX = 60
 
-# Republish the state document at least this often even when nothing has
-# changed, so an entity cannot sit wrong forever if a message was lost.
-HEARTBEAT_SECONDS = 30
+# Republish at least this often even when nothing has changed, so an entity
+# cannot sit wrong forever if a message was lost. Overridable; see
+# --mqtt-heartbeat.
+HEARTBEAT_SECONDS = 60
+
+# The fields a person can see or has just changed. A publish happens the instant
+# one of these moves, and otherwise only on the heartbeat.
+#
+# Everything else in the state document is telemetry that rides along with
+# whatever publish happens next. That distinction is the whole reason this is
+# quiet: the first version compared the entire document, which included the
+# rotation's elapsed seconds, so "has anything changed?" was true every single
+# second and the broker got three retained publishes a second forever. Frame
+# rate has the same problem more subtly -- it wobbles by a tenth constantly.
+SIGNIFICANT = ("on", "bri", "dimmer", "playing", "demo")
 
 
 def start(bridge, args):
@@ -77,10 +89,13 @@ class MqttBridge(object):
         self.prefix = args.mqtt_prefix.rstrip("/")
         self.node = args.node_id
         self.lock = threading.Lock()
-        self._last_state = None
+        self._last_key = None
         self._last_options = None
+        self._last_avail = None
+        self._last_screen = None
         self._last_publish = 0.0
         self._connected = False
+        self.heartbeat = getattr(args, "mqtt_heartbeat", HEARTBEAT_SECONDS)
 
         try:
             self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1,
@@ -148,8 +163,9 @@ class MqttBridge(object):
                        "wipe", "restart"):
             client.subscribe(self.t("set/" + suffix), qos=1)
         # Whatever we last knew, immediately, so the entities are not blank
-        # until the next poll.
-        self._last_state = None
+        # until the next poll. Everything is re-asserted after a reconnect
+        # rather than trusted to the broker's retained copy.
+        self._last_key = self._last_avail = self._last_screen = None
         self.publish_state()
 
     def _on_disconnect(self, client, userdata, rc, properties=None):
@@ -237,35 +253,50 @@ class MqttBridge(object):
                 self._publish_discovery()
 
             now = (sched or {}).get("now") or {}
+            fps = ((sched or {}).get("health") or {}).get("actual_fps")
             state = {
                 "on": (display is not None and not display["blanked"]),
                 "bri": pct_to_ha(display["brightness"]) if display else 0,
                 "dimmer": bool(display and display["dimmer"]),
                 "playing": bool(sched and not sched.get("paused")),
                 "demo": now.get("name"),
-                "elapsed": now.get("elapsed"),
-                "fps": ((sched or {}).get("health") or {}).get("actual_fps"),
+                # Whole numbers: a diagnostic sensor does not need tenths, and
+                # tenths are exactly what would make this look like it changed.
+                "fps": int(round(fps)) if fps is not None else None,
             }
-            unchanged = state == self._last_state
-            if unchanged and (time.time() - self._last_publish) < HEARTBEAT_SECONDS:
+
+            key = tuple(state[k] for k in SIGNIFICANT)
+            due = (time.time() - self._last_publish) >= self.heartbeat
+            if key == self._last_key and not due:
                 return
-            self._last_state = state
+            self._last_key = key
             self._last_publish = time.time()
 
             self.client.publish(self.t("state"), json.dumps(state),
                                 qos=0, retain=True)
-            # Availability for everything that needs the scheduler. Separate
-            # from the device-wide topic on purpose: the light must stay usable
-            # when the rotation is not running.
-            self.client.publish(self.t("sched/status"),
-                                "online" if sched else "offline",
-                                qos=1, retain=True)
+
+            # Availability for everything that needs the scheduler, and only
+            # when it moves. Separate from the device-wide topic on purpose: the
+            # light must stay usable when the rotation is not running. Retained,
+            # so republishing it on a timer would have the broker rewriting its
+            # retained store for a value that changes about twice a week.
+            avail = "online" if sched else "offline"
+            if avail != self._last_avail or due:
+                self._last_avail = avail
+                self.client.publish(self.t("sched/status"), avail,
+                                    qos=1, retain=True)
+
             if self.args.public_url and state["demo"]:
                 # Not retained: it names a demo that has probably already
-                # changed by the time anything reads a retained copy.
+                # changed by the time anything reads a retained copy. Only sent
+                # when it actually differs -- the demo changes every 45 seconds,
+                # not every second.
                 url = "%s/api/thumbnail.png?demo=%s" % (
                     self.args.public_url.rstrip("/"), state["demo"])
-                self.client.publish(self.t("screen"), url, qos=0, retain=False)
+                if url != self._last_screen or due:
+                    self._last_screen = url
+                    self.client.publish(self.t("screen"), url,
+                                        qos=0, retain=False)
 
     # -- discovery --------------------------------------------------------
 
