@@ -161,6 +161,69 @@ filament.
 $ python3 printer.py --fail-rate 0.15 --speed 1.4
 ```
 
+### lathe
+
+![lathe](screenshots/lathe.png)
+
+A woodturning lathe: a blank spinning between centres, a gouge walking the
+length of it on the tool rest, shavings arcing off the cut, and a turned shape
+appearing pass by pass.
+
+A lathe bed is the rare subject that genuinely *is* this shape — headstock at
+one end, tailstock at the other, and a long thin thing spanning the gap — so a
+5:1 panel is not a constraint to design around here but the natural framing.
+The work fills nearly the whole width and there is still room under it for the
+rest and the tool.
+
+Everything comes out of one array: **a radius per column** along the axis. The
+silhouette is that profile mirrored about the axis, so drawing the blank is a
+column fill. Cutting is the gouge writing a shallower radius into the columns
+it crossed this frame. Shading is `sqrt(1 - (dy/r)^2)`, the actual cylinder
+normal, which buys the round form for a lookup. Nothing is a sprite, and no
+part of the drawing knows what shape is being turned — change the control
+points and the silhouette, the cut and the shading all follow.
+
+The growth rings are the reason to build it this way rather than as a
+silhouette plus a texture. Rings live in the log's cross section, indexed by
+distance from the pith, and every visible point on a solid of revolution at
+column x sits at exactly radius `r[x]` from the axis — so the ring texture is a
+**1-D lookup on the radius**, and taking radius off *reveals inner rings*.
+Bands crowd where the profile falls away steeply and spread out along a taper,
+which is what real turned work does, and they move as the cut deepens. Getting
+that for free is the payoff for the representation; a texture painted onto the
+silhouette would have had to be animated by hand and would still have been
+wrong.
+
+Spin is sold three ways, none of them a blur. The pith is a little off the
+axis, so the ring radius is `r - e·cos(α - β)` with α the material angle at
+that pixel — which expands onto `s` and `c`, the two shading terms already in
+hand, and needs no per-pixel trigonometry at all. That makes the bands breathe
+once a revolution. The specular band sits at a fixed angle and stays put while
+the surface moves under it, which is what a highlight on a spinning cylinder
+does. And the headstock pulley turns on the same phase, so there is one
+unambiguous rotating object on screen.
+
+Roughing creeps up on the shape over several passes, alternating direction the
+way a turner does, each pass aimed at an interpolated version of the target and
+leaving a little chatter; the finish pass lands on the target exactly and a
+sanding pass takes the ripple out and raises a sheen. Then the lathe spins
+down, the work lifts off — as a snapshot of the last frame, rising and fading,
+so the fresh blank is already turning underneath and the machine is never
+empty — and it starts again. That whole arc is about forty-two seconds.
+
+Cost is a tight window of rows around the axis, deliberately not padded for the
+once-a-cycle lift: within it a frame is one divide, four gathers and a blend
+over roughly nine thousand pixels. The ring table, the shading and specular
+ramps against position across the cylinder, the wood palettes and the whole
+static shop — bed, headstock, tailstock, tool rest — are all baked in `build()`.
+Rates are per second rather than per frame (feed in px/s, the fresh-cut glow as
+a half-life in seconds), so it looks the same at 8 fps and at 30.
+
+```console
+$ python3 lathe.py --profile baluster --species walnut --feed 24
+$ python3 lathe.py --profile beads --passes 6 --no-chips
+```
+
 ### knit
 
 ![knit](screenshots/knit.png)
