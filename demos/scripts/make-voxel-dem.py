@@ -22,20 +22,20 @@ Provenance
              https://elevation.nationalmap.gov/arcgis/rest/services/
                  3DEPElevation/ImageServer
   Datum      NAVD88 heights, WGS84 lat/lon (EPSG:4326)
-  Extent     37.680 N .. 37.990 N, 122.680 W .. 122.280 W
-  Native     ~10 m posting; resampled here to ~44 m cells
+  Extent     37.635 N .. 38.035 N, 122.680 W .. 122.280 W
+  Native     ~10 m posting; resampled here to 45.8 x 57.6 m cells
   Licence    Public domain. USGS data carries no copyright; see
              https://www.usgs.gov/information-policies-and-instructions/
                  copyrights-and-credits
   Retrieved  2026-08-07
 
-The extent is chosen for what is *in* it rather than for tidiness: Mount
-Tamalpais on the northwest corner, the Marin Headlands and Hawk Hill over the
-strait, the Golden Gate itself, the whole San Francisco peninsula out to Twin
-Peaks and Mount Davidson, Angel Island and Alcatraz in the bay, and the
-Berkeley hills on the east edge. Mount Diablo is a further 30 km east and does
-not fit at a cell size that still reads in the foreground; extending to it
-would have doubled the map for a bump on the horizon.
+The extent is chosen for what is *in* it: Mount Tamalpais in the northwest,
+the Marin Headlands and Hawk Hill over the strait, the Golden Gate itself, the
+whole San Francisco peninsula out to Twin Peaks, Mount Davidson and San Bruno
+Mountain, Angel Island, Alcatraz and Yerba Buena in the bay, and the Berkeley
+hills on the east edge. Mount Diablo is a further 30 km east and does not fit
+at a cell size that still reads in the foreground; extending to it would have
+doubled the map for a bump on the horizon.
 """
 
 import argparse
@@ -54,7 +54,22 @@ SERVICE = ("https://elevation.nationalmap.gov/arcgis/rest/services/"
            "3DEPElevation/ImageServer/exportImage")
 
 # lon_w, lat_s, lon_e, lat_n
-BBOX = (-122.680, 37.680, -122.280, 37.990)
+#
+# Both spans are 0.4 degrees, and that is not tidiness -- it is the only way to
+# ask this service a question it will answer honestly. The request below asks
+# for a square *image*, and the ImageServer will not letterbox: if the bbox
+# aspect and the size aspect disagree it silently widens the bbox until they
+# agree and returns that instead, with nothing in the response to say so. This
+# box was 0.31 degrees of latitude for a while, and what came back was 0.4 --
+# so the grid held 44 km of Marin and California labelled as 34 km, Mount
+# Tamalpais sat three kilometres south of where it is, and the Bay Bridge got
+# built a kilometre clear of Yerba Buena Island. Everything looked plausible,
+# which is what made it expensive. Match the aspect and the box is the box.
+#
+# Cells are therefore not square in metres -- 45.8 east-west against 57.6
+# north-south, because a degree of longitude here is 79% of a degree of
+# latitude -- and both numbers go in the file for the demo to work in.
+BBOX = (-122.680, 37.635, -122.280, 38.035)
 
 # Anything at or below this, and connected to the open water at the edge of
 # the map, is sea. A flat threshold on its own is wrong: Crissy Field, the
@@ -78,6 +93,13 @@ def fetch(bbox, cells):
     from PIL import Image
 
     lon0, lat0, lon1, lat1 = bbox
+    # The one check worth making before the request. See BBOX: a bbox whose
+    # aspect does not match the requested image gets quietly widened, and the
+    # result is a grid that is georeferenced wrong and looks entirely fine.
+    if abs((lon1 - lon0) / (lat1 - lat0) - 1.0) > 1e-6:
+        raise SystemExit("bbox is %.4f x %.4f degrees; a square image needs a "
+                         "square box or the server will widen it"
+                         % (lon1 - lon0, lat1 - lat0))
     url = (SERVICE + "?bbox=%.6f,%.6f,%.6f,%.6f" % (lon0, lat0, lon1, lat1)
            + "&bboxSR=4326&imageSR=4326&size=%d,%d" % (cells, cells)
            + "&format=tiff&pixelType=F32&f=image"
