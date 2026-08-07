@@ -934,6 +934,98 @@ $ python3 esper.py --cycle 40 --speed 1.2       # the short version
 $ python3 esper.py --no-commands                # just the photograph moving
 ```
 
+### voxel
+
+![voxel](screenshots/voxel.png)
+
+A hang glider circling a thermal off Hawk Hill, over the real San Francisco
+Bay. Comanche-style voxel space: for every screen column, march a ray out
+along the ground, look up the height under it, and work out how far up the
+screen that lands. The nearest thing wins. It is the oldest trick for drawing
+landscape in real time and it is still the right one here, because the cost is
+set by the number of columns and the depth budget rather than by any amount of
+geometry.
+
+**The terrain is real, and it is in the file.** 768x768 cells of USGS 3DEP
+elevation at about 45 m a cell, covering 37.68–37.99 N and 122.28–122.68 W —
+Mount Tamalpais on the northwest corner, the Marin Headlands over the strait,
+the Golden Gate, San Francisco out to Twin Peaks, Angel Island, the Berkeley
+hills. 3DEP is public domain; `scripts/make-voxel-dem.py` is the one-off bake
+that downloads it, fills the voids where the survey stops at the continental
+shelf, works out which of it is water and writes `voxel-dem.npz`, and the
+provenance is written down at the top of that script. The demo itself reads
+only the committed asset and needs nothing but numpy — no network, no GDAL.
+It comes to 206 kB because the heights are quantised to whole metres and
+stored as the horizontal *difference*: terrain is smooth, so the differences
+are small numbers around zero and DEFLATE eats them, four or five times better
+than it manages on the raw heights. Sea level is stored as exactly zero, so
+the Bay and the Pacific are a comparison rather than a second map. Mount
+Diablo is 30 km further east and did not fit at a cell size that still reads
+in the foreground.
+
+**The depth march never loops over depth.** The obvious implementation walks
+the ray one step at a time per column, and that is a few thousand numpy calls a
+frame; on a Pi 3 a numpy call costs about 80 µs whatever size the array is, so
+it is over budget before it has drawn anything. Instead the whole (steps ×
+columns) grid of sample heights is built in one go and the painter's ordering
+falls out of a running minimum: down the depth axis the projected row of the
+highest-thing-so-far only ever decreases, so *the number of steps whose ceiling
+is still below a screen row is exactly the index of the first step that covers
+it*. That count, for every row at once, is a histogram of the ceilings followed
+by a cumulative sum — `np.bincount` and `np.cumsum` — and it is the whole
+reason the effect fits in a frame.
+
+**Everything on screen is one integer.** The palette is a flat table laid out
+as `(class × shade) × haze band`, so a pixel's colour is one gather at the very
+end and nothing in the frame computes RGB. Distance haze is free, because the
+depth step chooses a band and the band is already the right colour. The chop
+and the sun's glitter on the water are an integer *add* on the pixels that are
+water — a brighter shade is `+NFOG` — and they pick up the correct haze for
+their distance without knowing anything about it. The bridge is a class like
+any other, so painting it is writing class numbers into that index image before
+the gather.
+
+**The bridge has to be an object.** A heightmap cannot have sky under a road
+deck. Geometry is the real thing in feet, the same numbers `goldengate` uses —
+4200 ft of main span, 526 ft of tower over a deck 220 ft above the water — and
+the same detail carries the silhouette: the main cable's vertex sits *on* the
+deck at midspan, which is most of what makes it read as this bridge rather than
+a generic suspension bridge. Each column's ray is intersected with the vertical
+plane of the deck, a 2x2 solve vectorised across the whole width, which gives
+that column's position along the span and its distance from the eye together;
+and since the raycast has already left a depth per pixel, hiding it behind Lime
+Point is one compare. Sail past and the headland eats the far end of it, which
+is what says the bridge is *in* the landscape rather than drawn over it.
+
+**The wing does not move, and that is the physics.** In a coordinated turn the
+pilot and the wing keep the same relationship and it is the world that tilts,
+so the two spars are a static overlay costing one composite and the horizon
+rolls behind them. The bank itself is scaled well down from true: a turn at
+this radius really is banked about eighteen degrees, and on a panel five times
+wider than it is tall the horizon rises about five pixels per degree of roll
+and leaves through the corner before you reach ten. What has to read is which
+way you are banking and that it keeps changing.
+
+Two things that only showed up by looking at frames. The sky ramp is indexed in
+*thirds* of a row rather than whole ones — with whole rows, the sheared horizon
+steps the index by one somewhere along the width and draws a vertical seam
+straight down a gradient this smooth. And the haze colour is deliberately
+darker and greyer than the sky above it: matched to the sky, which is the
+honest thing for thick haze, the skyline stops existing and the whole picture
+collapses into one diagonal gradient.
+
+The flight path is a closed curve rather than an integrated heading, so a
+segment that overruns the loop lands back where it started instead of drifting
+off the map, and heading, bank and pitch are all derivatives of that same curve.
+`--steps` is the cost knob and the only one that matters.
+
+```console
+$ python3 voxel.py --light dusk --fog 1.4
+$ python3 voxel.py --loop 90 --radius 550 --altitude 520
+$ python3 voxel.py --no-wing --birds 0 --steps 64
+$ python3 scripts/make-voxel-dem.py            # re-bake the terrain (needs Pillow)
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
