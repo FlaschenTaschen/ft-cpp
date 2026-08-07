@@ -1,7 +1,7 @@
-<!-- The landing page for the wall. Served by ftindex.py, which substitutes
-     the {{...}} placeholders; there is no client-side templating and no
-     JavaScript at all, because this page has to work first time on whatever
-     phone walks into the room. -->
+<!-- The landing page for the wall. A flat file served by nginx. The only
+     scripting is at the bottom, filling in the hostname and the now-playing
+     line; the page is complete and readable without it, because it has to work
+     first time on whatever phone walks into the room. -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">

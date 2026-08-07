@@ -148,8 +148,9 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo systemctl disable --now ftindex.service
 ```
 
-`ftindex.py`, `ftindex.html` and `ftindex.service` are superseded but still in
-the tree — remove them once this has survived a reboot. `tailscale serve --bg
+`ftindex.py` and its unit are gone. If you are upgrading a box that still runs
+it, `sudo systemctl disable --now ftindex.service` is the missing step above, and
+the stale unit in `/etc/systemd/system` can go with it. `tailscale serve --bg
 --https=443 http://127.0.0.1:80` is unaffected.
 
 The panel then shows a display row under the transport controls. It is hidden
@@ -187,10 +188,10 @@ network can already push pixels over UDP. Keep it on the LAN or the tailnet.
 cp /home/pi/ft-server.rollback-pre-dc /home/pi/ft-cpp/build/server/ft-server
 sudo systemctl restart ft_server.service
 
-# the front door
+# the front door: nothing to fall back to now that ftindex is gone, so this
+# leaves :80 closed. ftsched is still reachable at 127.0.0.1:8081 over ssh.
 sudo rm /etc/nginx/sites-enabled/betelgeuse
-sudo systemctl reload nginx
-sudo systemctl enable --now ftindex.service
+sudo systemctl stop nginx
 ```
 
 `ftctl` can simply be stopped; nothing depends on it, which is the point.

@@ -248,21 +248,19 @@ than a dialog floating in the middle of the screen. It is a `<dialog>`, so the
 backdrop, the focus trap, Esc and making everything behind it inert come from
 the browser instead of from three hundred lines here.
 
-## ftindex
+## The front door
 
 ![the about page](screenshots/ftindex.png)
 
 `ftsched` serves its panel on 8081, which is fine for a checkout and wrong for
 an installation: a port number is something you have to be *told*, and someone
-standing in front of the wall with a phone types the hostname and nothing
-else. [`ftindex.py`](ftindex.py) owns the root instead — it reverse-proxies
-`ftsched` at `/` and keeps one page of its own at `/about`, covering what the
+standing in front of the wall with a phone types the hostname and nothing else.
+So **nginx** owns the root — see
+[`deploy/nginx-betelgeuse.conf`](../deploy/nginx-betelgeuse.conf). It proxies
+`ftsched` at `/`, routes `/api/display` to [`ftctl`](#ftctl), serves the
+previews off disk, and keeps one page of its own at `/about` covering what the
 wall is and how to push your own pixels at it, which the panel has no business
 explaining.
-
-```console
-$ python3 ftindex.py --listen 0.0.0.0:80 --panel-port 8081
-```
 
 Everything therefore lives in **one origin on one port**. That is not only
 tidier: it is what lets the panel be served over TLS at all without the page
@@ -277,48 +275,38 @@ $ tailscale serve --bg --https=443 http://127.0.0.1:80
 
 One line, because there is nothing left that needs a second rule. `tailscale
 serve` terminates TLS with a real `ts.net` certificate, renews it, and exposes
-it to the tailnet only — three things this would otherwise have to get right
-by itself.
+it to the tailnet only — three things this would otherwise have to get right by
+itself.
 
-It is a **separate daemon** from `ftsched` on purpose. The scheduler is
-driving the wall on a frame deadline; the front door is the thing most likely
-to be hit by a room full of curious people, and it can be restarted, reloaded
-and got wrong without touching the render loop. It is also deliberately not
-`BindsTo=ftsched`: when the scheduler is down this answers **502 with a page
-that says so**, which is a great deal better than a connection refused on the
-one URL anybody knows.
+This used to be `ftindex.py`, a Python front door of our own, and the reasons it
+existed are worth keeping even though it is gone:
 
-**Previews are served from disk here, not proxied.** They are the
-overwhelming majority of the bytes — a cold page load is three dozen files and
-a couple of megabytes, against a 5 kB poll once a second — and putting that
-burst through `ftsched` would run it through the GIL the render loop is
-waiting on, which is the whole thing keeping the front door in its own process
-was meant to avoid. They are static files in the same checkout, so it reads
-them directly and `ftsched` never hears about it; the wall's pictures also
-keep loading when the scheduler is down.
+- **A separate process from `ftsched`.** The scheduler drives the wall on a
+  frame deadline; the front door is the thing most likely to be hit by a room
+  full of curious people, and it must be restartable without touching the
+  render loop.
+- **Previews served from disk, not proxied.** They are the overwhelming
+  majority of the bytes — a cold page load is three dozen files and a couple of
+  megabytes, against a 5 kB poll once a second — and putting that burst through
+  `ftsched` would run it through the GIL the render loop is waiting on.
+- **A page rather than a connection refused** when the scheduler is down. The
+  `error_page` rule keeps the original 502 rather than turning bad news into a
+  200.
 
-What is left to proxy is small, so proxying is deliberately dumb: one upstream
-request per request, no connection reuse, no caching. Bodies stream rather
-than being read whole, and upstream 4xx pass through rather than being
-swallowed — a 400 for a malformed command is `ftsched`'s answer, not an error
-in the proxy.
+nginx satisfies all three and is better at the static bytes that dominate the
+traffic, which is the whole argument for the swap: the GIL problem that
+justified a hand-written proxy stops being a problem when the process is not
+Python. `ftindex.py`'s own flags gave the game away — `--ft-port`, `--width`
+and `--height` only ever templated the about page; it never talked to the wall.
 
-`/about` has no JavaScript and is rendered server-side, because it has to work
-first time on whatever phone walks in. Its one dynamic part is a `now playing`
-line fetched from `ftsched` with a 0.6 s timeout: the page is worth more than
-the status line on it, so a wedged scheduler costs a blink rather than a
-spinner.
+`/about` keeps working the same way, with its two live parts — the hostname and
+the now-playing line — filled in by the browser instead of server-side.
 
-Binding `:80` does not need root. [`ftindex.service`](ftindex.service) runs as
-`pi` with `AmbientCapabilities=CAP_NET_BIND_SERVICE` — exactly the one
-privilege — plus the usual `Protect*` sandbox, since this is the process most
-exposed to the room.
-
-`ftsched` listens on `127.0.0.1:8081`, so the front door is the only way in
-and the panel is not also answering on a port nobody was told about. That does
-mean there is no second way to drive the wall if `ftindex` is the broken
-thing; the fallback is an ssh tunnel, which is a fair trade for not having a
-second unauthenticated listener on the shop wifi.
+`ftsched` listens on `127.0.0.1:8081` and `ftctl` on `127.0.0.1:8082`, so the
+front door is the only way in and neither is also answering on a port nobody
+was told about. That does mean there is no second way to drive the wall if nginx
+is the broken thing; the fallback is an ssh tunnel, which is a fair trade for
+not having more unauthenticated listeners on the shop wifi.
 
 ```console
 $ ssh -N -L 8081:127.0.0.1:8081 pi@betelgeuse
