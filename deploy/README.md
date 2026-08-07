@@ -194,6 +194,31 @@ The panel then shows a display row under the transport controls. It is hidden
 whenever `/api/display` does not answer, so `ftsched` served straight off :8081
 looks exactly as it did.
 
+### 5. The login banner
+
+`ftctl` renders the wall's status to `/run/ft-motd/banner.ansi` whenever
+something a person would notice changes. To show it at login:
+
+```sh
+sudo rm -f /etc/motd                       # keep a copy if you want the Debian text
+sudo ln -s /run/ft-motd/banner.ansi /etc/motd
+sudo chmod -x /etc/update-motd.d/10-uname  # its output is already in the banner
+```
+
+**Not** a script in `/etc/update-motd.d/`, which is where this obviously belongs
+and does not work: `pam_motd` on Debian 11 does not run `run-parts` for sshd
+sessions, so a script there is simply never executed. `/etc/motd` is the path
+that does fire, via `session optional pam_motd.so noupdate`.
+
+Nothing is computed at login. Asking the wall for its status at every prompt cost
+2.8 seconds on this Pi; reading a pre-rendered file costs 60 ms. The symlink also
+fails well: `RuntimeDirectory` removes the file with the daemon, so a box with no
+`ftctl` prints nothing rather than something stale.
+
+```sh
+python3 demos/ftmotd.py                    # render to stdout to see it
+```
+
 ## Things worth knowing
 
 **A blanked wall is not an idle Pi.** The panel keeps being refreshed with an

@@ -21,6 +21,14 @@ The picture is the *preview* of what is playing, half-block rendered at the
 wall's own 5:1 aspect. It is not a capture of the panel: only ft_server knows the
 composite and it does not hand it out. The caption says so.
 
+It reaches a login through /etc/motd, which is a symlink to the rendered file.
+That is the one path pam_motd takes on every interactive session
+(`session optional pam_motd.so noupdate`). The /etc/update-motd.d/ route looks
+like the obvious home for this and is a trap here: pam_motd on this Debian does
+not actually run `run-parts` for sshd sessions, so a script there is never
+executed. The symlink also fails well -- ftctl's RuntimeDirectory goes away with
+the daemon, so a wall with no ftctl prints nothing rather than something wrong.
+
 Run by hand to see it, or to check it after editing:
 
   python3 ftmotd.py                 # to stdout
@@ -245,6 +253,10 @@ def render(display, sched, extras, previews, cache_dir, urls):
     out.append(pad + rgb(GREY, "  docs   ") + rgb(WHITE, "~/docs/README.md") +
                rgb(GREY, "   control  ") +
                rgb(WHITE, "python3 ~/ft-cpp/tools/ftc.py get"))
+    # When this was painted. It is only repainted on a change, so a couple of
+    # minutes old is normal and healthy -- but if ftctl has died, /etc/motd
+    # dangles and nothing prints at all, which is the louder signal.
+    out.append(pad + rgb(GREY, "  as of  " + time.strftime("%H:%M:%S")))
     out.append("")
     return "\n".join(out) + "\n"
 
