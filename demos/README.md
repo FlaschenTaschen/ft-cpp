@@ -1436,6 +1436,77 @@ $ python3 voxel.py --no-wing --no-tower --birds 0 --steps 96
 $ python3 scripts/make-voxel-dem.py     # re-bake the terrain (needs Pillow)
 ```
 
+### twister
+
+![twister](screenshots/twister.png)
+
+The Amiga twister: a bar whose cross section rotates as you travel along it, so
+a slice taken anywhere is the same square as the last one, turned a little
+further. The 1990 version ran vertically because a 320x256 screen is taller
+than it is wide, and a bar down the middle of it is what fits.
+
+**Turning it through ninety degrees is the whole reason it is here.** The
+twist is a thing you read *along* the object, and this panel has exactly one
+axis long enough to read anything along: laid horizontally there are 320 pixels
+of length to spend on eight or ten waists, 64 rows are more than enough for a
+bar half that thick, and the ribbon runs off both edges so nothing is left
+over. Stood upright the same effect gets 64 px of length, room for about one
+turn, and two thirds of the wall stays black.
+
+Per column the cross section is at phase `k·x + ω·t`; its `n` corners project
+to `y` offsets of `r·cos(θ + i·2π/n)`, so a column is the handful of vertical
+spans stacked between consecutive corners, one per face. A face is towards you
+when the sine of its normal angle is positive, and its brightness is that same
+`|sin|` — which is *also*, exactly, how tall it projects. That coupling is what
+makes it read as one solid object being twisted rather than as coloured
+stripes: the bright face is always the wide one, and a face has dimmed to
+nothing by the time it turns edge on and vanishes. Worth checking numerically
+rather than by eye, because a twister whose faces never quite go edge on still
+looks plausible: at a fixed column through one rotation the two visible faces
+trade an 8-row span at brightness 80 for a 33-row span at 232 and back, four
+times, and the silhouette breathes between 50 rows and 36 — which is
+`√2/2` of it, as a square seen corner-on should be.
+
+**What makes it cheap is that all of that depends on the row and the phase and
+on nothing else.** So the whole demo is one baked table — 1024 phase steps by
+the panel's rows, in RGB — and a frame is an add over 320 elements and a single
+`np.take` through it. Two numpy calls, and no arithmetic over the frame's
+20,480 pixels at all. **0.04 ms a frame on a desktop, which puts it next to
+`cycle`, and p50 2.4 / p95 2.9 ms on the wall's Pi 3** — measured there, on the
+600 MHz throttled clock, with `--breathe` on. That is 60 fps with the whole
+budget still in hand, which is the job: the rotation is short of cheap segments
+and the scheduler wants one to put beside an expensive one.
+
+Two slow modulations keep it from being merely a texture scrolling sideways,
+and they were chosen for costing nothing. `--sway` drifts the ribbon up and
+down the panel, which is a *row offset into the table*; the table is baked at
+four sub-pixel positions of the ribbon as well, since 3 px of sway over 17 s
+stepping a whole row at a time is a visible tick every few seconds. `--breathe`
+varies the twist rate about the middle of the panel, so the ribbon winds up
+tight and slackens off again — 8 waists across the panel at rest, 10 at one end
+of the breath and 6 at the other — and that one does cost three more numpy
+calls, over 320 elements. Their periods are deliberately unrelated to the
+rotation period and to each other, so the loop is long.
+
+Face spans are antialiased against the row grid rather than filled to the
+nearest pixel: the silhouette moves slowly, and a hard edge on something slow
+crawls. That is a bake-time cost, not a frame-time one. The palette has to be
+*cyclic* for the same reason `cycle`'s does — colour is indexed by the phase,
+and the phase wraps once a rotation — so the ramps that run dark to bright are
+mirrored to close the loop, and their black end is dropped first, since a face
+carrying near-black is a dead length of ribbon that no amount of lighting
+brings back.
+
+`build()` takes about 0.8 s on the Pi, nearly all of it rasterising the four
+sub-pixel tables; `--sway 0` bakes one table and takes 0.2 s.
+
+```console
+$ python3 twister.py --faces 3 --turns 1.5 --palette magma
+$ python3 twister.py --palette ice --specular 0.6   # one hue shows the shading plainest
+$ python3 twister.py --speed -0.35 --sway 0 --breathe 0    # the plain 1990 version
+$ python3 twister.py --faces 8 --radius 0.45        # nearly a cylinder
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
