@@ -326,12 +326,12 @@ def build(args):
     clife0 = np.ones(CHIP_N, f32)
     cphase = np.zeros(CHIP_N, f32)
     chip_budget = [0.0]
-    gravity = f32(160.0 * sc)
+    gravity = 160.0 * float(sc)
 
     # ---- the toolpath ----------------------------------------------------
     def sweep(a, b, kind, k):
         """Cut every column the gouge crossed between a and b."""
-        contact = 1.6 * sc
+        contact = 1.6 * float(sc)
         i0 = max(0, int(np.floor(min(a, b) - x0 - contact)))
         i1 = min(N, int(np.ceil(max(a, b) - x0 + contact)) + 1)
         if i1 <= i0:
@@ -357,7 +357,17 @@ def build(args):
             if kind in ("cut", "sand"):
                 # Sanding runs faster than a cut, because it is taking dust
                 # off rather than wood, and forty seconds is not long.
-                v = feed if kind == "cut" else feed * f32(2.6)
+                # Plain Python floats, deliberately. The toolpath position is
+                # accumulated across frames and then rounded to a column, so it
+                # is the one place in here where scalar precision is visible:
+                # keeping it in float32 makes the sweep land a column early or
+                # late, which changes how many chatter samples get drawn, which
+                # desynchronises the RNG and turns out a different piece of
+                # wood. numpy 1.x promoted these to float64 by accident (scalar
+                # arithmetic ignored value-based casting); NEP 50 in numpy 2.0
+                # keeps them float32. float() says what we actually meant, and
+                # reads the same on both.
+                v = float(feed if kind == "cut" else feed * f32(2.6))
                 step = min(dt * v, N - st["s"])
                 s1 = st["s"] + step
                 # Alternate direction per pass: a real turner works back and
@@ -435,7 +445,12 @@ def build(args):
         # Tool in and out on an exponential approach rather than a step, so it
         # eases at a pass boundary at any frame rate.
         want = 0.0 if st["cutting"] else 1.0
-        st["tool"] += (want - st["tool"]) * (1.0 - np.exp(-dt / 0.20))
+        # float(), because np.exp() of a Python float hands back a numpy
+        # scalar, and a numpy float64 mixed with a float32 array promotes
+        # differently before and after NEP 50. Keeping the eased tool
+        # position a plain Python float keeps the gouge the same colour on
+        # both.
+        st["tool"] += float((want - st["tool"]) * (1.0 - np.exp(-dt / 0.20)))
 
         np.copyto(frame, bg)
         _draw_pulley(frame, pulley, st["phase"])
@@ -521,8 +536,8 @@ def build(args):
         st["removed"] = 0.0
 
         # ---- the gouge ---------------------------------------------------
-        _draw_gouge(frame, gx, gy + 1.0 + 7.0 * sc * st["tool"], sc,
-                    1.0 - st["tool"])
+        _draw_gouge(frame, gx, gy + 1.0 + 7.0 * float(sc) * st["tool"],
+                    float(sc), 1.0 - st["tool"])
 
         if args.chips:
             live = np.flatnonzero(clife > 0.0)
@@ -690,7 +705,7 @@ def _draw_gouge(frame, tip_x, tip_y, sc, engaged):
     because it moves sub-pixel along the rest and a blitted sprite would step.
     """
     H, W = frame.shape[:2]
-    length = 26.0 * sc
+    length = 26.0 * float(sc)
     dx, dy = 0.50, 0.87
     n = int(length) + 1
     u = np.linspace(0.0, 1.0, n)
