@@ -208,6 +208,213 @@ def _hamqsl():
     }, HAMQSL_URL
 
 
+# --------------------------------------------------------------------------
+# Tides and tidal currents, from NOAA CO-OPS. tide.py draws these.
+#
+# Two things make this different from the solar feed above. The first is that
+# a prediction is not an observation: the file is a *forecast* spanning days
+# either side of the fetch, so a record several hours old is still telling the
+# truth, and the question a demo has to ask is not "how old is this?" but "does
+# it still cover now?". Both are answerable -- the age comes from `load()`, the
+# span is in the payload -- and tide.py checks both.
+#
+# The second is the station. These are per-station products, so the name
+# carries the station id and `register_*` can be called again for another one;
+# FT_TIDE_STATIONS and FT_CURRENT_STATIONS add stations without editing this
+# file. San Francisco is only the default because that is where the wall is.
+#
+# Times are stored as epoch seconds, always. The API can hand back local
+# station time, but that is a naive wall-clock string with no offset attached
+# and it steps backwards an hour every autumn, so everything here is fetched in
+# GMT and converted once. Turning an epoch back into something a human reads is
+# the demo's business, and it does it in the *display's* local time -- which is
+# the right answer for a wall in the same city as the station, and an honest
+# one anywhere else.
+# --------------------------------------------------------------------------
+
+COOPS_URL = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+
+TIDE_STATION = "9414290"            # San Francisco, Fort Point, inside the Gate
+CURRENT_STATION = "SFB1201"         # Golden Gate, mid-channel
+
+# How far either side of the fetch to ask for. Two days each way is enough that
+# a demo showing a day-wide window never runs off the end of the curve even if
+# the fetcher has been down since yesterday.
+COOPS_SPAN_DAYS = 2
+
+# Predictions, so this is generous on purpose: the payload is still true long
+# after it was fetched. It is the *span* that expires, not the fetch. Two days
+# is where the record stops covering a window centred on now.
+COOPS_TTL = 172800
+
+_COOPS_EPOCH_FMT = "%Y-%m-%d %H:%M"
+
+
+def _coops_url(**params):
+    from urllib.parse import urlencode
+    return COOPS_URL + "?" + urlencode(params)
+
+
+def _coops_epoch(s):
+    """'2026-08-07 18:55' in GMT -> epoch seconds."""
+    import calendar
+    return float(calendar.timegm(time.strptime(s, _COOPS_EPOCH_FMT)))
+
+
+def _coops_dates(days=COOPS_SPAN_DAYS):
+    now = time.time()
+    return (time.strftime("%Y%m%d", time.gmtime(now - days * 86400)),
+            time.strftime("%Y%m%d", time.gmtime(now + days * 86400)))
+
+
+def _uniform_series(times, values, step):
+    """Compress an evenly sampled series to (t0, step, values), or None.
+
+    The six-minute tide curve is a thousand-odd samples on an exact grid, and
+    storing a timestamp beside each one would treble the file for no
+    information. If the grid ever has a gap this returns None and the caller
+    keeps the explicit times instead of quietly drawing a curve with a hole
+    smoothed over.
+    """
+    if len(times) < 2:
+        return None
+    for i in range(1, len(times)):
+        if abs((times[i] - times[i - 1]) - step) > 1.0:
+            return None
+    return {"t0": times[0], "step": float(step), "v": values}
+
+
+MDAPI_URL = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/"
+
+
+def _coops_meta(station, kind=None):
+    """(name, lat, lon) for a station, or (id, None, None) if the lookup fails.
+
+    Best effort on the name -- a wall that says 'SAN FRANCISCO' rather than
+    '9414290' is nicer, but not nice enough to lose a whole tide record over.
+    The position is not decoration: tide.py normalises its flow field at the
+    current station's own coordinates, and refuses to draw a flow map at all
+    for a station that is not on the map.
+    """
+    try:
+        url = MDAPI_URL + station + ".json"
+        if kind:
+            url += "?type=" + kind
+        rec = get_json(url, timeout=10)["stations"][0]
+        lat = rec.get("lat")
+        lon = rec.get("lng", rec.get("lon"))
+        return ((rec.get("name") or station).upper(),
+                float(lat) if lat is not None else None,
+                float(lon) if lon is not None else None)
+    except Exception:                                        # noqa: BLE001
+        return station, None, None
+
+
+def _tide_payload(station):
+    begin, end = _coops_dates()
+    common = dict(product="predictions", application="ft", datum="MLLW",
+                  station=station, time_zone="gmt", units="english",
+                  format="json", begin_date=begin, end_date=end)
+
+    raw = get_json(_coops_url(**common)).get("predictions") or []
+    times = [_coops_epoch(r["t"]) for r in raw]
+    heights = [round(float(r["v"]), 2) for r in raw]
+    if not times:
+        raise ValueError("no predictions for station %s" % station)
+
+    # The hi/lo call is a second request rather than a peak-find on the curve
+    # because NOAA's extremes come off the harmonic fit itself: they land
+    # between six-minute samples and at a height the sampled curve never quite
+    # reaches. Labelling a drawn maximum with a computed one would be off by a
+    # few minutes and a few hundredths, every time.
+    hilo = get_json(_coops_url(interval="hilo", **common)).get("predictions") or []
+    extremes = [{"t": _coops_epoch(r["t"]), "v": round(float(r["v"]), 2),
+                 "type": r.get("type", "")} for r in hilo]
+
+    name, lat, lon = _coops_meta(station)
+    payload = {"station": station, "name": name, "lat": lat, "lon": lon,
+               "datum": "MLLW", "units": "ft",
+               "span": [times[0], times[-1]], "extremes": extremes}
+    packed = _uniform_series(times, heights, 360.0)
+    if packed:
+        payload["curve"] = packed
+    else:
+        payload["curve"] = {"t": times, "v": heights}
+    return payload, _coops_url(**common)
+
+
+def _current_payload(station, interval=30):
+    begin, end = _coops_dates()
+    common = dict(product="currents_predictions", application="ft",
+                  station=station, time_zone="gmt", units="english",
+                  format="json", begin_date=begin, end_date=end)
+
+    def cp(**extra):
+        d = get_json(_coops_url(**dict(common, **extra)))
+        return (d.get("current_predictions") or {}).get("cp") or []
+
+    series = cp(interval=str(interval))
+    if not series:
+        raise ValueError("no current predictions for station %s" % station)
+    times = [_coops_epoch(r["Time"]) for r in series]
+    vel = [round(float(r["Velocity_Major"]), 2) for r in series]
+
+    # meanFloodDir / meanEbbDir are repeated on every record and are the whole
+    # point of this product: the signed velocity says how hard and which way
+    # along the channel, and these two say what "along the channel" means in
+    # compass degrees. Without them a sign is just a sign.
+    head = series[0]
+    events = [{"t": _coops_epoch(r["Time"]),
+               "type": (r.get("Type") or "").lower(),
+               "v": round(float(r["Velocity_Major"]), 2)}
+              for r in cp(interval="MAX_SLACK")]
+
+    name, lat, lon = _coops_meta(station, "currentpredictions")
+    payload = {"station": station, "units": "kn",
+               "name": name, "lat": lat, "lon": lon,
+               "flood_dir": float(head.get("meanFloodDir", 0.0)),
+               "ebb_dir": float(head.get("meanEbbDir", 180.0)),
+               "bin": head.get("Bin"), "depth": head.get("Depth"),
+               "span": [times[0], times[-1]], "events": events}
+    packed = _uniform_series(times, vel, interval * 60.0)
+    payload["velocity"] = packed if packed else {"t": times, "v": vel}
+    return payload, _coops_url(interval=str(interval), **common)
+
+
+def register_tide_station(station):
+    """Register a `tide-<station>` product. Returns the product name."""
+    name = "tide-" + station
+
+    def fetch_tide(station=station):
+        return _tide_payload(station)
+
+    fetch_tide.__name__ = "_tide_" + station
+    product(name, ttl=COOPS_TTL,
+            description="NOAA tide predictions, station %s" % station)(fetch_tide)
+    return name
+
+
+def register_current_station(station):
+    """Register a `currents-<station>` product. Returns the product name."""
+    name = "currents-" + station
+
+    def fetch_current(station=station):
+        return _current_payload(station)
+
+    fetch_current.__name__ = "_currents_" + station
+    product(name, ttl=COOPS_TTL,
+            description="NOAA current predictions, station %s" % station)(fetch_current)
+    return name
+
+
+for _st in [TIDE_STATION] + [s for s in
+                             os.environ.get("FT_TIDE_STATIONS", "").split(",") if s]:
+    register_tide_station(_st.strip())
+for _st in [CURRENT_STATION] + [s for s in
+                                os.environ.get("FT_CURRENT_STATIONS", "").split(",") if s]:
+    register_current_station(_st.strip())
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="fetch outside data into a cache the demos read",

@@ -1436,6 +1436,164 @@ $ python3 voxel.py --no-wing --no-tower --birds 0 --steps 96
 $ python3 scripts/make-voxel-dem.py     # re-bake the terrain (needs Pillow)
 ```
 
+### tide
+
+![tide](screenshots/tide.png)
+
+The San Francisco tide, live, with the water drawn moving the way it is
+actually moving. Across the top, the predicted curve for a day and a bit with
+now marked, the highs and lows labelled with time and height, and the present
+height and trend called out — the part somebody checks in three seconds on the
+way past. Underneath, the Golden Gate corridor as a map, with barbs that
+lengthen with the predicted current and reverse between flood and ebb, and
+drifters streaking along the channels. Both come out of NOAA CO-OPS: station
+**9414290** for the water level and **SFB1201**, mid-channel at the Bay
+entrance, for the current.
+
+**Nothing here touches the network.** `ftdata.py` fetches on a timer in a
+process of its own and leaves JSON in a cache; the demo reads that and does not
+import a HTTP library. It has to be that way round — the scheduler builds the
+next segment on a worker thread, Python threads share the GIL, and a `build()`
+blocked on a socket does not merely wait, it stops the render loop getting the
+interpreter back. Run the fetcher, or the panel says so:
+
+```console
+$ python3 ftdata.py --loop 900
+```
+
+**The flow field is a schematic, and it is worth being blunt about that**,
+because a map with arrows on it looks like a model and this is not one. The
+honest article is SFBOFS, a gridded ocean model served as netCDF over THREDDS,
+which a Pi 3 at 600 MHz has no business downloading let alone interpolating. So
+the picture is two much cheaper pieces glued together. The **pattern** comes
+from geometry: solve Laplace's equation for a stream function over the sea
+mask, north shore held at one and south shore at zero, and the velocity that
+falls out is divergence-free by construction, exactly tangent to every
+shoreline — the shore *is* a contour of ψ — and fast wherever the contours
+crowd, which is the constrictions. The **amplitude and the sign** come from one
+number, the CO-OPS prediction at the Gate: flood runs the field along
+`meanFloodDir`, ebb runs it the other way, and the whole thing scales with the
+predicted knots. The Bay's circulation really is dominated by fixed bathymetry,
+so a fixed pattern with a varying sign and gain is not a bad first order. What
+it cannot know is anything a point prediction does not: eddies, the wind, the
+outflow after a wet week, or that one side of the channel turns before the
+other. It is a picture of the phase over real geography, not a forecast of the
+water in front of you.
+
+Islands are the only subtlety in the solve. A hole in the domain carries an
+*unknown* constant rather than a known one, so Alcatraz and Yerba Buena get
+their ψ reset to the mean of the water around them as the relaxation proceeds,
+which is the condition that no net flow circulates round them. It relaxes with
+red-black SOR up a three-level ladder, coarse first. Plain Jacobi
+over-relaxation diverges — the whole point of over-relaxation is that a cell
+sees its neighbours' *new* values — and it took a screenful of overflow
+warnings to remember that.
+
+**The crop is a corridor, and the corridor is stretched.** The Bay is long
+north to south, which is exactly the wrong way round for a panel five times
+wider than it is tall; the whole thing squashed into 320x64 would put San Pablo
+Bay and the South Bay on screen at a scale where every arrow is two pixels and
+means nothing. The Golden Gate → Alcatraz → Bay Bridge line runs roughly
+east-west, fits the panel, and is where the current is fastest and most worth
+looking at, so that is the slice: 37.794–37.836 N, 122.365–122.525 W, about
+15 km by 4.7 km. Drawn across 320 columns and 34 rows that is roughly a
+three-fold horizontal stretch, and there is no version of this that is not: at
+true scale a strip 15 km wide fitted to 34 rows would be 1.6 km tall and would
+cut Alcatraz off the top. So it is stretched on purpose, `--extent` moves it,
+and the two bridges are drawn in as landmarks — the Gate in international
+orange — because two lines do more for recognising the place than any amount of
+coastline. The solve itself happens on a grid that is *square in metres*, not
+in pixels, and the squash is applied afterwards when the field is mapped to
+screen; an affine squash preserves tangency, so a field that hugs the true
+shoreline still hugs the drawn one.
+
+The geography is `voxel-dem.npz` — the same DEM the voxel demo flies over,
+reused rather than sourced again. It is committed, its bounding box has already
+been fitted against four known summits, and it already carries a sea mask.
+
+**Slack has to look like slack.** The barbs are baked once per direction at six
+lengths, so the shortest bucket is *empty* rather than short and the map falls
+quiet at the turn instead of showing stubs pointing nowhere. The drifters thin
+out and dim with the predicted speed too, down to a floor — a map with nothing
+at all on it reads as a demo that has crashed rather than as water that has
+stopped. Each drifter is a three-sample streak rather than a lit pixel, because
+single pixels on a dark map read as stars and a short comet reads as a
+direction even in a still frame.
+
+**Age is part of the data, and predictions do not rot the way observations
+do.** A record fetched yesterday morning is still telling the truth if its span
+covers now, so the test is both: the fetch age is shown in the corner via
+`ftdata.describe_age()`, and separately the payload's span is checked against
+the present moment. A three-day-old file whose predictions still reach forward
+draws normally with `STALE` in the corner. A file whose span has run out, a
+file with fields missing, a file that is not JSON, or no file at all, all get
+the same answer — the words `NO TIDE DATA` and the command that fixes it, and
+no curve. If only the current is missing the curve still draws and the map says
+`NO CURRENT DATA` with no arrows on it. A tide clock showing yesterday's phase
+is worse than a blank one: it is confidently wrong and the wall gives no hint.
+
+**This one can be plausibly wrong, so it is asserted rather than eyeballed.**
+`scripts/test-tide.py` checks the phase against the fetched JSON at real
+timestamps — the six-minute curve must agree with the separately fetched hi/lo
+list at every extreme and must actually turn over there; the velocity series
+must be near zero at every labelled slack and must peak, with the right sign,
+at every labelled max flood and ebb; halfway from a slack to the next peak the
+water must be flooding and not yet at full strength. And it checks the
+direction against `meanFloodDir` rather than against how the arrows look,
+because a field running backwards is entirely plausible on screen and entirely
+wrong: the field's bearing at the current station comes out 20° off NOAA's 61°,
+and the drifters, measured by stepping the render and taking the median
+displacement, run within 30° of the published flood and ebb directions. High
+water at the gauge is *not* slack water at the Gate — the Bay is not a standing
+wave and the current runs on for the best part of an hour — so the assertion is
+that the nearest slack is close, not that the current is zero. It measures 61
+minutes, which is the real lag and is visible on the panel: the curve turns
+over while the barbs are still pointing in.
+
+Times are shown in the *display's* local zone, not the station's. For a wall in
+the same city as the gauge those are the same thing, and where they are not,
+the time somebody standing in front of the panel can act on is the one on their
+own watch.
+
+**The cost is all in `build()`, which is the point.** The stream function, the
+coastline raster, the barb sprites and the curve layout are baked once; the
+frame loop advances drifters and redraws a marker. The barbs went into the
+static raster too once it was clear their length is quantised and the tide
+takes ten minutes to move a bucket — compositing them thirty times a second was
+paying a per-frame price for a picture that changes twice an hour. On the Pi 3
+at 600 MHz, pinned to the strongest current in the record so every drifter is
+on screen, that is **p50 5.7–6.1 ms and p95 7.4–8.3 ms** across five runs of
+900 frames on a loaded machine, against a 10 ms budget, with no frame over
+11 ms; build is 1.2 s cold, next to voxel's 8.2 s.
+Two changes did most of that. The relaxation used to index with a boolean mask,
+which is a gather and a scatter and three times the price of a whole-array
+pass; multiplying by a float mask instead gives an identical answer — land is
+multiplied by zero and keeps its Dirichlet value — and took the solve from 253
+to 13 ms on the desktop. And the drifters live in one `(2, N)` array rather
+than two of length N, so every per-particle operation is one numpy call instead
+of two, which on this machine is most of the cost whatever the size.
+
+```console
+$ python3 tide.py                                  # needs the fetcher running
+$ python3 tide.py --anchor now --span 18           # sliding window, 18 hours
+$ python3 tide.py --metric --24h
+$ python3 tide.py --tide-station 8443970 --current-station BOS1111  # Boston
+$ python3 tide.py --extent 37.79,37.87,-122.53,-122.30   # more of the bay
+$ python3 tide.py --at '2026-08-10 09:27' --rate 900     # a cycle in a minute
+$ python3 scripts/test-tide.py                     # the checks, against the cache
+```
+
+New stations need fetching before they can be drawn; `FT_TIDE_STATIONS` and
+`FT_CURRENT_STATIONS` are comma-separated lists the fetcher adds to its
+defaults, so `FT_CURRENT_STATIONS=BOS1111 python3 ftdata.py --once` registers
+and fills one. The **curve** will follow any gauge in the country. The **map**
+will not: it is this bay, because this bay is the DEM that ships. Each current
+record carries its station's coordinates, and a station outside the crop gets
+its curve drawn and the words `BOS1111 IS OFF THIS MAP` where the arrows would
+have been — scaling the Golden Gate's channels by Boston Harbor's prediction
+would be a plausible-looking lie, and drawing nothing is the only honest
+option short of a second DEM.
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
