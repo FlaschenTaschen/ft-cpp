@@ -123,7 +123,8 @@ def fingerprint(name, frames=FRAMES, dump_dir=None, frozen=True):
     import numpy as np
 
     out = {"demo": name, "status": None, "error": None,
-           "hashes": [], "build_s": None, "render_ms": None, "frames": frames}
+           "hashes": [], "build_s": None, "render_ms": None,
+           "cpu_p50_ms": None, "cpu_p95_ms": None, "frames": frames}
 
     t0 = time.perf_counter()
     try:
@@ -151,13 +152,23 @@ def fingerprint(name, frames=FRAMES, dump_dir=None, frozen=True):
     steps = frames * HASH_EVERY
     kept = []
     spent = 0.0
+    # Two clocks on purpose. perf_counter is wall time and is what the mean
+    # below has always reported; process_time counts only CPU actually burned
+    # by this process, which is the number that survives being measured on a
+    # machine that is simultaneously driving an LED wall. The per-frame CPU
+    # samples become p50/p95 -- a mean hides the frame that misses its
+    # deadline, and on a 20 fps demo it is the tail that drops the frame.
+    cpu = []
     try:
         for i in range(steps):
             t = i * dt
             clock[0] = t
             c0 = time.perf_counter()
+            k0 = time.process_time()
             frame = render(t, i)
+            k1 = time.process_time()
             spent += time.perf_counter() - c0
+            cpu.append(1000.0 * (k1 - k0))
             if i % HASH_EVERY == 0:
                 # render() may hand back a buffer it reuses; copy before the
                 # next call, not after the loop.
@@ -168,6 +179,8 @@ def fingerprint(name, frames=FRAMES, dump_dir=None, frozen=True):
         return out, None
 
     out["render_ms"] = round(1000.0 * spent / steps, 3)
+    out["cpu_p50_ms"] = round(_pct(cpu, 50), 3)
+    out["cpu_p95_ms"] = round(_pct(cpu, 95), 3)
     out["status"] = "OK"
     out["hashes"] = [hashlib.sha256(f.tobytes()).hexdigest()[:16] for f in kept]
     stack = np.stack(kept) if kept else np.zeros((0, 1, 1, 3), np.uint8)
@@ -184,6 +197,15 @@ def fingerprint(name, frames=FRAMES, dump_dir=None, frozen=True):
     if dump_dir:
         _dump(stack, dump_dir, name)
     return out, stack
+
+
+def _pct(xs, p):
+    """Nearest-rank percentile. No numpy: this runs inside the timed worker."""
+    if not xs:
+        return 0.0
+    s = sorted(xs)
+    k = max(0, min(len(s) - 1, int(round(p / 100.0 * len(s) + 0.5)) - 1))
+    return s[k]
 
 
 def _last_line():
@@ -279,7 +301,9 @@ def survey(python, names, frames, npz_dir, dump_dir, timeout, repeats,
             flags.append("*** FROZEN")
         print("[%2d/%d] %-12s %-11s %s  %s"
               % (n, len(names), name, first["status"],
-                 ("%7.2f ms/f" % first["render_ms"]) if first.get("render_ms") else "         --",
+                 ("cpu p50 %7.2f  p95 %7.2f ms/f"
+                  % (first["cpu_p50_ms"], first["cpu_p95_ms"]))
+                 if first.get("cpu_p50_ms") is not None else " " * 30,
                  "  ".join(flags)),
               flush=True)
     return {"label": label, "env": env, "demos": results}
@@ -315,10 +339,10 @@ def compare(base, new, base_npz=None, new_npz=None):
             rows.append((name, "MISSING", "", None))
             continue
         if n["status"] != "OK":
-            rows.append((name, n["status"], n.get("error") or "", n.get("render_ms")))
+            rows.append((name, n["status"], n.get("error") or "", n))
             continue
         if b is None or b["status"] != "OK":
-            rows.append((name, "NEW_OK", "baseline did not run", n.get("render_ms")))
+            rows.append((name, "NEW_OK", "baseline did not run", n))
             continue
         if b.get("self_stable") is False or n.get("self_stable") is False:
             # Not reproducible, so the frames say nothing. Smoke test instead:
@@ -328,10 +352,10 @@ def compare(base, new, base_npz=None, new_npz=None):
                    "FROZEN, one image for the whole run" if distinct <= 1 else "")
             rows.append((name, "SMOKE_FAIL" if bad else "RUNS_ONLY",
                          bad or "nondeterministic; smoke test only, peak %d, %d "
-                         "distinct frames" % (peak, distinct), n.get("render_ms")))
+                         "distinct frames" % (peak, distinct), n))
             continue
         if b["hashes"] == n["hashes"]:
-            rows.append((name, "IDENTICAL", "", n.get("render_ms")))
+            rows.append((name, "IDENTICAL", "", n))
             continue
         note = "%d/%d frames differ" % (
             sum(1 for x, y in zip(b["hashes"], n["hashes"]) if x != y), len(b["hashes"]))
@@ -341,29 +365,37 @@ def compare(base, new, base_npz=None, new_npz=None):
                 note = ("%d/%d frames differ, max |delta| %d over %d px"
                         % (pd["n_differ"], len(b["hashes"]), pd["max_abs"],
                            pd.get("n_pixels", -1)))
-        rows.append((name, "DIFFERS", note, n.get("render_ms")))
+        rows.append((name, "DIFFERS", note, n))
     return rows
 
 
 def print_matrix(base, new, rows):
+    """The matrix. Timings are CPU p50/p95 per frame, not wall means.
+
+    p95 gets a column of its own because the frame budget is a per-frame
+    deadline, not an average: a demo whose median frame fits 30 fps and whose
+    95th percentile does not is a demo that visibly stutters twice a second.
+    """
     bt = base["demos"]
     print("\n%s  ->  %s" % (base["label"], new["label"]))
-    print("%-12s %-10s %9s %9s %7s  %s"
-          % ("demo", "status", "base ms", "new ms", "speed", "note"))
-    for name, status, note, ms in rows:
+    print("%-12s %-10s %8s %8s %8s %8s %6s  %s"
+          % ("demo", "status", "base50", "base95", "new50", "new95", "gain", "note"))
+    for name, status, note, n in rows:
         b = bt.get(name, {})
-        bms = b.get("render_ms")
-        ratio = ("%.2fx" % (bms / ms)) if (bms and ms) else "--"
-        print("%-12s %-10s %9s %9s %7s  %s"
-              % (name, status,
-                 "%.2f" % bms if bms else "--", "%.2f" % ms if ms else "--",
-                 ratio, note[:70]))
+        b50, b95 = b.get("cpu_p50_ms"), b.get("cpu_p95_ms")
+        n50 = n.get("cpu_p50_ms") if n else None
+        n95 = n.get("cpu_p95_ms") if n else None
+        ratio = ("%.2fx" % (b50 / n50)) if (b50 and n50) else "--"
+        cell = lambda v: ("%.2f" % v) if v else "--"
+        print("%-12s %-10s %8s %8s %8s %8s %6s  %s"
+              % (name, status, cell(b50), cell(b95), cell(n50), cell(n95),
+                 ratio, note[:60]))
     ok = [r for r in rows if r[1] in ("IDENTICAL", "RUNS_ONLY", "DIFFERS")]
-    tot_b = sum(bt[n].get("render_ms") or 0 for n, _, _, m in ok if n in bt)
-    tot_n = sum(m or 0 for _, _, _, m in ok)
-    if tot_b and tot_n:
-        print("\ntotal render time over %d demos: %.1f ms -> %.1f ms  (%.2fx)"
-              % (len(ok), tot_b, tot_n, tot_b / tot_n))
+    tb = sum(bt[nm].get("cpu_p50_ms") or 0 for nm, _, _, _ in ok if nm in bt)
+    tn = sum((d.get("cpu_p50_ms") or 0) if d else 0 for _, _, _, d in ok)
+    if tb and tn:
+        print("\ntotal CPU p50 over %d demos: %.1f ms -> %.1f ms  (%.2fx)"
+              % (len(ok), tb, tn, tb / tn))
 
 
 def main():
