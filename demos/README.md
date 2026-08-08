@@ -1354,17 +1354,85 @@ Tamalpais on the horizon at all — from the Sausalito leg it is 13.4 km off, an
 at 784 m it is the highest thing in the model. That costs about 0.04 ms a frame,
 because the depth schedule is geometric and stretching it only makes the steps
 slightly coarser rather than adding any. On this desktop the whole frame is
-0.71 ms mean and 0.90 ms at the 95th percentile at `--steps 96`, against 0.61
-and 0.73 before; of the difference, roughly a third is the longer far plane, a
-third Sutro Tower, and a third evaluating an eighteen-harmonic curve several
-times a frame. The Pi 3 budget is 20 ms and cannot be measured from here.
-`--steps` is the cost knob and the only one that really matters.
+0.51 ms mean and 0.69 ms at the 95th percentile at `--steps 96`.
+
+**The Pi 3 is the only number that matters, and betelgeuse is running at half
+its clock.** `vcgencmd get_throttled` reports `0x50005` — under-voltage, not
+heat — and the ARM clock sits at 600 MHz against a rated 1200 whatever the
+governor believes. Everything below is at 600 MHz, on the system numpy 1.19.5,
+as CPU time over a whole 210-second loop. Restoring the power supply roughly
+halves all of it.
+
+| | p50 | p95 | fits, at 40% headroom |
+|---|---|---|---|
+| first version of this file | 63 ms | 78 ms | 7 fps |
+| after the first optimisation pass, `--steps 96` | 47 ms | 61 ms | 9 fps |
+| after the second, `--steps 96` | 45 ms | 56 ms | 10 fps |
+| **the default now** (`--steps 64`) | **39 ms** | **51 ms** | **11 fps** |
+| `--coarse` | 30 ms | 42 ms | 14 fps |
+
+Three things the desktop hid, and one that the first pass got wrong.
+
+`--steps` is **not** the cost knob it looks like — 96 to 32 saves only a
+quarter of the frame, because half the work is per output *pixel* and does not
+care how many depth samples there were. It is now 64 by default, which is the
+setting where the difference from 96 is a slight coarsening of the nearest
+hillsides and nothing else; 48 and below is visibly blocky in the foreground
+and is not worth having.
+
+**The 95th percentile is one shot.** Not the average frame at all: for the ten
+seconds either side of the Gate transit the bridge is the whole width and most
+of the height of the panel, and it was costing 25 ms of a 65 ms frame while
+the rest of the loop paid 5. Almost all of that was the compositor's fault
+rather than the bridge's. `np.putmask` cannot write through a non-contiguous
+array — it silently copies, puts, and copies back — so painting four parts
+into a sub-rectangle of the frame was eight copies of that rectangle, and the
+box is now gathered into a contiguous scratch once. And the mask that decides
+which rows each part covers was asking `row >= top` of *floats*, which on this
+machine is four times what the same question costs of shorts; a row is inside
+a part exactly when it is at or below `ceil(top)`, so that is what it asks.
+
+**The dtype is the lever, and int16 is a real one.** A float32 pass is 21 ns an
+element here and an int32 pass is 5, so it pays to cast early rather than
+late; and the two running scans — the painter's-order minimum down the depth
+axis and the prefix sum over the histogram — cannot be vectorised down the
+axis they run along, which makes them the frame's longest serial stretches and
+the most sensitive to width. `np.minimum.accumulate` over the depth grid is
+1.37 ms in float32, 1.88 in int32 and **0.64 in int16**. Everything that is a
+screen row, a bin number or a step index is a short now, and the ceiling, the
+clamp and the narrowing all happen *before* the scan rather than after, which
+is free to do because every one of them is monotonic and so commutes with a
+running minimum.
+
+**`--coarse` marches the landscape at half width and doubles it back**, which
+is nearly two thirds of the frame halved and is what gets the demo to 15 fps.
+The bridges, Sutro Tower, the birds, the sun and the palette are still drawn at
+full width afterwards, so what coarsens is the terrain and nothing that has an
+edge you were looking at: side by side the shoreline and the hillsides step in
+twos and the water's glitter is chunkier, and the Golden Gate is pixel for
+pixel the same. It is off by default because it is a visible change and the
+default should be the honest picture.
+
+**And the numpy the wall runs on is worth as much as the inner loop.** 1.19.5
+is what Raspberry Pi OS ships and it is from 2020. Measured beside it in a
+throwaway `pip install --target` — the system numpy untouched, because
+`ftsched` runs against it — the *unmodified* file was 17% quicker under 2.0.2
+(52→43 ms median, 65→53 at the 95th) and only 6% quicker under 1.26.4, so it
+is 2.x's rebuilt ufunc loops doing it rather than the cheaper
+`__array_function__` dispatch that 1.26 also has. Against the file as it is
+now, which has less dispatch left to save, 2.0.2 is 6 to 8%: 35 ms median and
+45 at the 95th by default, and 26 and 37 with `--coarse`, which is 16 fps. It
+is a free win for every demo in the rotation and not only this one — and the
+only reason it has not been taken here is that changing the numpy the wall
+runs against is not a decision to make as a side effect of tuning one demo.
+2.0.2 is the last release that supports the Pi's Python 3.9.
 
 ```console
 $ python3 voxel.py --light dusk --fog 1.4
 $ python3 voxel.py --loop 420 --altitude -60    # half speed, and lower
 $ python3 voxel.py --bank 1.6 --roll-lag 0      # steeper, and no roll inertia
-$ python3 voxel.py --no-wing --no-tower --birds 0 --steps 64
+$ python3 voxel.py --coarse                     # half-width landscape, 15 fps
+$ python3 voxel.py --no-wing --no-tower --birds 0 --steps 96
 $ python3 scripts/make-voxel-dem.py     # re-bake the terrain (needs Pillow)
 ```
 
