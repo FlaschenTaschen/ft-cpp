@@ -1436,6 +1436,109 @@ $ python3 voxel.py --no-wing --no-tower --birds 0 --steps 96
 $ python3 scripts/make-voxel-dem.py     # re-bake the terrain (needs Pillow)
 ```
 
+### wireworld
+
+![wireworld](screenshots/wireworld.png)
+
+The Wireworld cellular automaton, running a circuit that actually computes.
+Four states — empty, conductor, electron head, electron tail — and one rule
+that matters: **a conductor becomes a head if exactly one or two of its eight
+neighbours are heads.** Head becomes tail, tail becomes conductor, empty stays
+empty.
+
+**"One or two" is what makes it wire rather than fire.** A head always has its
+tail immediately behind it, so the cell it came from is a tail and cannot fire
+again — the pulse cannot run backwards, and a signal has a direction. Ahead of
+it the next cell sees exactly one head and lights. And a cell with three heads
+around it — a junction being driven from several sides at once — does nothing
+at all, which sounds like an edge case and is in fact the entire logic family
+below. Life's rule floods; this one propagates.
+
+**What is on the panel.** Two clocks, at the left and bottom-left: a closed
+loop of N conductor cells carries a single electron round forever and taps off
+a pulse every N generations, so the loop's circumference *is* the period. One
+loop is 24 cells, the other 36; they coincide every 72, and 72 generations is
+the whole board's cycle. Clock A's pulses run east along the top bus, clock B's
+along the bottom, and three gates in the middle read them:
+
+- **OR** is a merge — the two inputs arrive at one cell, which fires on either.
+- **AND-NOT** (`A and not B`) is the same nine cells with the control input
+  forked into three that all touch the centre. A control pulse then puts three
+  heads around the centre and it stays dark, while a signal pulse alone is one
+  head and gets through. Two extra cells between OR and AND-NOT; that is the
+  whole difference.
+- **AND** is `A and not (A and not B)`, so it is the AND-NOT gate fed back into
+  another one: the second gate's output rail runs east across the panel and
+  climbs into the third gate as its control line.
+
+So the three rails carry three rhythms you can read against each other. Over
+one 72-generation cycle clock A fires three times and clock B twice, landing
+together exactly once. The OR fires on all four of those events, the AND-NOT on
+the two that clock A has to itself, and the AND on the single coincidence. That
+is the truth table, drawn as timing.
+
+**Diodes, and why there are exactly two.** The standard one-way junction: a gap
+in the wire bridged by two pairs of prongs. Forwards, the near side lights the
+first pair, the first pair lights the second, and the far side sees two heads
+and fires. Backwards, the far side lights both pairs at once and they put three
+heads around the near side — one too many — and it stops dead. Only the merge
+needs them, and it needs them badly: when either input fires the centre cell,
+the centre's head is a neighbour of the *other* input's last cell, which fires
+and runs away backwards up the wire. Left to itself it meets the next real
+pulse coming the other way and the two annihilate, which silently deletes a
+quarter of the circuit's events while leaving a picture that still looks
+perfectly busy. Both diodes therefore sit hard against the gate, because the
+reverse pulse has to be dead before the forward one arrives and here they are
+only ten generations apart. `scripts/wireworld-check.py` removes them and
+asserts that the OR gate's rate drops.
+
+**Cells are 2x2 pixels.** The circuit is a hand-laid 160x32, which at `--cell
+2` fills a 320x64 wall exactly. `--cell 1` was rendered and looked at rather
+than reasoned about: the same circuit then occupies the middle quarter of the
+panel inside a black border, and single-pixel wire with single-pixel electrons
+on it is a texture rather than a diagram from more than a couple of metres
+away. Two is the default for that reason; a panel of another shape gets the
+circuit centred, and cropped if it will not fit.
+
+**The step rate is per second, not per frame** (`--rate`, default 14), so the
+circuit runs at the same speed whatever `--fps` it is driven at. That makes the
+automaton's state a function of elapsed time, which for a cellular automaton
+usually means giving up on `render()` being a pure function of `t`. Here it
+does not have to be: the board repeats every 72 generations, so `build()`
+settles the transient and stores the whole cycle as 72 grids — 370 kB — and
+`render()` indexes into it. A restart, a seek, or a different frame rate all
+land on the same picture. Electrons get a few generations of afterglow behind
+them (`--glow`), because a one-cell-per-generation head is otherwise a blink
+rather than a movement and the direction of travel is what you want to read.
+
+Measured on betelgeuse (Pi 3, undervolt-throttled to 600 MHz): **0.05 ms p50 /
+0.08 ms p95 on a frame that lands on the same generation as the last one** —
+it returns the same buffer untouched — and **3.6 ms p50 / 4.0 ms p95 on a frame
+that steps**, which at 30 fps and 14 generations a second is a little under
+half of them. `build()` costs 0.65 s once. Storing the cycle as finished RGB
+frames instead would make even the stepping frames free, at 4.4 MB and at the
+cost of pinning the palette and the panel size into the precompute; 4 ms
+against a 20 ms budget did not justify it.
+
+**A mis-laid Wireworld circuit still animates convincingly while computing
+nothing**, which is a nastier failure than usual, so
+`scripts/wireworld-check.py` drives every piece and reads the answer off rather
+than trusting a look at it: the rule for all four states against all nine
+neighbour counts, three loop lengths against their periods, the diode passing
+one pulse forwards and none backwards and leaving nothing behind either way,
+both gates over their whole truth table, and then the assembled circuit for its
+firing rates, its 72-generation period, and the two ways this dies quietly —
+every electron consumed, leaving a static picture that is still a valid frame,
+or the 1-or-2 rule wrong and conductor lighting everywhere.
+
+```console
+$ python3 wireworld.py --host 127.0.0.1
+$ python3 wireworld.py --rate 6 --palette ice      # slow enough to follow
+$ python3 wireworld.py --cell 1 --glow 0.7
+$ python3 wireworld.py --palette magma --rate 24   # hard to keep up with
+$ python3 scripts/wireworld-check.py               # the assertions
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
