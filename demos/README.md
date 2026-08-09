@@ -1688,6 +1688,110 @@ $ python3 wireworld.py --palette magma --rate 24   # hard to keep up with
 $ python3 scripts/wireworld-check.py               # the assertions
 ```
 
+### propagation
+
+![propagation](screenshots/propagation.png)
+
+Live HF space weather, laid out as an instrument panel rather than as an
+effect. Somebody walks past the wall, looks at it for two seconds, and either
+goes and turns the radio on or does not — so every quantity has one place, the
+same place every time, with its units and its age beside it.
+
+**Why these numbers.** SFI is the 10.7 cm solar flux, the proxy for how hard
+the sun is ionising the F layer, and it is what decides whether 15 m and 10 m
+are open at all. SSN is the sunspot number, saying the same thing more slowly.
+A and K are geomagnetic: K measures how disturbed the field is over three
+hours, A flattens a day of K into one linear number. K is the one that ruins an
+afternoon — flux can be splendid and a K of 6 will still have shut the high
+bands and laid an aurora hiss across the low ones — so it gets the biggest type
+on the panel and the whole left tile. Bz and solar wind speed sit underneath it
+because southward Bz is *why* K will be bad, several hours before K knows.
+
+**One K is not enough.** A single number cannot tell you whether a storm is
+arriving or leaving, and those call for opposite decisions, so the middle
+column carries the published 3-hourly planetary Kp for the last day as a bar
+strip on the conventional colour scale, with the G1 threshold ruled across it.
+Bars rather than a line: each Kp is an interval, not an instant. The right-hand
+end is labelled with the last bar's own UTC hour rather than "now", because on
+a stale cache it is emphatically not now. `--hours 72` widens it to the three
+days the cache holds.
+
+**The band ladder is the part people actually read.** Four band pairs, day and
+night, green/amber/red. That judgement is N0NBH's and it is *quoted* rather
+than recomputed, because reproducing somebody's editorial call badly is worse
+than citing it. The chips carry the word as well as the colour, so a
+photograph of the panel — or a colour-blind reader — is not left guessing.
+
+Across the bottom is 24 hours of GOES 1–8 Å X-ray flux as a filled log
+sparkline over four decades, A at the floor to X at the ceiling, each column
+coloured by its own class. A quiet day is a flat teal band; an M-flare is an
+orange spike you see before you read anything. The status line names the
+current class and the day's peak, and an M or X event in progress blinks — a
+D-layer blackout is the one thing here that has earned the right to move.
+
+**The data comes off a disk cache, not a socket.** `build()` and `render()`
+call `ftdata.load()`, which reads one JSON file and nothing else. That is not a
+workaround, it is the point: the scheduler builds the next segment on a worker
+thread sharing the GIL with the render loop, so a `build()` that blocks on a
+socket does not merely wait — it stops the wall for everybody, and a hung
+server means the segment never builds at all. See the docstring in
+[`ftdata.py`](ftdata.py). **The fetcher has to be running for the panel to have
+anything to show:**
+
+```console
+$ python3 ftdata.py --once            # one pass, to see it work
+$ python3 ftdata.py --loop 900 &      # every fifteen minutes, its own process
+$ python3 ftdata.py --list            # what is cached, and how old
+```
+
+It adds three SWPC products alongside the hamqsl one that was already there,
+and all of them are trimmed in the fetcher rather than in the demo, because the cache
+lives on a Pi on shop wifi: `swpc_kp` is 1.4 kB of 3-hourly Kp plus the
+1-minute estimate, `swpc_xray` is 1.4 kB — 656 kB of GOES samples bucketed to
+15 minutes, keeping each bucket's *maximum*, since a flare is a spike a few
+minutes wide and averaging one into a quarter hour of quiet sun is how a panel
+misses an M-class event — and `swpc_solarwind` is 230 bytes from the two
+summary endpoints, the `/products/solar-wind/mag-1-day.json` path every older
+script uses having quietly started 404ing.
+
+**Staleness is shown in three stages, and this is the part that matters.**
+Every source's age is in the status bar, always. Past its TTL a source's
+numbers drop to half brightness and its age turns amber with an AGING flag.
+Past three times its TTL the numbers are not drawn at all — the Kp tile reads
+`--`, the strip says KP HISTORY TOO OLD, and a red STALE flag blinks — because
+a stale K is the specific lie that matters: 5 shown when the truth is 2 sends
+somebody to the wrong band. Absent, null and `NoRpt` fields print `--` and
+never `None`; a gap in the Kp series is drawn as a gap and never as zero. If
+the cache is empty the whole panel becomes a NO DATA card naming the fetcher,
+the command and the cache path, rather than a blank rectangle or a tidy row of
+plausible zeros. A propagation panel that admits it has nothing is strictly
+better than one that is confidently wrong.
+
+It is all baked. The layout, the glyphs, the bars and the sparkline are
+rasterised once in `build()`; `render()` copies that frame and repaints three
+small rectangles — the flare flag, the stale flag, and a two-pixel heartbeat
+that exists because a frozen render loop and a very quiet sun look identical on
+a panel made entirely of static type. That is **0.12 ms p50 and 0.21 ms p95 on
+the wall's Pi** at 320x64, against an 8 ms budget; `build()` costs about 130 ms,
+once, on the worker thread. The type is defcon.py's baked 3x5 font extended by
+four glyphs, so there is no font file to be missing on the Pi.
+
+So there are exactly **two distinct frames**, and that is the intent. The blink
+is a square wave; on a fresh quiet cache the two differ by four pixels — the
+heartbeat — rising to eighty-odd during a storm with an M-flare, when both flags
+are blinking as well. An instrument may be still, but it may not be
+*accidentally* still, which is the whole reason the heartbeat exists. It is
+also why this one runs at 10 fps standalone rather than 30: the other twenty
+frames a second are byte-identical.
+
+```console
+$ python3 propagation.py --host 127.0.0.1
+$ python3 propagation.py --hours 72              # three days of Kp
+$ python3 propagation.py --no-xray-strip         # more rows for the columns
+$ python3 propagation.py --blink-hz 0            # hold the flags, for a photo
+$ FT_DATA_CACHE=/tmp/nothing python3 propagation.py   # the no-data card
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,

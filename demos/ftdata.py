@@ -208,6 +208,163 @@ def _hamqsl():
     }, HAMQSL_URL
 
 
+# -- Space weather, from SWPC directly. -------------------------------------
+#
+# hamqsl above is one small file carrying somebody's summary. These are the
+# measurements it summarises, and they are here because a single number cannot
+# say what a series can: "K is 5" and "K has been 5 for twelve hours" are
+# different afternoons. All three are trimmed hard before they are stored,
+# because this cache lives on a Pi on shop wifi and the demo needs a few
+# hundred numbers out of files that run to half a megabyte.
+
+KP_3H_URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+KP_1M_URL = "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json"
+
+
+@product("swpc_kp", ttl=5400,
+         description="planetary Kp: 3-hourly for three days, plus the estimate now")
+def _swpc_kp():
+    """The definitive 3-hourly Kp, and the running estimate between bulletins.
+
+    Two files because they answer two questions. The 3-hourly series is the
+    published index -- what an archive will still say next year -- and it is
+    what a history strip should plot, since each bar is a real interval rather
+    than a moment. The 1-minute file is the estimate SWPC runs continuously,
+    which is the only thing that knows a storm started twenty minutes ago; it
+    covers about six hours, so it can *only* be the "now" figure.
+
+    They disagree by design near the right-hand edge, and the panel shows the
+    estimate as the headline with the published bars behind it rather than
+    trying to reconcile them.
+
+    `a_running` rides along in the 3-hourly file, which is where the A index on
+    the panel comes from -- same source as the K bars, so the two cannot drift
+    apart the way they would if A were quoted from somewhere else.
+    """
+    rows = get_json(KP_3H_URL)
+    # 4.8 kB of 7 days; three days is as much as a 320 px strip can show with
+    # bars wide enough to read, and 24 records is under a kilobyte.
+    tail = rows[-24:]
+    series = [{"t": r["time_tag"], "kp": round(float(r["Kp"]), 2),
+               "a": int(r["a_running"])} for r in tail]
+
+    now = None
+    try:
+        live = get_json(KP_1M_URL)
+        if live:
+            last = live[-1]
+            now = {"t": last["time_tag"],
+                   "kp": round(float(last["estimated_kp"]), 2)}
+    except Exception:                                        # noqa: BLE001
+        # The estimate is a nicety; the published series is the product. A
+        # panel with bars and no headline is still a useful panel.
+        pass
+
+    return {"series": series, "now": now}, KP_3H_URL
+
+
+XRAY_URL = "https://services.swpc.noaa.gov/json/goes/primary/xrays-1-day.json"
+
+# GOES long-channel thresholds, W/m^2. The letter is the decade and the digit
+# is the mantissa: 4.7e-6 is C4.7. This is the readable form of the number and
+# the only form anyone says out loud.
+XRAY_CLASSES = ((1e-4, "X"), (1e-5, "M"), (1e-6, "C"), (1e-7, "B"))
+
+
+def xray_class(flux):
+    """Format a W/m^2 long-channel flux as 'C4.7'. None if there is no flux."""
+    if flux is None or flux <= 0:
+        return None
+    for scale, letter in XRAY_CLASSES:
+        if flux >= scale:
+            return "%s%.1f" % (letter, flux / scale)
+    return "A%.1f" % (flux / 1e-8)
+
+
+@product("swpc_xray", ttl=3600,
+         description="GOES 1-8A X-ray flux, 24h at 15-minute peaks")
+def _swpc_xray():
+    """656 kB of two channels a minute, kept as 96 numbers.
+
+    Only the long channel (0.1-0.8 nm) is kept, because that is the one the
+    flare classes are defined on; the short channel is a hardness ratio nobody
+    reads off a wall. It is bucketed to 15 minutes and each bucket keeps its
+    **maximum**, not its mean: a flare is a spike a few minutes wide, and
+    averaging one into a quarter hour of quiet sun is how you end up with a
+    panel that missed an M-class event entirely.
+
+    The peak of the whole day comes back alongside, since "biggest flare
+    today" is a thing people ask and recomputing it from a downsampled series
+    would give a slightly different -- and always smaller -- answer.
+    """
+    rows = get_json(XRAY_URL)
+    long_chan = [r for r in rows if r.get("energy") == "0.1-0.8nm"]
+    if not long_chan:
+        raise ValueError("no 0.1-0.8nm samples in GOES feed")
+
+    def stamp(r):
+        return r["time_tag"]
+
+    long_chan.sort(key=stamp)
+    buckets = 96                                    # 24 h at a quarter hour
+    n = len(long_chan)
+    series = []
+    for i in range(buckets):
+        lo = (i * n) // buckets
+        hi = max(lo + 1, ((i + 1) * n) // buckets)
+        vals = [r["flux"] for r in long_chan[lo:hi]
+                if isinstance(r.get("flux"), (int, float)) and r["flux"] > 0]
+        # Two significant figures is a tenth of a flare class; storing the
+        # float64 repr would triple the file for precision nobody can see.
+        series.append(float("%.2e" % max(vals)) if vals else None)
+
+    latest = None
+    for r in reversed(long_chan):
+        if isinstance(r.get("flux"), (int, float)) and r["flux"] > 0:
+            latest = r
+            break
+    peak = max((r["flux"] for r in long_chan
+                if isinstance(r.get("flux"), (int, float))), default=None)
+
+    return {
+        "series": series, "minutes_per_bucket": 15,
+        "start": stamp(long_chan[0]), "end": stamp(long_chan[-1]),
+        "current": latest["flux"] if latest else None,
+        "current_class": xray_class(latest["flux"]) if latest else None,
+        "current_t": stamp(latest) if latest else None,
+        "peak": peak, "peak_class": xray_class(peak),
+        "satellite": long_chan[-1].get("satellite"),
+    }, XRAY_URL
+
+
+WIND_SPEED_URL = "https://services.swpc.noaa.gov/products/summary/solar-wind-speed.json"
+WIND_MAG_URL = "https://services.swpc.noaa.gov/products/summary/solar-wind-mag-field.json"
+
+
+@product("swpc_solarwind", ttl=3600,
+         description="solar wind speed and IMF Bt/Bz at L1")
+def _swpc_solarwind():
+    """Sixty bytes each, which is the whole reason these are the endpoints.
+
+    The `/products/solar-wind/mag-1-day.json` path that every older script
+    uses is gone -- it 404s now -- and the day-long series it served would
+    have been trimmed to these two numbers anyway. Bz is the one worth the
+    space: southward Bz is what opens the magnetosphere, so a negative number
+    here is the reason tomorrow's K will be bad, hours before K knows it.
+    """
+    payload = {"speed": None, "bt": None, "bz": None, "t": None}
+    rows = get_json(WIND_SPEED_URL)
+    if rows:
+        payload["speed"] = rows[0].get("proton_speed")
+        payload["t"] = rows[0].get("time_tag")
+    rows = get_json(WIND_MAG_URL)
+    if rows:
+        payload["bt"] = rows[0].get("bt")
+        payload["bz"] = rows[0].get("bz_gsm")
+        payload["t"] = rows[0].get("time_tag") or payload["t"]
+    return payload, WIND_SPEED_URL
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="fetch outside data into a cache the demos read",
