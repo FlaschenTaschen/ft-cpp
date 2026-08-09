@@ -2478,6 +2478,168 @@ thread — a quarter of what propagation's costs on the same machine. There are
 exactly two distinct frames over a full cycle, which is why the standalone
 default is 10 fps: the other twenty a second would be identical datagrams.
 
+### quake
+
+![quake](screenshots/quake.png)
+
+A week of earthquakes around San Francisco, at two scales, from the USGS ANSS
+catalogue. On the left the greater Bay Area at 1.4 km to the pixel, with the
+water filled, the eight strands of the plate boundary that run through it and
+every located event of the last seven days on top. In the middle the same week
+out to 300 km, which is where Parkfield, the Mendocino triple junction and the
+rest of the ground that shakes this city but has none of its address live. On
+the right the number the room actually wants — **how many days since the last
+M4 within 100 km** — and underneath it the week's count, its largest, its
+latest, and a strip of the planet's M4.5+.
+
+**Most days it is nearly empty, and that is the answer.** Which is the hard
+part, because an empty map is also what a projection bug, a bad date filter, a
+dropped event list and a dead fetcher all produce. So the empty state is the
+designed one rather than the default one: the coast and the faults are drawn
+whether or not anything happened on them, the count of days is in the largest
+type on the panel *because a large number there is good news*, the most recent
+event breathes once a second however small it was, the header says `QUIET`
+rather than nothing, and a heartbeat blinks in the corner. There is no state in
+which this demo shows nothing. There is only the state in which the ground has
+done nothing, which looks quite different from a panel that has stopped.
+
+**And it has to become loud.** An M4+ in the last six hours, an M5+ in a day or
+an M6+ in three days takes the panel over: the header turns into a blinking red
+bar, the right-hand column becomes that one earthquake — magnitude in the
+biggest type on the wall, place, distance and bearing *from this building*,
+depth, how long ago, how many since — the epicentre gets a crosshair, and rings
+expand out of it across whichever map it landed on. Among qualifying events the
+biggest wins rather than the newest, because during a sequence the newest event
+is a small aftershock and the M5.8 forty minutes ago is still the news.
+
+**Magnitude is logarithmic, so the marker is not scaled by it.** Scaling a
+marker by magnitude gives an M6 twice the radius of an M3 for thirty thousand
+times the energy, which flatters the small ones; scaling by energy gives an M2
+a radius of 10⁻⁸ pixels, which is worse. So the marker is not a symbol for the
+number at all — it is drawn at **the size of the ground that broke**. Wells &
+Coppersmith put strike-slip subsurface rupture length at
+log₁₀(L) = 0.59 M − 2.44, so the radius is L/2 in kilometres, projected like
+everything else on the map. Loma Prieta comes out at 21 km of radius against a
+real rupture about 40 km long, which is right to within a pixel, and an M7
+would take a third of the tile — also right. Below about M4.5 the rupture is
+smaller than a pixel, so those are floored at one pixel and their magnitude is
+carried by **colour**, a blue-through-red ramp, and their age by
+**brightness**, fading to about a quarter over the week with a white core on
+anything in the last hour. Three quantities, three channels, and the one that
+is genuinely enormous is the one drawn to scale.
+
+**The Bay map is stretched, and no version of it is not.** A tile's squash is
+arithmetic: the region's height-to-width ratio times the tile's
+width-to-height. On 155 by 57 pixels a square region is squashed 2.7 times
+whatever you do, and the only real choices are how much ground to cover and
+where the distortion goes. The tile covers 37.20–38.85 N, 121.15–123.55 W — 210
+km across, 183 down — and lands at 2.4 times, 1.36 km per pixel across against
+3.2 down. Everything is squashed equally, including the rupture discs, which is
+why a large event draws as a flat ellipse: on this projection the ellipse *is*
+the circle. The extent is a trade too. A tight crop of the Bay is a
+better-looking map and, most weeks, an empty one — the busiest ground in
+northern California is the Geysers geothermal field at 38.79 N, 60 km north of
+any crop that keeps the Bay looking like the Bay, and it alone supplies half
+the week's local events. Reaching up to it costs half a unit of squash and buys
+the map its earthquakes. The 300 km tile is the opposite: 57 by 57 over a
+620 km box, within 4% of true scale, with range rings at 100 and 300 km.
+
+The geography is baked into the file. **Water is a mask, not a coastline**, and
+that was the second attempt: drawn as polylines the Bay, Suisun Bay and the
+Delta are a horizontal scribble of thin strokes with no inside and no outside,
+and the eye cannot tell a channel from a fault. So each tile carries a 1-bit
+ocean mask, rasterised offline from Natural Earth 1:10m at 8×8 supersampling
+and base64'd — 1105 bytes and 407 bytes, about thirty lines of source — and the
+shoreline falls out of a dilation for free. The faults are the eight principal
+strands of the USGS 2014 National Seismic Hazard Model fault sections: San
+Andreas, Hayward, Calaveras, Rodgers Creek–Maacama, Concord–Green Valley,
+Greenville, San Gregorio, West Napa. There are 74 sections in that box; all of
+them is a grey smear and these eight are a plate boundary, and being nearly
+straight they cost 42 points between them.
+
+**One feed, two scales, and one request that is not a feed.**
+`ftdata.py` fetches `quake-usgs` from `all_week.geojson` — every event ANSS
+located anywhere on Earth in seven days, which answers both halves at once.
+Taking one file rather than composing `all_day` with `2.5_week` avoids the
+whole class of bug where two feeds hold two versions of the same earthquake,
+which happens constantly: USGS revises magnitudes for hours after an origin. It
+is 1.4 MB, which at a ten-minute interval averages 2.4 kB/s, and the record
+kept from it is about forty times smaller — every event within 300 km with
+distance and bearing precomputed, the M4.5+ of the week as time-and-magnitude
+pairs, and the single largest in full. Quarry blasts are dropped: the `type`
+field distinguishes them and the East Bay quarries put several a week inside
+300 km, and the count of what was dropped is kept so the filter can be checked.
+The **baseline is the one thing no summary feed can answer** — a local M4
+happens a few times a year, so on almost every day the answer lies outside
+every window that exists, and `significant_month` is global and would not list
+a Bay Area M4.2. That number comes from one FDSN event query instead, same
+catalogue and equally keyless, `limit=1` ordered by time, about 1 kB and under
+a second. It sits in its own try/except: losing the headline scalar must not
+cost the week's map with it, so a failure stores `baseline: null` and the panel
+prints `--`. The demo also checks the week's own events against it, or a local
+M4 four minutes old would leave "129 DAYS" on screen with the earthquake still
+on the map.
+
+**Age is part of the data, in three stages.** Fresh draws normally with the
+fetch age in the corner. Past the 3600 s TTL the corner turns amber and says
+`OLD`, and the map still draws — the geography did not expire. Past three TTLs
+it says `STALE`, prints `CATALOGUE 2D OLD — NOT DRAWN`, and stops drawing
+earthquakes altogether, because a day-old catalogue is a map of a city where
+nothing has happened since yesterday, which is a different and much worse claim
+than an empty one. No file at all, or a half-written one, or one from another
+product, gets the no-data card with the command that fixes it — and that card
+is loud on purpose, since a quiet empty map is this demo's *good* state and the
+two must never be confusable.
+
+**It is all baked, and the thing to watch is not the frame.** The maps, the
+type, the events and the sparkline are rasterised in `build()` into one uint8
+frame; `render()` copies it and repaints the pulse, the heartbeat and, when
+there is one, two ring masks. Over 400 sequential frames on a desktop that is
+**p50 0.006 ms / p95 0.007 ms** quiet and **p50 0.035 / p95 0.037** with an
+alert on screen — call it 0.8 ms and 4 ms on the wall's Pi against a 50 ms
+budget at 20 fps. The rebake is the part that could stutter: re-reading the
+cache and redrawing three hundred events across two maps costs 3.4 ms here and
+therefore perhaps 350 ms there, seven dropped frames in one lump. So it only
+happens when the record has actually changed, checked with an `os.stat` rather
+than by parsing 58 kB of JSON. Most of that 3.4 ms used to be 5.3: the single
+biggest cost in a rebake turned out to be `np.clip` on a *scalar* inside the
+magnitude-to-colour lookup, six thousand calls for 3.3 ms, now a list index.
+
+**The checks are the part that matters here**, because both of this demo's
+failure modes look like a working panel. `scripts/test-quake.py` asserts the
+projection against known coordinates in pixels — Sequoia Fabrica, the Golden
+Gate, the Geysers, San Jose, Parkfield, Cape Mendocino — and the water mask
+against places that are unambiguously wet or dry, with an east-west mirrored
+mask as a control that has to be rejected. It asserts the rupture scale against
+seismology rather than against itself: M6.9 has to give roughly Loma Prieta's
+40 km, and each whole magnitude has to multiply rupture by a constant *ratio*,
+which is the check that tells a log scale from a linear one. It counts, on the
+live cache, that every event which projects onto the Bay tile actually
+brightened its own pixel, and reads the event count and the data age back off
+the rendered pixels rather than off the objects they were formatted from. And
+it drives the loud path with a **synthetic M5.8 under Berkeley** written into a
+cache directory, because waiting for a real one is not a test plan: the header
+has to go red and blink, the distance and bearing have to appear, the epicentre
+has to be marked, and the rings have to *expand*, measured as the mean radius
+of the alert-coloured pixels over sequential frames — a ring stuck at a fixed
+radius, or running inwards, looks perfectly fine in a still.
+
+Two traps are worth naming. Everything renders **frames in sequence from a
+fresh `build()`**; the first version sampled `render()` and read forty
+references to the same reused buffer, and concluded the pulse was flat. And the
+three cache states each run in a **separate process** with `FT_DATA_CACHE` set,
+because `ftdata.CACHE_DIR` binds at import and a test that sets the variable
+and re-imports is testing the value it already had.
+
+```console
+$ python3 ftdata.py --once --only quake-usgs   # or --loop 900
+$ python3 quake.py --host 127.0.0.1
+$ python3 quake.py --alert-demo             # the loud path, on the week's biggest
+$ python3 quake.py --pulse-hz 0             # hold it still, for a photograph
+$ FT_DATA_CACHE=/tmp/empty python3 quake.py  # the no-data card
+$ python3 scripts/test-quake.py
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
