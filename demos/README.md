@@ -2956,6 +2956,117 @@ $ python3 quake.py --pulse-hz 0             # hold it still, for a photograph
 $ FT_DATA_CACHE=/tmp/empty python3 quake.py  # the no-data card
 $ python3 scripts/test-quake.py
 ```
+### sats
+
+![sats](screenshots/sats.png)
+
+What is overhead, right now. Coastlines, the day/night terminator for this
+exact minute, fifteen satellites each carrying twenty minutes of ground track
+behind it and twenty ahead, the ISS labelled, San Francisco marked, and a strip
+along the bottom saying when the next thing goes over the workshop and how high
+it gets — `SF NEXT  CSS IN 23M  MAX EL 44 N`. The roster is the ISS and
+Tiangong, nine amateur birds from AO-7 (launched 1974, still worked today)
+through SO-50 and FUNcube to GreenCube at 5900 km and QO-100 sitting
+motionless over Africa, and four polar weather satellites.
+
+**The reason this one exists.** Every other live-data demo here is only as
+alive as the fetcher: a tide curve with a dead fetcher is a still picture.
+Orbital elements are not a measurement, they are a *description of an orbit*,
+and turning one into a position needs nothing but the time of day — so this
+panel moves continuously and correctly on a cache record three days old, and
+would keep moving all week. `ftdata.py` fetches CelesTrak's GP elements **once
+a day** (`ttl` three days, `interval` 86400) and trims 80 kB of three group
+queries down to a 3.7 kB record of seven mean elements per satellite. The
+obvious pick for a ham-adjacent wall would have been NOAA 15/18/19, the APT
+birds a cheap dongle can hear; `GROUP=noaa` returns *not found* now and those
+three are gone from `GROUP=weather` too, because NOAA ended POES operations in
+2025. Their successors are here instead, Meteor-M2 3 being the one still
+sending LRPT that anybody in the shop could receive.
+
+**The projection is a plate carrée squashed exactly two and a half times.**
+360° across 320 columns is 1.125° a column; the whole 180° of latitude across
+64 rows is 2.8125° a row. There is no honest way round it — a true-scale world
+map 320 px wide is 160 rows tall — and the alternative, keeping the scale and
+cropping to the 72° that fit, would cut off everything above 36 N, which is the
+ISS for most of its orbit and every polar bird entirely. So the world is
+squashed, Greenland comes out short and fat, and nothing is missing.
+`--lat-span 72` crops instead, for comparison. The coastline is Natural Earth
+1:110m, simplified offline and baked into the source as 3.5 kB the same way
+`defcon.py` bakes its own, so there is nothing to fetch at run time.
+
+**The propagator is Kepler plus J2 secular rates, and it is not SGP4** — worth
+saying plainly, because the picture looks identical either way and the
+difference only ever shows up as a satellite arriving somewhere a minute early.
+It does Brouwer element recovery (the mean motion in a TLE is a Kozai mean, and
+using it directly gets the period wrong by seconds an orbit), the three J2
+secular rates — nodal regression, which is what walks the ISS ground track west
+about 5° a day, apsidal rotation, and the correction to the mean motion — and
+the TLE's own *ṅ*/2 term as a quadratic in mean anomaly, which is the one piece
+of drag a Kepler propagator can carry. It does **not** do SGP4's short-period
+terms or BSTAR drag, which is why BSTAR is not even stored.
+
+Measured against a public SGP4 service at five moments spanning three days, on
+elements 18 hours old, the ISS subsatellite point comes out **0.09° away, 12 km
+— a twelfth of a column** — rising to 0.13° when propagated a further three days
+ahead, with altitude agreeing to 8 km. That is a better answer than it has any
+right to be and comes almost entirely from carrying the *ṅ*/2 term. For drawing
+where things are it is indistinguishable from the real thing; for pointing a
+dish it is not.
+
+The pass strip is computed once in `build()` — a 30 s search over the next day
+for everything above 10°, with the horizon crossings interpolated across the
+cell they fall in and the maximum refined by a parabola through the samples
+either side of it. That last part is not fussiness: a pass that goes nearly
+overhead moves a degree of elevation a second, so a raw grid maximum reads
+88.4 where the truth is 88.8, and the raw grid *time* is half a minute out —
+which is the difference between "IN 42M" and being wrong about it.
+
+**Past the record's three-day TTL the panel stops drawing satellites and says
+ORBITS TOO OLD.** That is a harder line than the other data demos take and it
+is the right one here: a stale tide curve is visibly the wrong shape, but a
+stale orbit is a perfectly plausible dot in the wrong place and nothing on the
+panel would give it away.
+
+Everything on it moves every frame, so nothing about the satellites is cached;
+what is cached is everything that does not move — the map, the terminator
+(rebuilt every two and a bit minutes, when the sun has moved half a column) and
+the strip. A frame is one full-frame copy, about sixty numpy calls over a
+single 1815-element array, and four scatters: **0.35 ms p50 and 0.37 ms p95**
+on a desktop, so about 37 ms on the wall's 600 MHz Pi against the 50 that
+20 fps allows. Three things paid for that and are worth knowing before touching
+the file — Kepler's equation is not iterated (the equation of the centre to
+second order plus one Newton step is already finer than the propagation it
+feeds, where five blind iterations cost 45 numpy calls a frame for nothing),
+geodetic latitude is a closed form rather than a fixed point (agrees with the
+converged answer to 0.0007°, a four-hundredth of a row), and sidereal time over
+a forty-minute track is a straight line.
+
+`scripts/test-sats.py` is 69 checks: Kepler by substitution, GMST against its
+published value at J2000, the projection against the corners of the map, the
+propagation against that SGP4 service with an hour of deliberate clock error as
+the control, the pass search against a brute-force 5 s scan of the same orbits,
+and then the pixels — every dot read back off the panel and converted to a
+latitude and longitude, the footprint ring measured to check every one of its
+pixels is the right angular distance from the satellite it belongs to, and the
+lit half of the map cross-correlated against where the sun actually is, with an
+inverted terminator as the control. Fresh, stale and absent caches each run in
+a **separate process**, because `ftdata.CACHE_DIR` binds at import and
+reloading the module in one process has produced a false pass here before.
+
+The footprint check earned its place immediately: it caught a ring wrapped as
+`x % 360 - 180` instead of `(x + 180) % 360 - 180`, which is the same thing for
+an eastern longitude and half a world out for a western one, and which drew a
+beautiful circle around nothing at all.
+
+```console
+$ python3 ftdata.py --once --only sats    # elements; once a day is plenty
+$ python3 sats.py --host 127.0.0.1
+$ python3 sats.py --rate 600              # an orbit past in nine seconds
+$ python3 sats.py --lat-span 72           # true scale, poles cropped
+$ python3 sats.py --site 51.48,-0.00 --site-name GRN   # somebody else's sky
+$ FT_DATA_CACHE=/tmp/nothing python3 sats.py           # the no-data card
+```
+
 
 ## demoscene.py
 

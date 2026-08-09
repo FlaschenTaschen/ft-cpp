@@ -2254,6 +2254,172 @@ def _quake_usgs():
                   "biggest": biggest, "events": world},
         "baseline": baseline,
     }, QUAKE_FEED
+# Orbital elements, from CelesTrak's GP service. sats.py propagates these.
+#
+# This is the slowest-moving product in the file and the fastest-moving demo,
+# which is the whole point of it. Everything else here fetches a *number that
+# changes* -- a tide height, a K index, a wind field -- and the panel is only as
+# alive as the fetcher. These are elements: they describe an orbit rather than a
+# position, they are revised about once a day, and the demo turns them into a
+# position by knowing what time it is. So `sats.py` moves continuously, forever,
+# on a cache record that is three days old and still perfectly good.
+#
+# Hence ttl=3 days and interval=86400. Fetching this every quarter hour would be
+# 96 requests a day at CelesTrak to receive the same file 95 times; the service
+# is free, keyless and asks politely for exactly this restraint. Not volatile:
+# a record worth three days is emphatically worth surviving a reboot, and one
+# write a day is nothing on any flash card.
+#
+# **Three group queries, not fifteen object queries.** `gp.php?CATNR=25544`
+# works and would fetch precisely what is wanted, but fifteen of them is fifteen
+# requests for 8 kB of data that three requests already contain. GROUP=stations
+# is 9 kB, GROUP=amateur 40 kB and GROUP=weather 30 kB; the union is parsed,
+# fifteen objects are picked out of it by NORAD number and the other 180 are
+# dropped. What is stored is 2 kB.
+#
+# **GROUP=noaa no longer exists.** The obvious pick for a ham-adjacent wall is
+# NOAA 15/18/19, the APT birds a $20 dongle can hear -- and CelesTrak answers
+# `GROUP=noaa not found` now, with those three gone from GROUP=weather too,
+# because NOAA ended POES operations in 2025 and the group went with them. The
+# polar weather birds here are their successors: NOAA-20 and NOAA-21 (JPSS,
+# HRD not APT), MetOp-B and Meteor-M2 3, which is the one still transmitting
+# LRPT that anybody in the shop could actually receive.
+#
+# **The payload is the seven mean elements and nothing else**, because that is
+# what the propagator in sats.py consumes. BSTAR is dropped: it is the SGP4 drag
+# term, sats.py does not implement SGP4, and storing a number the demo cannot
+# honour would invite somebody to assume it does. MEAN_MOTION_DOT is kept and is
+# used -- it is the TLE's n-dot/2 in rev/day^2, and the quadratic term it feeds
+# into the mean anomaly is the one piece of drag a Kepler propagator can carry.
+#
+# Times are epoch seconds, as everywhere else here. The EPOCH field is an ISO
+# stamp in UTC with no offset on it and microseconds that matter -- a second of
+# epoch error is 7 km along track for the ISS -- so it is parsed rather than
+# truncated.
+# --------------------------------------------------------------------------
+
+CELESTRAK_GP = "https://celestrak.org/NORAD/elements/gp.php"
+
+# The groups worth one request each, and what a satellite drawn from each is
+# called on the panel. The kind rides into the payload because the demo colours
+# by it: stations white, amateur green, weather amber.
+SAT_GROUPS = (("stations", "station"), ("amateur", "amateur"),
+              ("weather", "weather"))
+
+# The roster. NORAD number, the short label the panel has room for, and a note
+# on why it earns one of fifteen places on a 320 px map. Deliberately modest:
+# the amateur group alone is 97 objects and forty Russian cubesats in one
+# sun-synchronous plane draw as a single smear.
+SAT_ROSTER = (
+    (25544, "ISS",     "the one everybody looks for; 51.6 deg, 90 min"),
+    (48274, "CSS",     "Tiangong, the other crewed station, 41.5 deg"),
+    (7530,  "AO-7",    "launched 1974 and still worked today, the oldest"),
+    (22825, "AO-27",   "FM, still up after thirty years"),
+    (24278, "FO-29",   "JAS-2, linear transponder, a classic"),
+    (27607, "SO-50",   "the FM bird most first contacts are made on"),
+    (39444, "AO-73",   "FUNcube-1, linear plus a telemetry beacon"),
+    (40967, "AO-85",   "Fox-1A, 64.8 deg so it fills in the mid latitudes"),
+    (44909, "RS-44",   "linear, high and slow, long passes"),
+    (53109, "IO-117",  "GreenCube: a digipeater at 5900 km, MEO not LEO"),
+    (43700, "QO-100",  "Es'hail-2: geostationary, so it never moves at all"),
+    (43013, "NOAA-20", "JPSS-1, sun-synchronous polar"),
+    (54234, "NOAA-21", "JPSS-2, the same plane half an orbit apart"),
+    (38771, "METOP-B", "EUMETSAT polar, the European half of the pair"),
+    (57166, "METEOR",  "Meteor-M2 3, still sending LRPT you can receive"),
+)
+
+SATS_TTL = 3 * 86400
+SATS_INTERVAL = 86400
+
+
+def _gp_epoch(s):
+    """'2026-08-08T22:57:12.255840' in UTC -> epoch seconds.
+
+    The fractional part is kept. It looks like noise next to a three-day TTL,
+    but epoch is the origin the whole propagation hangs off: a second of error
+    puts the ISS 7.7 km along its track, which is two pixels on this map and
+    rather more than the propagator's own accuracy budget.
+    """
+    import calendar
+    head, _, frac = str(s).partition(".")
+    base = float(calendar.timegm(time.strptime(head, "%Y-%m-%dT%H:%M:%S")))
+    return base + (float("0." + frac) if frac.isdigit() else 0.0)
+
+
+def _gp_url(group):
+    from urllib.parse import urlencode
+    return CELESTRAK_GP + "?" + urlencode({"GROUP": group, "FORMAT": "json"})
+
+
+@product("sats", ttl=SATS_TTL, interval=SATS_INTERVAL,
+         description="CelesTrak GP elements for %d satellites" % len(SAT_ROSTER))
+def _sats():
+    """Mean elements for the roster, out of three CelesTrak group queries.
+
+    A group that fails is skipped rather than fatal: the amateur file being
+    unreachable should cost the panel its amateur birds for a day, not the ISS.
+    The product only fails outright if nothing at all was found, since an empty
+    roster would leave sats.py drawing an empty map with no explanation.
+    """
+    wanted = dict((cat, (label, note)) for cat, label, note in SAT_ROSTER)
+    found = {}
+    kinds = {}
+    sources = []
+    errors = []
+    for group, kind in SAT_GROUPS:
+        url = _gp_url(group)
+        try:
+            rows = get_json(url, timeout=30)
+        except Exception as e:                                # noqa: BLE001
+            errors.append("%s: %r" % (group, e))
+            continue
+        sources.append(url)
+        for rec in rows if isinstance(rows, list) else [rows]:
+            cat = rec.get("NORAD_CAT_ID")
+            # Keep the first group a satellite turns up in: the ISS is in both
+            # stations and amateur, and it is a station with a ham radio on it
+            # rather than an amateur satellite, which is also how it is coloured.
+            if cat in wanted and cat not in found:
+                found[cat] = rec
+                kinds[cat] = kind
+
+    if not found:
+        raise ValueError("no roster satellites in any CelesTrak group (%s)"
+                         % "; ".join(errors) if errors else "empty response")
+
+    sats = []
+    for cat, label, _note in SAT_ROSTER:
+        rec = found.get(cat)
+        if rec is None:
+            continue
+        sats.append({
+            "id": int(cat), "label": label, "kind": kinds[cat],
+            "name": str(rec.get("OBJECT_NAME") or label),
+            "epoch": _gp_epoch(rec["EPOCH"]),
+            # rev/day, and rev/day^2 for the TLE's n-dot/2 field.
+            "n": float(rec["MEAN_MOTION"]),
+            "ndot2": float(rec.get("MEAN_MOTION_DOT") or 0.0),
+            "e": float(rec["ECCENTRICITY"]),
+            # Degrees, as the GP set gives them; sats.py converts once.
+            "i": float(rec["INCLINATION"]),
+            "raan": float(rec["RA_OF_ASC_NODE"]),
+            "argp": float(rec["ARG_OF_PERICENTER"]),
+            "ma": float(rec["MEAN_ANOMALY"]),
+        })
+
+    epochs = [s["epoch"] for s in sats]
+    return {
+        "sats": sats, "count": len(sats), "wanted": len(SAT_ROSTER),
+        "missing": [label for cat, label, _ in SAT_ROSTER if cat not in found],
+        # The oldest element set in the record, which is the age that actually
+        # bounds the propagation -- not the age of the fetch, which only says
+        # when we last asked. A group that 404s for a week leaves fresh-looking
+        # records full of week-old elements, and this is how the panel notices.
+        "epoch_oldest": min(epochs), "epoch_newest": max(epochs),
+        "errors": errors,
+        "units": {"n": "rev/day", "ndot2": "rev/day^2", "angles": "deg",
+                  "epoch": "epoch seconds UTC"},
+    }, sources[0] if sources else CELESTRAK_GP
 
 
 def main():
