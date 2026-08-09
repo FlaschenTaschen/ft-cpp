@@ -14,11 +14,25 @@ So the direction is asserted three ways, each less forgiving than the last:
      shows up as motion in exactly the wrong direction;
   2. against the **fetched JSON**, at each real station, by stepping the render
      and measuring where the drifters near that station actually went;
-  3. against the **rendered pixels**, by cross-correlating two frames a few
-     apart in a window over the Gate and asking which way the picture moved.
+  3. against the **rendered pixels**, by taking the still picture off two
+     frames, cross-correlating them in a window over the Gate, and asking
+     which way what is left has moved.
 
 The third is the one that matters, because it is the only one that cannot be
-fooled by a bug living between the particle array and the screen.
+fooled by a bug living between the particle array and the screen. It is also
+the one that is hard to do right, and it was wrong: it subtracted a scalar
+mean rather than the static picture, so the coastline -- which correlates
+perfectly with itself and never moves -- owned the peak, and it read two
+frames six apart, which at thirteen knots is two pixels across a stretched
+panel and a third of a pixel down it. Both are fixed here: the background is
+a per-pixel temporal median of the picture itself, the peak is refined to a
+fraction of a pixel, and the interval grows until the picture has actually
+gone somewhere. When it cannot, the check is **skipped and says why**, which
+is counted separately from a pass. Three controls keep it honest, and they
+are checks like any other: a field read with the FROM convention reversed has
+to be rejected, a render that pushes the drifters backwards under a correct
+header has to be rejected at the Gate on the live data, and a dead-calm field
+has to be skipped rather than waved through.
 
     $ python3 scripts/test-winds.py                     # uses the live cache
     $ python3 scripts/test-winds.py --cache-dir /tmp/c  # or a pointed one
@@ -48,6 +62,7 @@ import tide                                                  # noqa: E402
 import winds                                                 # noqa: E402
 
 FAILED = []
+SKIPPED = []
 PASSED = [0]
 
 
@@ -58,6 +73,18 @@ def check(name, ok, detail=""):
     else:
         print("  FAIL %-54s %s" % (name, detail))
         FAILED.append(name)
+
+
+def skip(name, reason):
+    """A check that could not be made, said out loud.
+
+    Distinct from a pass on purpose. A direction check that quietly reports
+    success when it had nothing to measure is worse than one that fails: it
+    keeps the count at forty and stops anyone looking. So a skip is counted,
+    named and printed with the number that made it impossible.
+    """
+    print("  SKIP %-54s %s" % (name, reason))
+    SKIPPED.append("%s (%s)" % (name, reason))
 
 
 def opts(**kw):
@@ -282,54 +309,175 @@ def test_station_direction(cache_dir):
 # 3. Direction, off the rendered pixels. The one that cannot be fooled.
 # --------------------------------------------------------------------------
 
-def frame_shift(a, b, max_dy=4, max_dx=14):
-    """The integer (dy, dx) that best lines up image `a` onto image `b`.
+# Intervals tried, shortest first, and how far the picture has to have gone
+# before a bearing read off it means anything. Three pixels over the interval
+# is about eight degrees of angular resolution once the parabolic fit is doing
+# its work, which is comfortably inside the 30 degree gate below and nowhere
+# near being able to confuse a bearing with its reverse.
+GAPS = (6, 12, 24, 48, 96)
+MIN_SHIFT_PX = 3.0
 
-    Plain normalised cross-correlation over a small search box. The pictures
-    are sparse bright streaks on a near-constant background, so the background
-    is subtracted first -- otherwise the correlation is dominated by the
-    coastline, which does not move, and the answer is always (0, 0).
+
+def window_of(frame, lay, win):
+    """The map window of a rendered frame, as one float plane."""
+    r0, r1, c0, c1 = win
+    return frame[lay.map_y + r0:lay.map_y + r1,
+                 c0:c1].max(axis=2).astype(np.float32)
+
+
+def still_background(r, lay, win, n=40):
+    """The part of the picture that does not move, taken from the picture.
+
+    A per-pixel temporal median. The coastline, the land and sea fill and the
+    speed wash are in every single frame; a drifter is over any given pixel for
+    a frame or two out of forty, so the median is the static picture and
+    nothing else.
+
+    This is the fix to the bug that made this check useless. Subtracting the
+    scalar *mean*, which is what used to happen here, leaves every bit of that
+    structure in place -- and static structure correlates perfectly with itself
+    at zero offset, so the peak sat at (0, 0) however far the drifters had
+    really gone. Measured in the Gate window: the still picture carries a
+    variance of 749 and the drifters 1871, but the drifters are sheared by the
+    field and do not translate rigidly, so their peak is smeared over several
+    pixels while the coastline's is a spike. The coastline won, at every
+    interval from two frames to eighty.
+    """
+    stack = np.stack([window_of(r(i / 30.0, i), lay, win) for i in range(n)])
+    return np.median(stack, axis=0).astype(np.float32)
+
+
+def _sub_pixel(sm, s0, sp):
+    """Where the peak really is, given the three samples about it.
+
+    A parabola through (-1, sm), (0, s0), (+1, sp). Standard, and the reason a
+    third of a pixel per frame is measurable at all on an integer grid.
+    """
+    denom = sm - 2.0 * s0 + sp
+    if not np.isfinite(denom) or denom > -1e-9:
+        return 0.0                       # flat or convex: no peak to refine
+    return float(np.clip(0.5 * (sm - sp) / denom, -0.5, 0.5))
+
+
+def frame_shift(a, b, max_dy=4, max_dx=14):
+    """The (dy, dx) that best lines image `a` up onto image `b`, sub-pixel.
+
+    Normalised cross-correlation over a search box, then a parabolic fit
+    through the three samples either side of the peak in each axis. Both
+    images are expected to have had the static picture taken off them already;
+    the mean subtraction here is only tidying.
     """
     a = a.astype(np.float32) - a.mean()
     b = b.astype(np.float32) - b.mean()
-    best, at = -1e30, (0, 0)
     h, w = a.shape
-    for dy in range(-max_dy, max_dy + 1):
+    s = np.full((2 * max_dy + 1, 2 * max_dx + 1), -np.inf, np.float64)
+    for iy, dy in enumerate(range(-max_dy, max_dy + 1)):
         ay0, ay1 = max(0, -dy), min(h, h - dy)
-        for dx in range(-max_dx, max_dx + 1):
+        for ix, dx in enumerate(range(-max_dx, max_dx + 1)):
             ax0, ax1 = max(0, -dx), min(w, w - dx)
             if ay1 - ay0 < 4 or ax1 - ax0 < 4:
                 continue
-            s = float((a[ay0:ay1, ax0:ax1]
+            v = float((a[ay0:ay1, ax0:ax1]
                        * b[ay0 + dy:ay1 + dy, ax0 + dx:ax1 + dx]).sum())
-            s /= (ay1 - ay0) * (ax1 - ax0)
-            if s > best:
-                best, at = s, (dy, dx)
-    return at
+            s[iy, ix] = v / ((ay1 - ay0) * (ax1 - ax0))
+    ky, kx = np.unravel_index(int(np.argmax(s)), s.shape)
+    fy = fx = 0.0
+    if 0 < ky < s.shape[0] - 1:
+        fy = _sub_pixel(s[ky - 1, kx], s[ky, kx], s[ky + 1, kx])
+    if 0 < kx < s.shape[1] - 1:
+        fx = _sub_pixel(s[ky, kx - 1], s[ky, kx], s[ky, kx + 1])
+    return (ky - max_dy) + fy, (kx - max_dx) + fx
+
+
+def measure_picture(r, lay, win, gaps=GAPS, want=MIN_SHIFT_PX):
+    """(dy, dx, gap): how far the picture moved, over an interval that suits.
+
+    Six frames was hardcoded here. Six frames at this bay's ordinary thirteen
+    knots is two pixels across the panel and a third of a pixel down it -- so
+    even a correlator that worked had almost nothing to bite on, and the check
+    failed on the wind rather than on the code. The interval is grown until
+    the picture has actually gone somewhere; if none of them gets it there,
+    the caller is told the number and skips rather than guessing.
+    """
+    bg = still_background(r, lay, win)
+    f0 = window_of(r(0.0, 0), lay, win) - bg
+    seen, f = 0, None
+    out = (0.0, 0.0, gaps[0])
+    for gap in gaps:
+        while seen < gap:
+            f = r(seen / 30.0, seen)
+            seen += 1
+        f1 = window_of(f, lay, win) - bg
+        # The box has to hold the motion but no more: a box far wider than the
+        # displacement is just more places for a spurious peak to hide. North
+        # is squashed three times by the stretch, so it never needs much.
+        mdx = int(min(44, 6 + gap))
+        mdy = int(min(6, 2 + gap // 8))
+        dy, dx = frame_shift(f0, f1, mdy, mdx)
+        out = (dy, dx, gap)
+        if math.hypot(dy, dx) >= want:
+            break
+    return out
+
+
+def pixel_bearing(r, label, want_from, window, note=""):
+    """Read the bearing off the rendered pixels and check it, or skip loudly."""
+    lay = r.layout
+    for i in range(10):
+        r(i / 30.0, i)                    # settle
+    dy, dx, gap = measure_picture(r, lay, window)
+    want = (want_from + 180.0) % 360.0
+    name = "%s: picture moves towards %03.0f" % (label, want)
+    moved = math.hypot(dy, dx)
+    if moved < MIN_SHIFT_PX:
+        skip(name, "%sthe picture moved %.2f px in %d frames -- too little to "
+                   "read a bearing off" % (note, moved, gap))
+        return None
+    got = bearing_of(r, dy / float(gap), dx / float(gap))
+    if got is None:
+        skip(name, "%sno displacement at all over %d frames" % (note, gap))
+        return None
+    check(name, angle_diff(got, want) < 30.0,
+          "%sshifted (%+.2f,%+.2f)px over %d frames -> %03.0f"
+          % (note, dy, dx, gap, got))
+    return got
+
+
+def gate_window(r):
+    lay = r.layout
+    row, col = winds.cell_of(r.extent, (lay.map_rows, lay.w), *winds.GATE)
+    return (max(0, row - 10), min(lay.map_rows, row + 10),
+            max(0, col - 90), min(lay.w, col + 90))
+
+
+def reversing(fn):
+    """winds.read_wind with the velocity flipped: the bug this check exists for."""
+    def go(cache_dir):
+        rec, age, err = fn(cache_dir)
+        if rec is not None:
+            rec["u"], rec["v"] = -rec["u"], -rec["v"]
+        return rec, age, err
+    return go
+
+
+def draw_backwards(r):
+    """Flip the sign of the field the drifters are actually pushed by.
+
+    The other reversal -- flipping `read_wind` -- flips the header along with
+    the picture, because the demo quotes the same u and v it draws; the two
+    stay consistent and the *live* check cannot see it. That one is caught by
+    the synthetic cases above, which know the bearing from the file rather than
+    from the demo. This one is the bug only the live check can catch: the
+    numbers are right, the header is right, and the render pushes the drifters
+    the other way. It is the exact failure this whole section exists for.
+    """
+    for hr in r.state["hours"]:
+        hr["field"] *= -1.0
+    return r
 
 
 def test_pixel_direction(cache_dir):
     print("\ndirection, measured off the rendered picture")
-
-    def one(cd, label, want_from, window):
-        args = opts(cache_dir=cd, hour=0, particles=900)
-        r = winds.build(args)
-        lay = r.layout
-        for i in range(10):
-            r(i / 30.0, i)
-        r0, r1, c0, c1 = window
-        gap = 6
-        f0 = r(0.0, 0)[lay.map_y + r0:lay.map_y + r1, c0:c1].max(axis=2).copy()
-        for i in range(gap):
-            f = r(i / 30.0, i)
-        f1 = f[lay.map_y + r0:lay.map_y + r1, c0:c1].max(axis=2).copy()
-        dy, dx = frame_shift(f0, f1)
-        got = bearing_of(r, dy / float(gap), dx / float(gap))
-        want = (want_from + 180.0) % 360.0
-        check("%s: picture moves towards %03.0f" % (label, want),
-              got is not None and angle_diff(got, want) < 30.0,
-              "shift (%+d,%+d)px over %d frames -> %s"
-              % (dy, dx, gap, "none" if got is None else "%.0f" % got))
 
     tmp = tempfile.mkdtemp(prefix="ftw-pix")
     try:
@@ -337,7 +485,35 @@ def test_pixel_direction(cache_dir):
         mid = (lay.map_rows // 2 - 12, lay.map_rows // 2 + 12, 60, 260)
         for frm in (270.0, 90.0, 200.0):
             synthetic(tmp, speed=22.0, direction=frm)
-            one(tmp, "synthetic %03d" % frm, frm, mid)
+            r = winds.build(opts(cache_dir=tmp, hour=0, particles=900))
+            pixel_bearing(r, "synthetic %03d" % frm, frm, mid)
+
+        # Air too slow to move a drifter a pixel in any sane interval. There
+        # is nothing to measure and the check must say so rather than pass.
+        synthetic(tmp, speed=0.8, direction=270.0)
+        r = winds.build(opts(cache_dir=tmp, hour=0, particles=900))
+        n_before = len(SKIPPED)
+        pixel_bearing(r, "synthetic calm 0.8 kt", 270.0, mid)
+        check("a field too calm to measure is skipped, not passed",
+              len(SKIPPED) == n_before + 1,
+              "%d skips" % (len(SKIPPED) - n_before))
+
+        # The control: the same measurement, on a field with the two minus
+        # signs of the FROM convention dropped. If this does not come back
+        # wrong, nothing above is worth anything.
+        synthetic(tmp, speed=22.0, direction=270.0)
+        real = winds.read_wind
+        winds.read_wind = reversing(real)
+        try:
+            r = winds.build(opts(cache_dir=tmp, hour=0, particles=900))
+            dy, dx, gap = measure_picture(r, r.layout, mid)
+            got = bearing_of(r, dy / float(gap), dx / float(gap))
+        finally:
+            winds.read_wind = real
+        check("a reversed field is caught, not tolerated",
+              got is not None and angle_diff(got, 90.0) >= 30.0,
+              "westerly rendered backwards reads %s, wanted 090 rejected"
+              % ("none" if got is None else "%03.0f" % got))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -350,31 +526,25 @@ def test_pixel_direction(cache_dir):
     args = opts(cache_dir=cache_dir, hour=0, particles=900)
     r = winds.build(args)
     cond = r.state["hours"][0]["cond"]
-    if cond["speed"] < 4.0:
-        check("live field is windy enough to correlate", True,
-              "only %.1f kt at the gate, skipped" % cond["speed"])
-        return
-    lay = r.layout
-    row, col = winds.cell_of(r.extent, (lay.map_rows, lay.w), *winds.GATE)
-    win = (max(0, row - 10), min(lay.map_rows, row + 10),
-           max(0, col - 90), min(lay.w, col + 90))
-    for i in range(10):
-        r(i / 30.0, i)
-    gap = 6
-    f0 = r(0.0, 0)[lay.map_y + win[0]:lay.map_y + win[1],
-                   win[2]:win[3]].max(axis=2).copy()
-    for i in range(gap):
-        f = r(i / 30.0, i)
-    f1 = f[lay.map_y + win[0]:lay.map_y + win[1],
-           win[2]:win[3]].max(axis=2).copy()
-    dy, dx = frame_shift(f0, f1)
-    got = bearing_of(r, dy / float(gap), dx / float(gap))
-    want = (cond["dir"] + 180.0) % 360.0
-    check("live field at the gate moves towards %03.0f" % want,
-          got is not None and angle_diff(got, want) < 30.0,
-          "header says FROM %03.0f at %.1f kt; picture shifted (%+d,%+d)px -> %s"
-          % (cond["dir"], cond["speed"], dy, dx,
-             "none" if got is None else "%.0f" % got))
+    got = pixel_bearing(r, "live field at the gate", cond["dir"], gate_window(r),
+                        note="header says FROM %03.0f at %.1f kt; "
+                             % (cond["dir"], cond["speed"]))
+
+    # The control for the check immediately above, on the same live data: the
+    # same window, the same correlator, the same tolerance, and a render that
+    # pushes the drifters the wrong way. If this comes back inside 30 degrees
+    # of the header, the check above proves nothing and the suite says so.
+    if got is not None:
+        r = draw_backwards(winds.build(args))
+        for i in range(10):
+            r(i / 30.0, i)
+        dy, dx, gap = measure_picture(r, r.layout, gate_window(r))
+        bad = bearing_of(r, dy / float(gap), dx / float(gap))
+        want = (cond["dir"] + 180.0) % 360.0
+        check("a backwards render at the gate is caught, not tolerated",
+              bad is not None and angle_diff(bad, want) >= 30.0,
+              "drawn backwards it reads %s against a header saying %03.0f"
+              % ("none" if bad is None else "%03.0f" % bad, want))
 
 
 # --------------------------------------------------------------------------
@@ -639,9 +809,12 @@ def main():
     test_reload(args.cache_dir)
     test_sizes(args.cache_dir)
 
-    print("\n%d checks, %d failed" % (PASSED[0], len(FAILED)))
+    print("\n%d checks, %d failed, %d skipped"
+          % (PASSED[0], len(FAILED), len(SKIPPED)))
     for name in FAILED:
         print("  FAILED: %s" % name)
+    for name in SKIPPED:
+        print("  SKIPPED: %s" % name)
     return 1 if FAILED else 0
 
 
