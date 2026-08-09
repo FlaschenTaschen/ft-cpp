@@ -2071,6 +2071,189 @@ def _caiso_mix():
         print("ftdata: caiso-mix co2 unavailable: %r" % e, file=sys.stderr)
 
     return payload, url
+# The ground under the building. quake.py draws this.
+#
+# **One feed, two scales, and a third request that is not a feed.** USGS
+# publishes a fixed set of summary GeoJSON files, regenerated every minute and
+# served off a CDN, and `all_week.geojson` alone answers both halves of what the
+# panel wants: everything the ANSS network located anywhere on Earth in the last
+# seven days, which contains both every M0.4 under Berkeley and every M4.5+ from
+# Tonga. Taking one file rather than composing `all_day` with `2.5_week` and
+# `4.5_week` avoids the whole class of bug where two feeds disagree about the
+# same event -- USGS revises magnitudes for hours after an origin, and two files
+# fetched a second apart can hold two versions of one earthquake. It is 1.4 MB,
+# which at a ten-minute cadence is 2.4 kB/s averaged, and the record we keep
+# from it is about forty times smaller.
+#
+# What is stored is trimmed to what quake.py draws:
+#
+#   local    every event within 300 km of the wall, no magnitude floor at all,
+#            with distance and bearing precomputed here so the demo never does
+#            trigonometry per frame
+#   world    the M4.5+ of the week as (time, magnitude) pairs only -- that is a
+#            sparkline and nothing else -- plus the single largest in full
+#   baseline the last M4.0+ within 100 km, whenever it was
+#
+# **The baseline is the one thing the feeds cannot answer**, and the panel's
+# headline number depends on it. A local M4 happens a few times a year, so on
+# almost every day of the year the answer lies outside every summary window that
+# exists -- `significant_month` is global and a Bay Area M4.2 does not qualify.
+# So that one number comes from the FDSN event service instead, which is the
+# same catalogue and equally keyless: one radius query, `limit=1`, ordered by
+# time, about 1 kB and under a second. It is fetched inside its own try/except
+# because a failure there must not cost us the week's events too; when it fails
+# the payload carries `baseline: null` and quake.py prints `--` rather than a
+# number it does not have.
+#
+# **Quarry blasts are dropped.** The feed's `type` field distinguishes
+# `earthquake` from `quarry blast`, `explosion` and `ice quake`, and the East Bay
+# quarries put several a week into a 300 km radius. A demo about the ground
+# moving on its own should not count somebody's morning shot, so non-earthquakes
+# are filtered and the count of what was dropped is kept, because a filter you
+# cannot see is a filter you cannot check.
+# --------------------------------------------------------------------------
+
+QUAKE_FEED = ("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/"
+              "all_week.geojson")
+QUAKE_FDSN = "https://earthquake.usgs.gov/fdsnws/event/1/query"
+
+# The wall's own address, the same one wx.py uses: Sequoia Fabrica, 1736 18th
+# Street. Every distance and bearing in the payload is from here.
+QUAKE_LAT, QUAKE_LON = 37.7627, -122.3966
+
+QUAKE_LOCAL_KM = 300.0          # "near here", generously drawn
+QUAKE_WORLD_MAG = 4.5           # the planet's week, the conventional threshold
+QUAKE_BASELINE_KM = 100.0       # "close enough that the room felt it"
+QUAKE_BASELINE_MAG = 4.0
+
+# An hour. The catalogue is revised continuously -- magnitudes move, events are
+# deleted -- but nothing in this picture curdles quickly, and the honest failure
+# is a panel that says it is looking at hour-old data rather than one that goes
+# blank. Past the TTL quake.py flags it; past three times it stops drawing.
+QUAKE_TTL = 3600
+
+
+def _quake_km_bearing(lat, lon):
+    """Great-circle distance in km and compass bearing from the wall."""
+    import math
+    la0, lo0 = math.radians(QUAKE_LAT), math.radians(QUAKE_LON)
+    la1, lo1 = math.radians(float(lat)), math.radians(float(lon))
+    dlo = lo1 - lo0
+    # Haversine rather than the equirectangular approximation the demo could
+    # get away with: this radius reaches Cape Mendocino and the southern San
+    # Joaquin, and the flat-earth error at 300 km is a couple of kilometres --
+    # small, but this is the number the panel prints next to a place name.
+    h = (math.sin((la1 - la0) / 2) ** 2
+         + math.cos(la0) * math.cos(la1) * math.sin(dlo / 2) ** 2)
+    km = 2 * 6371.0088 * math.asin(min(1.0, math.sqrt(h)))
+    y = math.sin(dlo) * math.cos(la1)
+    x = math.cos(la0) * math.sin(la1) - math.sin(la0) * math.cos(la1) * math.cos(dlo)
+    return km, math.degrees(math.atan2(y, x)) % 360.0
+
+
+def _quake_event(feature, want_place=True):
+    """One GeoJSON feature reduced to the fields quake.py actually draws."""
+    p = feature.get("properties") or {}
+    lon, lat, dep = (list(feature.get("geometry", {}).get("coordinates") or [])
+                     + [None, None, None])[:3]
+    mag = p.get("mag")
+    if mag is None or lat is None or lon is None:
+        return None
+    km, bearing = _quake_km_bearing(lat, lon)
+    out = {"id": feature.get("id"), "t": float(p["time"]) / 1000.0,
+           "mag": round(float(mag), 2), "magtype": p.get("magType"),
+           "lat": round(float(lat), 4), "lon": round(float(lon), 4),
+           "dep": None if dep is None else round(float(dep), 1),
+           "km": round(km, 1), "bearing": round(bearing)}
+    if want_place:
+        # The feed's place strings run to "16km SSE of Cobb, California" and
+        # occasionally much longer. The panel has room for about twenty
+        # characters, and the leading distance is one we recomputed ourselves.
+        out["place"] = str(p.get("place") or "")[:48]
+    return out
+
+
+def _quake_baseline():
+    """The last M4+ within 100 km, from FDSN. None if the service says no."""
+    from urllib.parse import urlencode
+    url = QUAKE_FDSN + "?" + urlencode({
+        "format": "geojson", "latitude": "%.4f" % QUAKE_LAT,
+        "longitude": "%.4f" % QUAKE_LON,
+        "maxradiuskm": "%g" % QUAKE_BASELINE_KM,
+        "minmagnitude": "%g" % QUAKE_BASELINE_MAG,
+        # 1900 rather than an open start: ANSS has nothing instrumental before
+        # then anyway, and a bounded query is the polite kind to send.
+        "starttime": "1900-01-01", "orderby": "time", "limit": "1",
+    })
+    doc = get_json(url, timeout=30)
+    feats = doc.get("features") or []
+    if not feats:
+        return None
+    ev = _quake_event(feats[0])
+    if ev is not None:
+        ev["radius_km"] = QUAKE_BASELINE_KM
+        ev["min_mag"] = QUAKE_BASELINE_MAG
+    return ev
+
+
+@product("quake-usgs", ttl=QUAKE_TTL, interval=600,
+         description="USGS ANSS: everything within 300 km, the world's M4.5+")
+def _quake_usgs():
+    """A week of earthquakes, trimmed to two scales and one long baseline."""
+    doc = get_json(QUAKE_FEED, timeout=60)
+    feats = doc.get("features")
+    if not isinstance(feats, list) or not feats:
+        raise ValueError("no features in the USGS week feed")
+
+    local, world, dropped = [], [], 0
+    biggest = None
+    for f in feats:
+        p = f.get("properties") or {}
+        mag = p.get("mag")
+        if mag is None:
+            continue
+        geom = (f.get("geometry") or {}).get("coordinates") or []
+        if len(geom) < 2 or geom[0] is None or geom[1] is None:
+            continue
+        if p.get("type") not in (None, "earthquake"):
+            dropped += 1
+            continue
+        km, _ = _quake_km_bearing(geom[1], geom[0])
+        if km <= QUAKE_LOCAL_KM:
+            ev = _quake_event(f)
+            if ev is not None:
+                local.append(ev)
+        if float(mag) >= QUAKE_WORLD_MAG:
+            world.append([round(float(p["time"]) / 1000.0, 1),
+                          round(float(mag), 2)])
+            if biggest is None or float(mag) > biggest["mag"]:
+                biggest = _quake_event(f)
+
+    # Newest first. The demo wants "the latest" far more often than it wants a
+    # scan, and sorting once here is free.
+    local.sort(key=lambda e: e["t"], reverse=True)
+    world.sort()
+
+    try:
+        baseline = _quake_baseline()
+    except Exception as e:                                   # noqa: BLE001
+        # Losing the headline scalar must not lose the map with it.
+        print("ftdata: quake-usgs baseline query failed: %r" % e,
+              file=sys.stderr)
+        baseline = None
+
+    gen = doc.get("metadata", {}).get("generated")
+    return {
+        "site": [QUAKE_LAT, QUAKE_LON],
+        "generated": None if gen is None else float(gen) / 1000.0,
+        "feed": "all_week.geojson",
+        "span_h": 168.0,
+        "local": {"radius_km": QUAKE_LOCAL_KM, "n": len(local),
+                  "non_earthquakes_dropped": dropped, "events": local},
+        "world": {"min_mag": QUAKE_WORLD_MAG, "n": len(world),
+                  "biggest": biggest, "events": world},
+        "baseline": baseline,
+    }, QUAKE_FEED
 
 
 def main():
