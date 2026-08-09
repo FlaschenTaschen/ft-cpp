@@ -2478,6 +2478,165 @@ thread — a quarter of what propagation's costs on the same machine. There are
 exactly two distinct frames over a full cycle, which is why the standalone
 default is 10 fps: the other twenty a second would be identical datagrams.
 
+### caiso
+
+![caiso](screenshots/caiso.png)
+
+What California is running on, right now, and what it has run on all day. The
+wall is in a makerspace full of people drawing amps off this grid, and this is
+the panel that says where those amps came from. A stacked area across 320
+columns is midnight to midnight in the ISO's own zone at five-minute
+resolution, filled in as far as the data goes and empty after that; three
+numbers across the top say how much the state is drawing in gigawatts, what
+fraction of it is carbon-free, and what a kilowatt-hour of it costs in grams of
+CO2 at this minute. The shape it draws is the duck: solar comes up over the
+Central Valley around six, gets to a third of the state's supply by noon, and
+falls away in three hours at teatime while everybody gets home and turns things
+on. Something has to fill that hole, and watching what fills it is the whole
+point — on most evenings the answer is the orange band at the top.
+
+**The source, since the old paths are gone.** CAISO's "Today's Outlook" is
+backed by three keyless CSVs rewritten every five minutes. Every script older
+than about a year fetches `/outlook/SP/fuelsource.csv`; that 404s. What answers
+today is `/outlook/current/fuelsource.csv`, `.../demand.csv` and `.../co2.csv`,
+with `/outlook/history/<YYYYMMDD>/` alongside for finished days — all four
+checked by hand before this was written. No key, no registration. The
+alternative is EIA-930, which is the same picture an hour later and **does**
+need an API key, and OASIS, which needs a client certificate and speaks zipped
+XML. The `Time` column is a bare `HH:MM` on Pacific wall clock with no offset
+attached, so `ftdata.py` resolves it against `America/Los_Angeles` explicitly
+rather than against `localtime` — a fetcher run from a laptop in another zone
+would otherwise write a record whose midnight is somebody else's, and the panel
+would draw the whole day shifted with nothing to say it had. The two DST days
+are resolved row by row for the same reason: one of them is 276 rows long and
+one is 300, and a uniform 288×300 s grid puts the evening peak an hour out.
+
+**The real problem is legibility, and the answer is five bands and a lane.**
+CAISO publishes thirteen columns and six of them are smaller than one row of
+LED at this scale — geothermal is 1.4 rows, small hydro is half a row, biogas a
+third, coal and "other" have been flat zero all year. Drawn faithfully they are
+a strip of dither noise between two real bands, and each one costs a boundary
+the eye has to resolve. So they are grouped by the only two questions worth
+asking from across a room, *is it clean* and *does it move*:
+
+| band | what is in it | why |
+|---|---|---|
+| **NUC HYD GEO** | nuclear, geothermal, large and small hydro | carbon-free and near enough flat over a day, so it is the floor everything else stacks on |
+| **SOLAR** | solar | its own band, always: it is the story |
+| **WIND** | wind | its own band because it runs on a different clock — often strongest overnight — and a merged "renewables" band would hide exactly that |
+| **IMPORTS** | imports | deliberately a colourless slate, because nobody knows what it is: whatever the Northwest and the Southwest happened to be selling |
+| **BURNED** | natural gas, coal, biomass, biogas, other | everything on fire, warm against four cool bands, and on top because it is the swing |
+| **BATTERY** | batteries | a signed lane of its own under the chart, since it is the only quantity here that goes negative |
+
+Colour does the work before any number is read: four cool bands and one warm
+one, so "how much of this is combustion" is answered from the doorway. The
+battery lane is the part that has aged best — California now soaks up several
+gigawatts of midday solar and hands it back at the peak, and that shows up as
+two lobes either side of the afternoon, charging below the line in indigo and
+discharging above it in mint. It is scaled to its own extreme rather than the
+chart's, because six gigawatts against a thirty-five gigawatt axis is two rows
+and two rows cannot show a shape; that is exactly why it is a separate lane
+with its own rule through the middle and not a band in the stack.
+
+**Carbon-free** is solar + wind + geothermal + hydro + nuclear over everything
+supplying the state. Imports are in the denominator and never the numerator,
+which makes the figure a floor rather than a guess, and biomass and biogas are
+renewable but not carbon-free and are not counted either. Battery *discharge*
+is in the denominator too — the electricity in it came from somewhere, and that
+somewhere was hours ago. Carbon intensity is not modelled at all: CAISO
+publishes the emissions themselves in tons an hour by source, so grams per
+kilowatt-hour is a division. The two numbers move in opposite directions, which
+is a useful thing for two numbers on a wall to do.
+
+**The now-line is the edge of the data, not the wall clock**, and it carries
+its own time label — which doubles as the only calibration on the horizontal
+axis, since a legend and hour labels will not both fit under a 320 px chart. If
+the fetcher stopped an hour ago the line stops an hour short of where the clock
+says, the gap is visible, and the header says `STALE`. Ahead of it the panel is
+not dead: the day-ahead demand forecast is drawn dotted right across the day,
+because it is the only thing in any of this that knows what the evening looks
+like. Note that the top of the stack is *supply* and the forecast is *demand*,
+and on a sunny afternoon supply runs several gigawatts above it — the gap is
+what is going into the batteries, and it is the lane underneath that explains
+it.
+
+**It has to move.** A day chart is a still picture by nature and a still
+picture between two animated demos reads as a crashed one. Three things, none
+of them decorative: the day reveals left to right over a couple of seconds when
+the segment starts, which is the day replayed; a sheen sweeps across every six
+seconds; and the now-line breathes with a pulse running up it. The sheen was a
+multiply first, which is cheaper and looks right in the arithmetic — black
+stays black, lit pixels brighten — except that four of the five band colours
+are already saturated in a channel, so it clipped and was invisible over
+exactly the part of the panel it exists to animate. Lifting towards white
+instead moves a saturated orange as far as it moves a dim teal. The pulse is
+there because the sheen spends half a second off the right-hand edge between
+passes and the breath is an integer that rounds the same way several frames
+running: without it the panel holds one frame for four hundred milliseconds
+twice a minute, which the test catches and an eye would too.
+
+**Nothing here touches the network.** `build()` calls `ftdata.load()` and reads
+one JSON file; the product is `caiso-mix`, ttl 3600 s, refetched every 600 s
+against a five-minute source, and deliberately **not** `volatile` — the payload
+is the day *so far*, so a record that survives a reboot is the difference
+between coming back up with the whole morning's curve and coming back up with
+one sample on a blank chart. It is the largest non-pixel record in the cache at
+about 55 kB by midnight, which is 8 MB of SD card a day against `goes`' 336.
+
+**Age is part of the data, and one failure here is worse than the others.** A
+record past its hour still draws with `STALE` and its age in the corner: this
+morning's curve is still this morning's curve. A record of *yesterday* does
+not, and that is the one that matters — it parses, it has 288 rows, it is a
+lovely duck, and drawn under today's clock it puts the evening peak where the
+morning goes. So the payload's own midnight-to-midnight span is checked against
+now, and a record that fails it gets `NO GRID DATA` and `RECORD IS FROM
+2026-08-08` instead of a chart. Missing, corrupt and wrong-shaped records get
+the same card and the command that fixes it.
+
+**Asserted in pixels, not eyeballed**, because five coloured bands upside down
+are exactly as pretty as five the right way up. `scripts/test-caiso.py` builds a
+synthetic day whose answers cannot be argued with — a known solar bell, a known
+evening gas peak, a battery charging at noon and discharging at seven — and
+then reads the panel back: the bands must run firm, solar, wind, imports,
+burned from the bottom; there must be no solar band at two in the morning; the
+burned band must be thicker at eight than at one; the stack height must be the
+total generation to within a row; every published column must land in exactly
+one band; and the battery lane must draw below the line at noon and above it at
+seven and nothing at all between the lobes. The demo is not a pure function of
+`t`, so every check renders frames **sequentially from a fresh `build()`**, and
+because `ftdata.CACHE_DIR` binds at import, the fresh, stale and absent cases
+each run in a **separate process** with `FT_DATA_CACHE` set. One trap worth
+recording: the `contains_text()` helper the tide and wind tests use only asks
+whether a glyph's strokes are lit, which is fine on their mostly-black panels
+and useless on this one — inside a solid band every pixel is lit and every
+string in the language matches. It cost four false passes before it was
+noticed; this version checks that the counters are dark too. 57 checks, 0
+failed.
+
+**The cost is all in `build()`.** The stack, the lane, the gridlines, the
+legend, the forecast trace, the now-line's label and the header are rasterised
+once into two uint8 frames plus a float sheen table. `render()` does one
+full-frame copy, a multiply and an add over a 34-column window, and writes
+three short columns — six or seven numpy calls, which on the Pi is the budget,
+since a call there is 55-80 µs whatever the array size. Over two thousand
+frames on this desktop: **p50 0.022 ms, p95 0.026 ms, p99 0.032 ms**, worst
+frame 0.062 ms; at the measured 114× that is p95 **3.0 ms on the Pi** against
+50 ms for a 20 fps segment. `build()` is 1.8–3.7 ms here, so under half a
+second there, once, on the worker thread. The one thing that had to move out of
+the frame loop was the header: every number on it comes out of the record, but
+*finding out* whether it changed means formatting four strings and walking the
+ladder of shorter forms, and doing that twenty times a second to learn nothing
+had changed was the most expensive thing in the file.
+
+```console
+$ python3 ftdata.py --once --only caiso-mix        # the fetcher, first
+$ python3 caiso.py --host 127.0.0.1
+$ python3 caiso.py --24h --peak 40                 # fixed 40 GW axis
+$ python3 caiso.py --sweep 0 --reveal 0            # hold still, for a photo
+$ FT_DATA_CACHE=/tmp/empty python3 caiso.py        # the no-data card
+$ python3 scripts/test-caiso.py                    # the checks
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
