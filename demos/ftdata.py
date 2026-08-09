@@ -20,6 +20,7 @@ missing, malformed or ancient.
 
   $ python3 ftdata.py --list
   $ python3 ftdata.py --once                 # one pass, then exit
+  $ python3 ftdata.py --once --due --fast    # only what is quick and overdue
   $ python3 ftdata.py --loop 900             # every fifteen minutes
 
 Every record carries `fetched_at`, and `load()` hands back the age alongside
@@ -71,16 +72,41 @@ BLOB_DIR = os.environ.get("FT_DATA_BLOBS", "/run/ftdata")
 BLOB_MAX_AGE = float(os.environ.get("FT_DATA_BLOBS_MAX_AGE", "86400"))
 BLOB_MAX_BYTES = int(os.environ.get("FT_DATA_BLOBS_MAX", str(64 << 20)))
 
+# Where the registry splits for the two timers: `--fast` takes the products
+# whose interval is at or under this, ftdata.timer's ordinary pass takes the
+# rest. Five minutes rather than sixty seconds so a product can ask for a
+# two-minute cadence without needing a third timer to give it one.
+FAST_INTERVAL = float(os.environ.get("FT_DATA_FAST_INTERVAL", "300"))
+
 # Products are registered by name. `ttl` is how long a record stays worth
 # believing -- not how often it is fetched, which is the timer's business. A
 # tide prediction is good for a day; a K index is stale within the hour.
 PRODUCTS = {}
 
 
-def product(name, ttl, description):
-    """Register a fetch function. It returns the payload; we add the envelope."""
+def product(name, ttl, description, interval=None, volatile=False):
+    """Register a fetch function. It returns the payload; we add the envelope.
+
+    `interval` is the shortest time worth re-fetching in, and it exists because
+    the original assumption here -- that one timer cadence suits everything --
+    stopped being true the moment a product moved faster than the wall could
+    say. A tide prediction is the same file all afternoon; an aircraft crosses
+    the Bay in four minutes. So the timer no longer decides: it wakes often and
+    asks each product whether it is due, which puts a product's cadence next to
+    its TTL where the reasoning about it already is, and means adding a fast
+    product does not drag the slow ones along with it. None means "every pass",
+    which is what everything did before this existed.
+
+    `volatile` moves the *record* to tmpfs, and it is what makes a one-minute
+    product safe on a machine that boots off an SD card. The blob split already
+    does this for pixels; a record refetched every minute is the same problem in
+    miniature -- 1440 writes a day of something worthless two minutes later and
+    not worth having back after a reboot. What it costs is one honest no-data
+    card for the first tick after boot, which these demos already draw.
+    """
     def wrap(fn):
-        PRODUCTS[name] = {"fn": fn, "ttl": ttl, "description": description}
+        PRODUCTS[name] = {"fn": fn, "ttl": ttl, "description": description,
+                          "interval": interval, "volatile": bool(volatile)}
         return fn
     return wrap
 
@@ -91,6 +117,40 @@ def product(name, ttl, description):
 
 def path_for(name, cache_dir=None):
     return os.path.join(cache_dir or CACHE_DIR, name + ".json")
+
+
+def is_volatile(name):
+    return bool(PRODUCTS.get(name, {}).get("volatile"))
+
+
+def record_dirs(name, cache_dir=None):
+    """Where a record might be. Durable products: the cache, and only that.
+
+    A volatile record lives in the same tmpfs the sidecars use, so the search
+    order is tmpfs first and the cache second -- second rather than not at all,
+    because a machine that has just been upgraded still has yesterday's record
+    on disk under the old rules, and a workstation with no /run/ftdata never
+    stopped writing there. Preferring tmpfs is what makes the stale on-disk
+    copy harmless: it is only ever read when the fresh one is absent, which is
+    exactly the boot-shaped hole `volatile` accepts by design.
+    """
+    if not is_volatile(name):
+        return [cache_dir or CACHE_DIR]
+    return blob_dirs(cache_dir)
+
+
+def record_path(name, cache_dir=None):
+    """The record that `load()` would actually read, or None if there is none.
+
+    For anything that wants the file rather than its contents -- the MOTD stats
+    it instead of parsing it -- so that a caller does not have to know which of
+    the two directories a given product writes to.
+    """
+    for d in record_dirs(name, cache_dir):
+        path = os.path.join(d, name + ".json")
+        if os.path.exists(path):
+            return path
+    return None
 
 
 def blob_dirs(cache_dir=None):
@@ -125,8 +185,16 @@ def load(name, cache_dir=None):
     do about age; see `describe_age()`.
     """
     try:
-        with open(path_for(name, cache_dir)) as fh:
-            rec = json.load(fh)
+        rec = None
+        for d in record_dirs(name, cache_dir):
+            try:
+                with open(os.path.join(d, name + ".json")) as fh:
+                    rec = json.load(fh)
+                break
+            except FileNotFoundError:
+                continue
+        if rec is None:
+            return None
         return rec["payload"], max(0.0, time.time() - float(rec["fetched_at"]))
     except Exception:
         # Missing, half-written, corrupt, or from a future version. All of
@@ -181,6 +249,29 @@ def is_fresh(name, age):
     return ttl is None or age <= ttl
 
 
+def interval_for(name):
+    return PRODUCTS.get(name, {}).get("interval")
+
+
+def is_due(name, cache_dir=None):
+    """Should this product be fetched on this pass?
+
+    Nothing without an interval ever says no, so a fetcher run with --due over
+    the old registry behaves exactly as it did. Nor does a product with no
+    record: an absent file is the one case where waiting cannot help.
+    """
+    interval = interval_for(name)
+    if not interval:
+        return True
+    got = load(name, cache_dir)
+    if got is None:
+        return True
+    # A hair under, because the timer's own wakeup jitter would otherwise make
+    # a 60 s product miss every other tick: at 59.6 s of age against a 60 s
+    # interval it would defer, and the next look is a whole minute later.
+    return got[1] >= interval * 0.9
+
+
 def describe_age(age):
     """A short human phrase for an age in seconds: '4m', '2h', '3d'."""
     if age < 90:
@@ -197,16 +288,22 @@ def describe_age(age):
 # --------------------------------------------------------------------------
 
 def _store(name, payload, source, cache_dir):
-    os.makedirs(cache_dir, exist_ok=True)
+    # A volatile record goes wherever the sidecars go, which is tmpfs on the
+    # wall and the cache directory anywhere else. Same helper as the blobs use,
+    # so the two cannot end up disagreeing about where tmpfs is.
+    out_dir = blob_write_dir(cache_dir) if is_volatile(name) else cache_dir
+    os.makedirs(out_dir, exist_ok=True)
     rec = {"name": name, "fetched_at": time.time(), "source": source,
            "ttl": PRODUCTS[name]["ttl"], "payload": payload}
     # Write-then-rename: a demo reading the cache while the fetcher writes it
-    # must never see half a file. rename(2) within a directory is atomic.
-    fd, tmp = tempfile.mkstemp(dir=cache_dir, prefix="." + name, suffix=".tmp")
+    # must never see half a file. rename(2) within a directory is atomic --
+    # which is also why the temporary file has to be made in the directory it
+    # will land in, rather than in the cache for everything.
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix="." + name, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as fh:
             json.dump(rec, fh)
-        os.replace(tmp, path_for(name, cache_dir))
+        os.replace(tmp, os.path.join(out_dir, name + ".json"))
     except Exception:
         try:
             os.unlink(tmp)
@@ -402,14 +499,30 @@ def fetch(name, cache_dir=None):
     return True
 
 
-def fetch_all(cache_dir=None, only=None):
-    ok = 0
+def fetch_all(cache_dir=None, only=None, due_only=False, max_interval=None):
+    """Fetch products into the cache; return (fetched, considered).
+
+    Two counts rather than one because with --due most passes fetch nothing and
+    that is the healthy case, not a failure -- "0/1" in the journal every minute
+    would read like something is broken. `max_interval` selects the fast half of
+    the registry for the fast timer, by the product's own declared cadence
+    rather than by a list of names in a unit file that would go stale the first
+    time somebody added a product.
+    """
+    ok = considered = 0
     for name in sorted(PRODUCTS):
         if only and name not in only:
             continue
+        if max_interval is not None:
+            interval = interval_for(name)
+            if not interval or interval > max_interval:
+                continue
+        considered += 1
+        if due_only and not is_due(name, cache_dir):
+            continue
         if fetch(name, cache_dir):
             ok += 1
-    return ok
+    return ok, considered
 
 
 # --------------------------------------------------------------------------
@@ -1577,26 +1690,36 @@ def main():
                     help="seconds between passes (0 = use --once)")
     ap.add_argument("--only", default="", help="comma-separated product names")
     ap.add_argument("--list", action="store_true", help="show products and exit")
+    ap.add_argument("--due", action="store_true",
+                    help="skip products fetched within their own interval")
+    ap.add_argument("--fast", action="store_true",
+                    help="only products with an interval of --fast-under or less")
+    ap.add_argument("--fast-under", type=float, default=FAST_INTERVAL,
+                    help="what --fast means, in seconds")
     args = ap.parse_args()
 
     if args.list:
         for name in sorted(PRODUCTS):
             got = load(name, args.cache_dir)
             age = "absent" if got is None else describe_age(got[1]) + " old"
-            print("  %-22s ttl %-7s %-9s %s"
-                  % (name, "%ds" % PRODUCTS[name]["ttl"], age,
-                     PRODUCTS[name]["description"]))
+            every = interval_for(name)
+            print("  %-22s ttl %-7s every %-7s %-9s %s%s"
+                  % (name, "%ds" % PRODUCTS[name]["ttl"],
+                     describe_age(every) if every else "pass", age,
+                     PRODUCTS[name]["description"],
+                     " [tmpfs]" if is_volatile(name) else ""))
         return
 
     only = set(x for x in args.only.split(",") if x)
+    max_interval = args.fast_under if args.fast else None
     if not args.loop:
-        n = fetch_all(args.cache_dir, only)
-        print("ftdata: %d/%d products refreshed" % (n, len(only or PRODUCTS)))
+        n, seen = fetch_all(args.cache_dir, only, args.due, max_interval)
+        print("ftdata: %d/%d products refreshed" % (n, seen))
         return
     while True:
         started = time.time()
-        n = fetch_all(args.cache_dir, only)
-        print("ftdata: %d/%d refreshed" % (n, len(only or PRODUCTS)), flush=True)
+        n, seen = fetch_all(args.cache_dir, only, args.due, max_interval)
+        print("ftdata: %d/%d refreshed" % (n, seen), flush=True)
         time.sleep(max(5.0, args.loop - (time.time() - started)))
 
 
