@@ -2795,6 +2795,8 @@ $ python3 caiso.py --24h --peak 40                 # fixed 40 GW axis
 $ python3 caiso.py --sweep 0 --reveal 0            # hold still, for a photo
 $ FT_DATA_CACHE=/tmp/empty python3 caiso.py        # the no-data card
 $ python3 scripts/test-caiso.py                    # the checks
+```
+
 ### quake
 
 ![quake](screenshots/quake.png)
@@ -2956,6 +2958,7 @@ $ python3 quake.py --pulse-hz 0             # hold it still, for a photograph
 $ FT_DATA_CACHE=/tmp/empty python3 quake.py  # the no-data card
 $ python3 scripts/test-quake.py
 ```
+
 ### sats
 
 ![sats](screenshots/sats.png)

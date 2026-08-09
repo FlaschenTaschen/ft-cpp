@@ -1846,6 +1846,10 @@ def _adsb_bay():
         "source": "airplanes.live",
     }
     payload.update({c: [r[c] for r in kept] for c in cols})
+    return payload, url
+
+
+# --------------------------------------------------------------------------
 # What California is running on. caiso.py draws this.
 #
 # CAISO's "Today's Outlook" page is backed by three keyless CSVs that are
@@ -2071,6 +2075,9 @@ def _caiso_mix():
         print("ftdata: caiso-mix co2 unavailable: %r" % e, file=sys.stderr)
 
     return payload, url
+
+
+# --------------------------------------------------------------------------
 # The ground under the building. quake.py draws this.
 #
 # **One feed, two scales, and a third request that is not a feed.** USGS
@@ -2254,6 +2261,9 @@ def _quake_usgs():
                   "biggest": biggest, "events": world},
         "baseline": baseline,
     }, QUAKE_FEED
+
+
+# --------------------------------------------------------------------------
 # Orbital elements, from CelesTrak's GP service. sats.py propagates these.
 #
 # This is the slowest-moving product in the file and the fastest-moving demo,
@@ -2420,6 +2430,9 @@ def _sats():
         "units": {"n": "rev/day", "ndot2": "rev/day^2", "angles": "deg",
                   "epoch": "epoch seconds UTC"},
     }, sources[0] if sources else CELESTRAK_GP
+
+
+# --------------------------------------------------------------------------
 # Ship movements at the Port of San Francisco, from the Port's own cruise
 # terminal schedule. ships.py draws them against the Golden Gate tide.
 #
