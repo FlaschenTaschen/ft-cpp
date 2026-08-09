@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Outside, right here: what was measured, what was modelled, kept apart.
 
-The wall is at 1736 18th Street and the panel is about the weather *at* 1736
-18th Street, which turns out to be a harder claim to make honestly than it
-sounds. There is exactly one real instrument anywhere near the building --
+This panel is about the weather at one street address rather than in one city,
+which turns out to be a harder claim to make honestly than it sounds. The
+default address is in the Mission in San Francisco -- somewhere real, so that a
+checkout draws a real panel, in the same spirit as tide.py's default station --
+and `--site`, plus `FT_WX_SITES` and `FT_WX_STATIONS` for the fetcher, move it.
+At that address there is exactly one real instrument anywhere nearby --
 SFOC1, "San Francisco Downtown", 2.8 km north-west -- and it reports
 temperature, dewpoint and humidity and nothing else. No wind. No pressure. Not
 "sometimes no wind": the fields are in the JSON and they are `null`, every
@@ -350,7 +353,7 @@ def add_arguments(ap):
                     help="site latitude, for the modelled half and the "
                          "distance to the station")
     ap.add_argument("--lon", type=float, default=ftdata.WX_LON)
-    ap.add_argument("--site", default="1736 18TH ST",
+    ap.add_argument("--site", default="MISSION DISTRICT",
                     help="what to call this place on the status line")
     ap.add_argument("--obs-product", default=None,
                     help="product for the observed half; defaults to "
