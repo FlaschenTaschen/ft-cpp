@@ -2478,6 +2478,166 @@ thread — a quarter of what propagation's costs on the same machine. There are
 exactly two distinct frames over a full cycle, which is why the standalone
 default is 10 fps: the other twenty a second would be identical datagrams.
 
+### adsb
+
+![adsb](screenshots/adsb.png)
+
+Aircraft over the Bay, live. Everything airborne within fifty nautical miles of
+the wall, drawn on a map of the Bay Area as a short comet — the head is where
+it is, the tail is where it came from, the length is how fast it is going and
+the colour is how high it is, warm on the deck through to cold and pale in the
+flight levels. Two of them are named: the one nearest the building, and the
+lowest, which at almost any hour of the day is somebody on short final into
+SFO. Along the bottom, the counts, the altitude ramp the colours come off, and
+how old the data is. The SFO approach and departure corridors are the show —
+the string of warm marks coming down the peninsula and the cooler ones climbing
+out north over the Bay.
+
+**Sixty-second-old data that does not look sixty seconds old.** The fetcher
+asks once a minute; sixty stationary dots that jumped every minute would look
+broken, and would also be a *worse* picture than the truth, because ADS-B
+carries a groundspeed and a track and those are enough to say where an aircraft
+is now. So `render()` dead-reckons — each aircraft advances along its own track
+at its own groundspeed, and the picture moves continuously between fetches.
+Two details make that honest rather than decorative. The clock each aircraft is
+advanced from is **its own**: `seen_pos` says how long ago that particular
+aircraft was last heard, and a jet over the Gate updates twice a second while
+something over the Diablo range may not have been heard for half a minute, so
+one timestamp for the whole record would draw the quiet ones behind where they
+are. And when a new record lands the correction does not snap; it is eased in
+over about a second with a smoothstep, so a fix that has moved a plane three
+pixels looks like a plane moving three pixels. Without that the panel visibly
+twitches once a minute and reads as a bug. A correction bigger than 24 px is
+not eased at all but taken instantly — that is not a correction, it is an
+aircraft that was lost and re-acquired somewhere else, and sliding it across
+the panel would draw a line through places it never was.
+
+**Dead reckoning is extrapolation, so it has a shelf life**, and that is what
+the TTL is for. At 500 knots a minute of extrapolation is 8 nm, roughly the
+error the fix already carries; five minutes is 40 nm, which is fiction. Past
+300 seconds the aircraft stop being drawn and the panel says `ADS-B DATA STALE`
+with the age on it. The age is measured from the *fixes*, against the demo's
+own clock, not from when the socket was read — the two differ under `--rate`,
+and it is the first one that says whether the picture is true. No cache at all
+gets `NO ADS-B DATA` and the command that fixes it; a good record with an empty
+sky says `NO AIRCRAFT AIRBORNE WITHIN 50 NM`, which is not an error and is
+drawn as a statement rather than as an alarm. In every one of those cases the
+map is still drawn underneath, because the coastline is not data and does not
+go stale — a blanked panel reads as a crash.
+
+**The feed is `api.airplanes.live`, and the obvious first choice does not
+work.** All three keyless aggregators publish the same readsb-descended JSON
+and all three were tried against this exact query: `api.adsb.lol` answers 200
+OK in a second with `{"ac": [], "total": 0}`, which is not an error and would
+have given a permanently, honestly empty sky; `opendata.adsb.fi` and
+`api.airplanes.live` both answer in about 250 ms with sixty-odd aircraft.
+airplanes.live is what ships, adsb.fi is a one-line swap, and the User-Agent
+carries a real contact address because this is a volunteer-run receiver network
+being asked for something 1440 times a day. **Half of what comes back is on the
+ground** — 47 of 76 on a Sunday morning, reported as the *string* `"ground"` in
+`alt_baro` — and none of it can be dead-reckoned, so the fetcher drops it and
+stores the count instead. The panel says "29 airborne, 47 on the ground" and
+means it.
+
+The product is `adsb-bay`: ttl 300 s, `interval=60`, `volatile=True`. It is
+rewritten 1440 times a day and is worthless two minutes later, so the record
+lives in tmpfs rather than on the flash card the Pi boots from; what that costs
+is one honest no-data card after a reboot. The payload is columnar — one list
+per field rather than one dict per aircraft, which is 40% of the bytes at this
+size and is also exactly the shape `build()` wants, since every column becomes
+a numpy array. Rounding is chosen against what a pixel is worth: one panel
+column is 300 m, so four decimals of latitude is already three hundred times
+finer than anything visible, and whole degrees of track put a 500 kt aircraft
+0.7 km out after five minutes, a fifth of the error the fix itself carries.
+Thirty-one aircraft come to 3.0 kB; the 120 cap is about 11 kB.
+
+```console
+$ python3 ftdata.py --loop 60 --due --fast &     # this one wants a minute
+```
+
+**The crop is stretched three times, deliberately, and the marks know it.**
+37.47–37.93 N, 122.94–121.86 W is 95 km by 51 km, with SFO, Oakland, Hayward,
+San Carlos and Half Moon Bay on it, the Golden Gate at the top and the wall's
+own address in the middle. Across 320 columns and 57 rows that is a three-fold
+horizontal stretch — the same one `tide` applies to the Gate corridor, for the
+same reason: the Bay Area is roughly square and the panel is five times wider
+than it is tall. San Jose is off the bottom on purpose; reaching it costs
+another quarter of stretch for an airport whose traffic mostly never comes near
+this building. The stretch is applied to the **velocities** as well as to the
+positions, so a mark points along the direction it is really travelling across
+*this* map. It is not a compass rose and does not pretend to be one, and the
+tests read bearings back off the pixels by undoing the same metres per pixel.
+
+**It needed a second coastline, and that is the one interesting thing in the
+geography.** `voxel-dem.npz` — which `voxel` flies over and `tide` takes its
+sea mask from — stops at 37.635 N. **SFO is at 37.619**, a mile and a half
+south of its bottom edge, and its east edge is Berkeley when half the arrivals
+come over the Diablo range. A traffic panel whose map stops just short of the
+airport every one of its aircraft is going to or coming from is not worth
+drawing. So `scripts/make-adsb-coast.py` bakes `adsb-coast.npz` off the same
+USGS 3DEP service with the same threshold-and-connectivity trick: three times
+the area, an eighth of the resolution, no elevation at all, one bit a cell —
+1024×512 over 37.40–38.00 N, 123.00–121.80 W, at 103×130 m cells, **5 kB**
+against the voxel DEM's 206. Two files, each honest about what it is for, beat
+one file that is wrong for both. Inland reservoirs come out as land, which at
+300 m to the pixel is the right answer: Crystal Springs would be three pixels
+of water in the hills and would read as noise in the coastline.
+
+**The cost is all in `build()`, which is the point.** The coastline crop, the
+airports, the scale bar, the status strip, and — the part that matters — every
+aircraft's altitude colour, unit vector and comet length are computed once when
+a record lands. A frame is one full-frame copy, two array operations to advance
+every aircraft at once, and four scatters to draw them: **about thirty numpy
+calls whether there is one aircraft or a hundred and twenty**, which is the
+number that counts on a machine where a bare numpy call costs 55–80 µs
+regardless of array size. The comets are drawn the way `tide`'s drifters are,
+as flat-index scatters into the reshaped map, with a per-aircraft `(N, 3)`
+colour array so the altitude ramp costs a scatter rather than a loop. Marks
+that have flown off the crop are discarded by clipping the streak and comparing
+it against the unclipped copy — one call for every sample of every aircraft at
+once, instead of four comparisons each. On this desktop, 600 sequential frames:
+**p95 0.054 ms with 31 aircraft and 0.096 ms with the full 120**, `build()` 3 ms
+cold. At the 76–114× this project keeps measuring against the wall's throttled
+Pi 3 that is 7–11 ms, and the floor set by the call count alone — thirty calls
+at 80 µs — is 2.4 ms, so the two agree and neither is near the 50 ms a 20 fps
+segment gets. The standalone default is 20 fps rather than 30 because nothing
+here moves faster than three pixels a second.
+
+**A traffic map has one failure mode that beats every other: marks moving the
+wrong way look completely plausible.** A track is a bearing clockwise from true
+north, the screen is rows-down and columns-right, and the map is stretched on
+one axis only; get any one of those wrong and you have a beautiful, confident
+panel full of aircraft flying backwards over a coastline that is still
+perfectly correct. So `scripts/test-adsb.py` asserts it off the rendered pixels
+— the mark's centroid over a window of open Pacific, thirty seconds apart,
+converted back to a bearing *and* a groundspeed — at six tracks, with a control
+that negates the velocities and must be rejected. It also checks the ease
+(biggest single-frame step under 2 px, landing within 2 px of the new fix,
+against a control with `--ease 0` that must jump), that eight aircraft outside
+the crop draw *exactly nothing* — asserted as pixel equality against the same
+frame without them, which is the only way to catch a clip that smears them onto
+the border — and that a stale record draws no aircraft, asserted the same way
+against an empty record rather than by looking for bright pixels, because the
+stale card's own type is the brightest thing on the panel. The demo is
+stateful, so every check renders a *sequence* from a fresh `build()` and drives
+the demo's clock itself; fresh, stale and absent each run in a separate
+interpreter, because `ftdata.CACHE_DIR` binds at import. 70 checks.
+
+```console
+$ python3 adsb.py                                  # needs the fetcher running
+$ python3 adsb.py --rate 20                        # twenty minutes a minute
+$ python3 adsb.py --extent 37.3,38.0,-123.0,-121.8 # a wider crop
+$ python3 adsb.py --labels 0 --trail 0             # bare heads, nobody named
+$ FT_DATA_CACHE=/tmp/empty python3 adsb.py         # the no-data card
+$ python3 scripts/test-adsb.py                     # the checks
+$ python3 scripts/make-adsb-coast.py               # re-bake the coastline
+```
+
+`ADSB_LAT`/`ADSB_LON` in `ftdata.py` and `HOME` in `adsb.py` are the wall's own
+address; `--extent` moves the map. The coastline will follow anywhere in the
+United States that 3DEP covers, but only after a re-bake — the committed mask
+is this bay, because this bay is what the wall is in.
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,

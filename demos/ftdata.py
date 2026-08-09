@@ -1680,6 +1680,175 @@ for _lat, _lon in _wx_sites:
     register_wx_site(_lat, _lon)
 
 
+# --------------------------------------------------------------------------
+# Aircraft over the Bay. adsb.py draws these.
+#
+# **Which feed, and why not the obvious ones.** Three keyless aggregators
+# publish the same shape of JSON, all descended from readsb's `aircraft.json`,
+# and they were all tried against this exact query before one was picked:
+#
+#   api.adsb.lol/v2/point/...        200 OK, `{"ac": [], "total": 0}`. It
+#                                    answers, it answers quickly, and it answers
+#                                    with nothing. An empty list is not an
+#                                    error, so a demo built on this would have
+#                                    drawn an honest, permanently empty sky.
+#   opendata.adsb.fi/api/v2/...      works; 63 aircraft, 240 ms.
+#   api.airplanes.live/v2/point/...  works; 65 aircraft, 250 ms.
+#
+# The last one is what is used, and adsb.fi is the drop-in second source if it
+# ever stops -- the response shapes differ only in that adsb.fi calls the list
+# `aircraft` and airplanes.live calls it `ac`. Neither wants a key. Both ask for
+# civility rather than credentials: airplanes.live documents roughly one request
+# a second, and this asks once a minute.
+#
+# **Ground traffic is dropped, and counted.** Half of what comes back is parked
+# or taxiing -- 36 of 70 on a Sunday morning -- reported as the *string*
+# "ground" in `alt_baro` rather than a number. None of it can be dead-reckoned,
+# because a pushback tug does not hold a groundspeed and a track, and a heap of
+# static dots on the SFO apron is the brightest thing on the panel for the worst
+# possible reason. So the record keeps the airborne ones and stores the ground
+# count as a number, which is the honest version of throwing them away: the
+# panel can say "34 airborne, 36 on the ground" and mean it.
+#
+# **The payload is columnar**, one list per field rather than one dict per
+# aircraft, and that is worth about 40% of the bytes at this size -- 120
+# aircraft do not need the string "alt" repeated 120 times. It also happens to
+# be exactly what the demo wants, since every one of these columns becomes a
+# numpy array in build() and nothing has to be transposed on a 600 MHz Pi.
+#
+# **Every aircraft carries its own position age.** `seen_pos` is how long ago
+# that aircraft's position was last heard, and it is not the same as the age of
+# the fetch: a jet over the Gate updates twice a second and something in the
+# hills behind Livermore may not have been heard for half a minute. The demo
+# dead-reckons from `t - pa` per aircraft rather than from one timestamp for the
+# whole record, which costs one float a plane and is the difference between a
+# picture that is a minute old and one that is a minute old *and knows it*.
+#
+# One minute is the interval and five is the TTL, and the gap between them is
+# deliberate: at 500 knots a minute of extrapolation is 8 nm, which the dead
+# reckoning covers, and five minutes is 40 nm, which nothing covers. Past the
+# TTL the demo stops drawing aircraft rather than drawing fiction. The record is
+# `volatile` because it is rewritten 1440 times a day and is worthless two
+# minutes later; none of that belongs on the flash card the Pi boots from.
+# --------------------------------------------------------------------------
+
+ADSB_URL = "https://api.airplanes.live/v2/point/%.4f/%.4f/%d"
+
+# The wall's own address, in the Mission. Everything on the panel is measured
+# from here, so this is the one number to change for another installation.
+ADSB_LAT, ADSB_LON = 37.7627, -122.3966
+
+# Nautical miles. Comfortably outside adsb.py's map crop, which reaches about
+# 32 nm at its far corner, so the panel is never showing the edge of the query
+# rather than the edge of the sky.
+ADSB_RADIUS_NM = 50
+
+# The nearest this many are kept. Two hundred-odd arrive at a busy hour, a
+# 320x64 panel is a mess above about fifty, and the ones that get cut are by
+# construction the furthest away and the least likely to be on the map at all.
+ADSB_MAX = 120
+
+ADSB_TTL = 300
+ADSB_INTERVAL = 60
+
+# A truthful User-Agent, with an address that reaches whoever is fetching.
+# Deliberately not ftdata.get()'s generic one: this is a volunteer-run feed
+# being asked for something 1440 times a day, and it is entitled to know who is
+# asking. Set FT_CONTACT if that is not the person below.
+ADSB_UA = ("flaschen-taschen-adsb/1 (+https://github.com/hzeller/flaschen-taschen; %s)"
+           % os.environ.get("FT_CONTACT", "jof@thejof.com"))
+
+
+def _adsb_num(x):
+    """A finite number, or None. Rejects the string 'ground' and every null."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return None
+    return float(x) if x == x and abs(x) != float("inf") else None
+
+
+@product("adsb-bay", ttl=ADSB_TTL, interval=ADSB_INTERVAL, volatile=True,
+         description="airborne ADS-B within %d nm of the wall, from "
+                     "airplanes.live" % ADSB_RADIUS_NM)
+def _adsb_bay():
+    """The airborne traffic around the wall, trimmed to what a panel can draw.
+
+    Rounding is chosen against what a pixel is worth rather than against what
+    looks tidy. One panel column is about 300 m, so four decimal places of
+    latitude (11 m) is already three hundred times finer than anything that can
+    be seen, and whole degrees of track put a 500 kt aircraft 0.7 km off after
+    five whole minutes of extrapolation -- which is a fifth of the error the
+    minute-old fix itself carries. Everything is stored as int where an int can
+    say it, because JSON writes `12725` in five bytes and `12725.0` in seven.
+
+    An aircraft with no track is dropped rather than drawn stationary. Every
+    airborne aircraft in a day of samples had one; the ones that do not are
+    TIS-B and MLAT shadows whose position is a guess in the first place, and a
+    mark that sits still on a map where everything else is moving reads as a
+    bug rather than as an aircraft.
+    """
+    import urllib.request
+    url = ADSB_URL % (ADSB_LAT, ADSB_LON, ADSB_RADIUS_NM)
+    req = urllib.request.Request(url, headers={"User-Agent": ADSB_UA})
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        doc = json.loads(resp.read())
+
+    seen = doc.get("ac")
+    if not isinstance(seen, list):
+        # adsb.fi calls the same list `aircraft`. Accepting both costs a line
+        # and makes swapping the source a one-line change to ADSB_URL.
+        seen = doc.get("aircraft")
+    if not isinstance(seen, list):
+        raise ValueError("no aircraft list in the response from %s" % url)
+
+    # readsb reports `now` in milliseconds since the epoch. Falling back to the
+    # local clock rather than failing: the positions are still good, and a demo
+    # that dead-reckons from a clock a second out is not measurably wrong.
+    served = _adsb_num(doc.get("now"))
+    t = served / 1000.0 if served and served > 1e11 else time.time()
+
+    ground = 0
+    rows = []
+    for a in seen:
+        if a.get("alt_baro") == "ground":
+            ground += 1
+            continue
+        lat, lon = _adsb_num(a.get("lat")), _adsb_num(a.get("lon"))
+        alt, gs = _adsb_num(a.get("alt_baro")), _adsb_num(a.get("gs"))
+        trk = _adsb_num(a.get("track"))
+        if None in (lat, lon, alt, gs, trk):
+            continue
+        # The callsign is what a person reads; the registration is the fallback
+        # for the ones flying without one, and the ICAO address is the fallback
+        # for that. Something is always printable, and none of it is invented.
+        call = str(a.get("flight") or "").strip() or str(a.get("r") or "").strip()
+        rows.append((_adsb_num(a.get("dst")) or 0.0, {
+            "hex": str(a.get("hex") or "")[:6],
+            "call": call[:8] or None,
+            "type": (str(a.get("t")).strip()[:4] if a.get("t") else None),
+            "cat": (str(a.get("category")).strip()[:2] if a.get("category") else None),
+            "lat": round(lat, 4), "lon": round(lon, 4),
+            "alt": int(round(alt)), "gs": int(round(gs)),
+            "trk": int(round(trk)) % 360,
+            "dst": round(_adsb_num(a.get("dst")) or 0.0, 1),
+            "pa": round(max(0.0, _adsb_num(a.get("seen_pos")) or 0.0), 1),
+        }))
+
+    rows.sort(key=lambda r: r[0])
+    kept = [r[1] for r in rows[:ADSB_MAX]]
+    cols = ("hex", "call", "type", "cat", "lat", "lon", "alt", "gs", "trk",
+            "dst", "pa")
+    payload = {
+        "origin": [ADSB_LAT, ADSB_LON], "radius_nm": ADSB_RADIUS_NM,
+        "t": t, "n": len(kept), "n_air": len(rows), "n_ground": ground,
+        "n_seen": len(seen), "capped": len(rows) > len(kept),
+        "units": {"alt": "ft baro", "gs": "kn", "trk": "deg true",
+                  "dst": "nm", "pa": "s since position last heard"},
+        "source": "airplanes.live",
+    }
+    payload.update({c: [r[c] for r in kept] for c in cols})
+    return payload, url
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="fetch outside data into a cache the demos read",
