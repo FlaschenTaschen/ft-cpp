@@ -2420,6 +2420,404 @@ def _sats():
         "units": {"n": "rev/day", "ndot2": "rev/day^2", "angles": "deg",
                   "epoch": "epoch seconds UTC"},
     }, sources[0] if sources else CELESTRAK_GP
+# Ship movements at the Port of San Francisco, from the Port's own cruise
+# terminal schedule. ships.py draws them against the Golden Gate tide.
+#
+# **Why a schedule and not AIS.** The obvious source for "what is moving in the
+# Bay" is AIS, and every AIS feed within reach of this project wants a key:
+# aisstream.io, MarineTraffic and VesselFinder all register you first, and
+# AISHub's price is a receiver of your own feeding the pool. The Marine
+# Exchange of the San Francisco Bay Region does publish exactly the report this
+# demo would want -- due to arrive, due to depart, vessels in port, updated
+# around the clock -- and sells it to members; sfmx.org has the sample PDFs up
+# and the live ones behind the membership. So there is no keyless live-position
+# feed for this bay, and a wall in a workshop is not going to invent one.
+#
+# What *is* public, free and authoritative is the Port's own cruise terminal
+# schedule: a PDF calendar of every cruise call at Piers 27 and 35 for the year,
+# with the vessel, the berth, the line, the ETA and ETD to the minute and the
+# port either side. Cruise ships are the largest vessels that come through the
+# Gate on a published timetable, which makes them the ones this panel can say
+# something true about.
+#
+# **A caveat that belongs in the record and not just in the demo.** These are
+# *berth* times at Pier 27 or 35, not Golden Gate transit times. A ship
+# alongside at 07:00 passed under the bridge the better part of an hour
+# earlier. Nothing here converts between the two, because the conversion
+# depends on the pilot, the ship and the day, and a made-up offset drawn to the
+# minute would look exactly as authoritative as the published number beside it.
+#
+# **Scraping, defensively.** The current PDF's URL carries the revision date, so
+# it changes every few weeks and cannot be hardcoded; the fetch reads the
+# Port's cruise page and takes the links off it. The PDF itself is parsed here
+# rather than by a library, because there is no PDF module in this project's
+# dependencies and adding one to a Pi for eleven columns of a table is a poor
+# trade. The parse is positional: inflate the content streams, recover the
+# (x, y) of every text run, group runs into rows by y, and assign each cell to
+# the nearest column of the *header row it found in the document*. That last
+# part is what makes it survive a layout edit -- the columns are read from the
+# page, not from a table of offsets in this file. When it does eventually break
+# it raises, and `fetch()` leaves the previous record alone.
+# --------------------------------------------------------------------------
+
+# Both are standard library and neither opens anything, so they sit at module
+# level with the regexes that need them rather than being imported per call --
+# unlike urllib above, which is deferred to keep `load()` provably offline.
+import re                                                    # noqa: E402
+import zlib                                                  # noqa: E402
+
+SFPORT_CRUISE_PAGE = "https://www.sfport.com/maritime/cruise"
+
+# A week. The payload is a year-long calendar, so like the tide predictions it
+# keeps telling the truth long after it was fetched -- what expires is not the
+# data but our confidence that we are looking at the current revision. The Port
+# reissues the sheet every few weeks, so a week of failed fetches is where
+# "probably still right" stops being good enough to draw without a warning.
+SFPORT_CRUISE_TTL = 604800
+
+# Six hours. There is nothing to gain from asking more often: the file changes
+# a handful of times a quarter, and it is a quarter megabyte a time. Four
+# passes a day still puts a revision on the wall the same day it is published,
+# and keeps this off the fifteen-minute timer where it would be pure waste.
+SFPORT_CRUISE_INTERVAL = 21600
+
+# How much of the calendar to keep. A whole year of calls is only about twenty
+# kilobytes of JSON, but there is no reason to carry last January around, and
+# the demo never looks further ahead than the tide predictions reach anyway.
+SFPORT_KEEP_PAST = 7 * 86400
+SFPORT_KEEP_AHEAD = 200 * 86400
+
+_PDF_OBJ = re.compile(rb"(\d+)\s+\d+\s+obj\b(.*?)\bendobj", re.S)
+_PDF_STREAM = re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.S)
+_PDF_CONTENTS = re.compile(rb"/Contents\s*(?:(\d+)\s+\d+\s+R|\[([^\]]*)\])")
+_PDF_REF = re.compile(rb"(\d+)\s+\d+\s+R")
+
+# The text operators, and the three ways the current point moves between them.
+# Tm sets it outright, Td/TD shift it, T* drops a line; this document uses only
+# the first, but a reissue made by a different tool will use the others and
+# tracking all three costs one regex alternation.
+_PDF_TOKEN = re.compile(
+    rb"(?P<tm>(?:[-+0-9.]+\s+){6})Tm"
+    rb"|(?P<td>(?:[-+0-9.]+\s+){2})T[dD]"
+    rb"|(?P<star>T\*)"
+    rb"|(?P<arr>\[(?:[^\[\]\\]|\\.)*\])\s*TJ"
+    rb"|(?P<lit>\((?:[^()\\]|\\.)*\))\s*Tj"
+    rb"|(?P<bt>BT)")
+
+_PDF_ESCAPE = {b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b",
+               b"f": b"\f", b"(": b"(", b")": b")", b"\\": b"\\"}
+
+
+def _pdf_unescape(b):
+    out = bytearray()
+    i = 0
+    while i < len(b):
+        if b[i:i + 1] != b"\\":
+            out += b[i:i + 1]
+            i += 1
+            continue
+        nxt = b[i + 1:i + 2]
+        if nxt in _PDF_ESCAPE:
+            out += _PDF_ESCAPE[nxt]
+            i += 2
+        elif nxt.isdigit():
+            j = i + 1
+            while j < len(b) and j < i + 4 and b[j:j + 1].isdigit():
+                j += 1
+            out += bytes([int(b[i + 1:j], 8) & 0xFF])
+            i = j
+        else:
+            i += 2
+    return out
+
+
+def _pdf_show(operand):
+    """The visible characters of a Tj operand or a TJ array.
+
+    A TJ array is strings interleaved with kerning numbers -- `[(Ru)11(by)]` --
+    and the numbers are what make a word arrive in four pieces. Concatenating
+    the literals and dropping the kerning is exactly right for reading a table:
+    the pieces of one word are always in one array.
+    """
+    out = bytearray()
+    depth = start = 0
+    i = 0
+    while i < len(operand):
+        c = operand[i:i + 1]
+        if c == b"\\" and depth:
+            i += 2
+            continue
+        if c == b"(":
+            if depth == 0:
+                start = i + 1
+            depth += 1
+        elif c == b")":
+            depth -= 1
+            if depth == 0:
+                out += _pdf_unescape(operand[start:i])
+        i += 1
+    return out.decode("latin-1")
+
+
+def _pdf_pages(raw):
+    """Decoded content bytes, one entry per page of the document.
+
+    Per *page* and not per stream, which matters more than it sounds: a page's
+    content is often split across several streams, and one table row can land
+    either side of the split. Grouping text by stream tears those rows in half
+    -- the first half of this parser did exactly that and quietly lost a column
+    off five calls -- so the page tree is walked and each page's streams are
+    concatenated before anything looks at coordinates.
+    """
+    objs = {}
+    for m in _PDF_OBJ.finditer(raw):
+        objs[int(m.group(1))] = m.group(2)
+
+    def inflate(body):
+        m = _PDF_STREAM.search(body)
+        if not m:
+            return None
+        try:
+            return zlib.decompress(m.group(1))
+        except zlib.error:
+            return m.group(1)                # an uncompressed content stream
+
+    out = []
+    for num in sorted(objs):
+        head = objs[num].split(b"stream", 1)[0]
+        if not re.search(rb"/Type\s*/Page\b", head):
+            continue
+        m = _PDF_CONTENTS.search(head)
+        if not m:
+            continue
+        refs = ([int(m.group(1))] if m.group(1)
+                else [int(r) for r in _PDF_REF.findall(m.group(2))])
+        chunks = [c for c in (inflate(objs[r]) for r in refs if r in objs) if c]
+        if chunks:
+            out.append(b"\n".join(chunks))
+    if not out:
+        raise ValueError("no page content streams in PDF")
+    return out
+
+
+def _pdf_rows(raw, tol=3.0):
+    """[(page, y, [(x, text), ...])] with the cells of each row left to right.
+
+    `tol` is in PDF units against a row pitch of about 19, so it is loose
+    enough for the half-point baseline wobble a word processor leaves behind
+    and nowhere near loose enough to merge two rows.
+    """
+    rows = []
+    for page, content in enumerate(_pdf_pages(raw)):
+        x = y = 0.0
+        here = []
+        for m in _PDF_TOKEN.finditer(content):
+            if m.group("tm"):
+                n = m.group("tm").split()
+                x, y = float(n[4]), float(n[5])
+            elif m.group("td"):
+                n = m.group("td").split()
+                x += float(n[0])
+                y += float(n[1])
+            elif m.group("star"):
+                y -= 11.0
+            elif m.group("bt"):
+                x = y = 0.0
+            else:
+                s = _pdf_show(m.group("arr") or m.group("lit")).strip()
+                if s:
+                    for row in here:
+                        if abs(row[0] - y) <= tol:
+                            row[1].append((x, s))
+                            break
+                    else:
+                        here.append((y, [(x, s)]))
+        here.sort(key=lambda r: -r[0])       # PDF y grows upwards; reading order
+        for y_, cells in here:
+            cells.sort()
+            rows.append((page, y_, cells))
+    return rows
+
+
+# The columns worth having. "ETA Day"/"ETD Day" are the weekday spelled out,
+# which the date already says, and "No."/"Port Agent" are the Port's own
+# bookkeeping.
+_SFPORT_COLUMNS = ("Vessel", "ETA Date", "Arrival Time", "Last Port",
+                   "ETD Date", "Departure Time", "Next Port", "Berth",
+                   "Cruise Line", "Type")
+
+_SFPORT_MONTHS = {m: i + 1 for i, m in enumerate(
+    ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"))}
+
+_SFPORT_DATE = re.compile(r"([A-Za-z]{3})-(\d{1,2})-(\d{4})")
+_SFPORT_TIME = re.compile(r"(\d{1,2}):(\d{2})\s*([AP])", re.I)
+_SFPORT_REVISED = re.compile(r"updated\s*:?\s*(\d{1,2})/(\d{1,2})/(\d{2,4})", re.I)
+_SFPORT_LINK = re.compile(
+    rb'href="([^"]*cruise[_%20\-]*schedule[^"]*\.pdf)"', re.I)
+
+
+def _sfport_epoch(date_s, time_s):
+    """A published date and clock time -> epoch seconds, or None.
+
+    The sheet is written in San Francisco for ships arriving in San Francisco,
+    so the times on it are Pacific wall clock with no offset attached -- which
+    is fine until the fetcher runs somewhere else, and a container or a cloud
+    box is UTC by default. So the zone is named rather than assumed. If the
+    system has no tz database to name it with, local time is the fallback,
+    which is right on the Pi this ships to and wrong by hours nowhere that
+    matters; either way it is one conversion, here, and everything downstream
+    is epoch seconds like the rest of this file.
+    """
+    md = _SFPORT_DATE.search(date_s or "")
+    if not md:
+        return None
+    mon = _SFPORT_MONTHS.get(md.group(1).upper())
+    if not mon:
+        return None
+    day, year = int(md.group(2)), int(md.group(3))
+    hour = minute = 0
+    mt = _SFPORT_TIME.search(time_s or "")
+    if mt:
+        hour = int(mt.group(1)) % 12
+        minute = int(mt.group(2))
+        if mt.group(3).upper() == "P":
+            hour += 12
+    try:
+        import datetime
+        from zoneinfo import ZoneInfo
+        dt = datetime.datetime(year, mon, day, hour, minute,
+                               tzinfo=ZoneInfo("America/Los_Angeles"))
+        return float(dt.timestamp())
+    except Exception:                                        # noqa: BLE001
+        return float(time.mktime((year, mon, day, hour, minute, 0, 0, 0, -1)))
+
+
+def _sfport_parse(raw):
+    """(calls, revised_epoch) out of one cruise schedule PDF."""
+    rows = _pdf_rows(raw)
+
+    # The header row, wherever it is. This sheet runs the table across two
+    # pages and only prints the header on one of them, and which one is not the
+    # first: found by content, then applied to every row in the document.
+    cols = None
+    revised = None
+    for _page, _y, cells in rows:
+        names = [s for _, s in cells]
+        if cols is None and all(h in names for h in _SFPORT_COLUMNS[:3]):
+            cols = {s: x for x, s in cells if s in _SFPORT_COLUMNS}
+        for _x, s in cells:
+            m = _SFPORT_REVISED.search(s)
+            if m and revised is None:
+                mo, dy, yr = (int(g) for g in m.groups())
+                revised = _sfport_epoch("%s-%d-%d" % (
+                    list(_SFPORT_MONTHS)[mo - 1] if 1 <= mo <= 12 else "",
+                    dy, yr + 2000 if yr < 100 else yr), "")
+    if not cols or len(cols) < 6:
+        raise ValueError("cruise schedule header row not found")
+
+    calls = []
+    for _page, _y, cells in rows:
+        if any(s in ("Vessel", "ETA Date") for _, s in cells):
+            continue
+        rec = {}
+        for x, s in cells:
+            near = min(cols, key=lambda h: abs(x - cols[h]))
+            # Half a column's width. Anything further from every header than
+            # that is not a cell of this table -- a footnote, a legend, the
+            # page furniture -- and guessing a home for it would put junk in
+            # the payload.
+            if abs(x - cols[near]) < 90.0:
+                rec.setdefault(near, []).append(s)
+
+        def cell(h):
+            return " ".join(rec.get(h, [])).strip()
+
+        eta = _sfport_epoch(cell("ETA Date"), cell("Arrival Time"))
+        etd = _sfport_epoch(cell("ETD Date"), cell("Departure Time"))
+        # The sheet interleaves "Pier 27 Event" rows -- a concert, a private
+        # hire -- among the calls. They have dates and nothing else, and they
+        # are not ships, so the test is a berth and a clock time rather than a
+        # blacklist of words that would go stale the first time somebody typed
+        # a different one.
+        if not cell("Berth") or not (cell("Arrival Time") or cell("Departure Time")):
+            continue
+        if eta is None and etd is None:
+            continue
+        calls.append({"vessel": cell("Vessel").upper(),
+                      "line": cell("Cruise Line").upper(),
+                      "berth": cell("Berth").upper(),
+                      "type": cell("Type").upper(),
+                      "eta": eta, "etd": etd,
+                      "from": cell("Last Port").upper(),
+                      "to": cell("Next Port").upper()})
+    if not calls:
+        raise ValueError("cruise schedule parsed to no calls")
+    return calls, revised
+
+
+@product("sfport-cruise", ttl=SFPORT_CRUISE_TTL,
+         interval=SFPORT_CRUISE_INTERVAL,
+         description="Port of SF cruise terminal schedule (scheduled calls)")
+def _sfport_cruise():
+    """Every scheduled call at Piers 27 and 35, out of the Port's own PDFs.
+
+    Two files rather than one, because the Port publishes a sheet per calendar
+    year and the interesting window in December is on next year's. Whichever of
+    them fails to parse is skipped rather than fatal -- the 2027 sheet being
+    reissued in a shape this cannot read is no reason to lose 2026 -- but all
+    of them failing raises, which is what keeps the last good record in place.
+    """
+    page = get(SFPORT_CRUISE_PAGE, timeout=20)
+    from urllib.parse import urljoin
+    seen, urls = set(), []
+    for href in _SFPORT_LINK.findall(page):
+        url = urljoin(SFPORT_CRUISE_PAGE, href.decode("latin-1"))
+        base = url.rsplit("/", 1)[-1]
+        year = base[:4]
+        if not year.isdigit() or int(year) < time.gmtime().tm_year:
+            continue
+        if year in seen:                     # the newest revision of each year
+            continue
+        seen.add(year)
+        urls.append((year, url))
+    if not urls:
+        raise ValueError("no cruise schedule PDFs linked from %s"
+                         % SFPORT_CRUISE_PAGE)
+
+    now = time.time()
+    calls, revised, used, failures = [], None, [], []
+    for _year, url in sorted(urls)[:2]:
+        try:
+            got, rev = _sfport_parse(get(url, timeout=45))
+        except Exception as e:                               # noqa: BLE001
+            failures.append("%s: %r" % (url, e))
+            continue
+        used.append(url)
+        calls.extend(got)
+        if rev is not None:
+            revised = rev if revised is None else max(revised, rev)
+    if not used:
+        raise ValueError("no cruise schedule parsed; " + "; ".join(failures))
+
+    def when(c):
+        return c["eta"] if c["eta"] is not None else c["etd"]
+
+    keep = [c for c in calls
+            if -SFPORT_KEEP_PAST <= (when(c) - now) <= SFPORT_KEEP_AHEAD]
+    keep.sort(key=when)
+    # Both sheets can carry the same call in the week either side of new year.
+    uniq, prev = [], set()
+    for c in keep:
+        key = (c["vessel"], c["eta"], c["etd"])
+        if key not in prev:
+            prev.add(key)
+            uniq.append(c)
+
+    return {"port": "SAN FRANCISCO", "berths": "PIERS 27 AND 35",
+            "revised": revised, "calls": uniq,
+            "note": "berth times as published, not Golden Gate transit times",
+            "sources": used}, used[0]
 
 
 def main():

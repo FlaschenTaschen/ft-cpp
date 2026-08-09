@@ -3068,6 +3068,154 @@ $ FT_DATA_CACHE=/tmp/nothing python3 sats.py           # the no-data card
 ```
 
 
+### ships
+
+![ships](screenshots/ships.png)
+
+Ships in and out of San Francisco, drawn against the water they ride. Two and
+a half days run left to right with now marked: every scheduled arrival and
+departure at the Port's cruise berths as a mark on the axis, captioned with the
+vessel, the time, the berth and where she is coming from or going to.
+Underneath, on exactly the same axis, the predicted tide at Fort Point and a
+ribbon of the predicted current at the Golden Gate — warm where the flood is
+running in, cold where the ebb is running out, dark and still at the turn, with
+a faint vertical dropped through the board at every predicted slack.
+
+**That pairing is the entire point of the panel.** Big ships are handled
+around the water. The Bay entrance runs to five knots, and the interesting
+question about a movement is not what time it is but what the tide is doing at
+that time — so each caption carries a third line, `SLACK` or `EBB 2.1KN`,
+taken from the current prediction at the moment of the mark, and each mark can
+be read against the dark bands in the ribbon. A ship sitting on the slack is
+working with the water; one that is not has other constraints. Neither half of
+this panel can tell you that on its own.
+
+**Why there are no moving ships on it.** The obvious source is AIS, and every
+live AIS feed within reach wants a key: aisstream.io, MarineTraffic and
+VesselFinder all register you first, and AISHub's price is a receiver of your
+own feeding the pool. The [Marine Exchange of the San Francisco Bay
+Region](https://www.sfmx.org/daily-reports) publishes precisely the report this
+demo would want — due to arrive, due to depart, vessels in port, updated around
+the clock — and sells it to members; the samples are public and the live ones
+are not. There is no keyless live-position feed for this bay, so there is no
+dead-reckoned map here and nothing pretends there is. What *is* public, free
+and authoritative is the Port of San Francisco's own [cruise terminal
+schedule](https://www.sfport.com/maritime/cruise): a PDF calendar of every
+cruise call at Piers 27 and 35 for the year, with vessel, berth, line, ETA and
+ETD to the minute and the port either side. Cruise ships are the largest things
+that come through the Gate on a published timetable, which makes them the ones
+this panel can say something true about.
+
+**These are berth times, not bridge times**, and that is worth being plain
+about. The sheet says when a ship is alongside Pier 27; a ship alongside at
+07:00 passed under the Golden Gate the better part of an hour earlier. Nothing
+converts between the two, because the offset depends on the pilot, the ship and
+the day, and an invented one drawn to the minute would look exactly as
+authoritative as the published number beside it.
+
+**The PDF is parsed here rather than by a library.** There is no PDF module in
+this project's dependencies and adding one to a Pi for eleven columns of a
+table is a poor trade, so `ftdata.py` inflates the content streams, recovers
+the (x, y) of every text run, groups runs into rows by y, and assigns each cell
+to the nearest column of *the header row it found in the document*. Reading the
+columns off the page rather than out of a table of offsets in the source is
+what makes it survive a layout edit; when it does eventually break it raises,
+and `fetch()` leaves the previous record in place. Two files are fetched, one
+per calendar year, because in December the interesting window is on next year's
+sheet, and either failing is skipped rather than fatal. Grouping text by
+*stream* instead of by *page* is the trap: a page's content is often split
+across several streams and a table row lands either side of the split, which
+silently lost a column off five calls before the page tree got walked properly.
+
+The product is **`sfport-cruise`**, ttl a week and interval six hours. The
+payload is a year-long calendar, so like the tide predictions it keeps telling
+the truth long after it was fetched — what expires is not the data but the
+confidence that this is the current revision, and the Port reissues the sheet
+every few weeks. Six hours between fetches because the file changes a handful
+of times a quarter and is a quarter megabyte a time; four passes a day still
+puts a revision on the wall the day it is published, and keeps a PDF off the
+fifteen-minute timer where it would be pure waste.
+
+**The axis is stepped and clipped.** Stepped, because a window measured
+continuously from now slides a fraction of a pixel a minute and takes every
+label, tick and curve column with it; quantising the left edge to half an hour
+costs three pixels of drift, lets the cursor traverse between steps the way
+tide.py's does, and turns a redraw every few minutes into one every thirty.
+Clipped, because the NOAA payload only reaches about two days past the moment
+it was fetched — so the right-hand edge is pulled back to wherever the
+predictions actually stop, and *whichever of the two runs out first*. The water
+level is sampled every six minutes and the current every thirty, so the
+current's last sample is up to half an hour short of the tide's; clipping to
+the tide alone overran it, `covers()` refused, and the ribbon, the slack guides
+and every phase line silently went away, leaving a completely plausible panel
+with the best thing on it missing. When less than half a day of prediction is
+left the panel says so rather than drawing an axis with no water under it.
+
+**A quiet window is a true statement and has to look like one.** Cruise calls
+here run from two a week in February to two a day in September, so a two-day
+axis is often empty. The header always carries the next movement and a
+countdown to it, and a short `LATER` ledger fills the space the marks are not
+using with the next three dated calls beyond the right-hand edge — clearly off
+the axis, and skipped wherever a caption already is. Captions themselves are a
+ladder rather than a truncation: two movements of the same call are typically
+nine hours apart, which is almost exactly one caption wide, so a caption that
+will not fit tries shorter forms and then gives up and leaves its mark, because
+a mark with no words is a movement you can still see and two captions on top of
+each other is neither.
+
+**Age is part of the data, and the frame loop never touches the disk.** The
+cache is read once in `build()` and `render()` reads nothing, which is stricter
+than tide.py's periodic reload and is there because the scheduler builds the
+next segment on a worker thread. That would leave the age frozen at build time,
+so the elapsed displayed time is added back on: the corner counts up on its
+own and the TTL trips exactly as it would if the file were being reread. A
+schedule past its week draws its calls with `STALE` beside the age; a missing,
+corrupt or empty one draws the words and the command that fixes it and no axis
+at all. Losing only the predictions still draws the board.
+
+**Cost.** Everything is a function of the window, so the whole picture is
+rasterised once — the curve, the ribbon's colours, the ticks, every caption —
+and a frame is that copy plus three overlays: the past half of the curve
+painted under the cursor from a precomputed mask, the breathing now cursor, and
+the stipple. About fifteen numpy calls on 320-element arrays, **0.020 ms p95
+here**, which at the 76–114x this project keeps measuring is 1.5–2.5 ms on the
+wall against a 50 ms budget at 20 fps. The first static picture is drawn in
+`build()` (0.9 ms here) so the frame being crossfaded into is not the expensive
+one; the window steps twice an hour, and that one frame costs about 0.6 ms
+here, so roughly one hitch every thirty minutes.
+
+**The stipple is the only thing that moves, and it moves carefully.** The axis
+is *time*, not distance — two adjacent columns are eleven minutes apart, not
+eleven metres — so drifting anything along it at the speed of the water is a
+picture of nothing, and a phase advanced by the local current comes apart into
+noise within seconds of being switched on, which is exactly what the first
+version did. What is honest to animate is the water *now*, over the run of the
+present flood or ebb: from the turn behind us to the turn ahead is one sign of
+velocity, so a stipple crossing it at one uniform speed says which way it is
+running, how hard, and how much of it is left, and cannot alias.
+
+**Asserted rather than eyeballed**, because this is another panel that can be
+plausibly wrong. `scripts/test-ships.py` checks the ribbon's *sense* against
+the fetched velocity rather than against how it looks — an inverted ribbon is a
+handsome picture in which every ship sails on the wrong water; that every
+predicted slack has a full-height guide and no column three hours off one does;
+that every movement is on the axis at its own column in the colour of its
+direction; that a caption names its vessel, its clock time and the water at
+that moment, read back off the panel with the demo's own glyph masks; that the
+stipple moves, moves the way the water runs, and stays inside the run. Frames
+are rendered **sequentially from a fresh `build()`** every time, because this
+demo is not a pure function of `t` and sampling it at scattered timestamps has
+produced three separate wrong conclusions in this project. The fresh, stale,
+absent, corrupt and no-predictions cases each run in a **separate process**
+with `FT_DATA_CACHE` set, since `ftdata.CACHE_DIR` binds at import and
+reloading the module in one process only looks like it works.
+
+```console
+$ python3 ftdata.py --once
+$ python3 ships.py --at '2026-09-14 10:00'      # a busier week
+$ python3 scripts/test-ships.py
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
