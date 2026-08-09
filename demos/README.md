@@ -1950,6 +1950,534 @@ have been — scaling the Golden Gate's channels by Boston Harbor's prediction
 would be a plausible-looking lie, and drawing nothing is the only honest
 option short of a second DEM.
 
+### goes
+
+![goes](screenshots/goes.png)
+
+The last six hours of weather over California, from orbit, on a twelve-second
+loop. GOES-18 hangs over the equator at 137° W and rescans the Pacific
+Southwest every five minutes; this plays the most recent seventy-odd of those
+frames as a time lapse. The marine layer slides in and out of the Gate,
+thunderheads go up over the Sierra through the afternoon and spread into
+anvils, a front walks down the coast. It is the only thing on the wall that is
+a photograph of right now rather than a drawing of it, and the loop is short
+enough that somebody walking past sees the weather actually move.
+
+**The band, and what it costs.** The panel is five times wider than it is tall
+and nothing NESDIS publishes is that shape, so this needed a decision rather
+than a resize, and the candidates were rendered at 320x64 and looked at rather
+than reasoned about. Two obvious ones died on sight. GOES-18's `CONUS` product
+is **not** the continental United States — from 137° W the "CONUS" scan is the
+eastern Pacific with the West Coast down the right-hand edge, four fifths open
+ocean, and a latitude band of it is a band of sea. GOES-19's CONUS is the real
+country, and a 5:3 frame squashed to 5:1 turns Florida into a stub and the Gulf
+into a smear; the undistorted 5:1 crop of it reads better than expected but
+puts the whole United States across 320 pixels, twelve kilometres each, at
+which scale a thunderstorm complex is a blob and the Bay Area is four pixels.
+
+What works is a **crop with no squash at all**: 500 by 100 pixels out of the
+600x600 `psw` sector image is exactly 5:1, so it goes to 320x64 with nothing
+stretched. That band runs from about 350 km west of the Farallones to central
+Utah — 1127 km by 301 km — centred so San Francisco Bay lands a third of the
+way in from the left and vertically dead centre. **What it costs is the two
+ends of the state**: the band is roughly 36.4° to 39.6° N, so Eureka is off the
+top and Los Angeles, San Diego and the Salton Sea are off the bottom. For a
+wall in a San Francisco workshop that is the right trade. The Bay is the part
+people look for, the ocean to the west of it is where the weather comes from,
+and at 3.5 km a pixel the fog bank has shape instead of being three pixels of
+grey. `--product` and the fetcher's `FT_GOES_SECTOR` will point it somewhere
+else; the crop is a constant in `ftdata.py` because the sector grid is fixed
+and never moves.
+
+The picture is the **satellite's own view and not a map**, which is worth
+saying because it looks enough like one to be mistaken for one. A geostationary
+grid is not north-up and it foreshortens north-south at this latitude, so the
+band is slightly skewed — its centre line runs from 37.7° N at the left edge to
+38.1° N at the right — and one panel pixel is 3.5 km across but 4.7 km down.
+Nothing here does that. It is what looking at 37° N from over the equator does,
+and it is the same picture NOAA puts on its own website.
+
+**The geography was checked rather than assumed**, because an off-by-one in a
+crop gives a perfectly plausible picture of the wrong place. The sector images
+carry NESDIS's own state borders drawn on them in white, and taking a pixelwise
+minimum over frames hours apart leaves those lines and throws the clouds away —
+a clean vector map, for free. Fitting the ABI fixed-grid projection (a
+geostationary perspective from 137.0° W) to three surveyed points on it — the
+Oregon/California/Nevada corner at 42° N 120° W, Nevada's north-east corner,
+and the Nevada/Utah/Arizona corner — lands with sub-pixel residuals and a scale
+of **56.1 µrad a pixel, which is the instrument's own 2 km grid**; a wrong fit
+would not have found that number. Landmarks held out of the fit then check it:
+Lake Tahoe, the Great Salt Lake, Lake Mead, the Salton Sea and San Francisco
+Bay all land within about three pixels of where the imagery puts them, and
+crosses drawn at the computed positions of the Bay, the Farallones, Monterey
+Bay, Sacramento and Tahoe sit on the right features in the finished 320x64
+frame.
+
+**GeoColor is two different products and the label says which.** In daylight it
+is true colour — white cloud, brown Central Valley, green Coast Range. After
+dark there is no visible light to work with, so it becomes infrared cloud over
+a static night map with city lights in orange: the Bay Area, Sacramento, the 99
+corridor, Reno over the hill. A window that straddles sunset therefore changes
+character completely partway through, which is the best thing about it and
+would look like a fault if it were not announced. Each frame carries `DAY`,
+`DUSK`, `SUNSET`, `DAWN`, `SUNRISE` or `NIGHT IR`, worked out from the sun's
+elevation — at *both ends of the band*, not the middle, because the band is
+fifty minutes of solar time wide and for the best part of an hour twice a day
+one end genuinely is dark and the other is not. The thresholds are GeoColor's
+rather than the almanac's: the product starts fading to its night rendering at
+a solar zenith of 80°, which is the better part of an hour before sunset, and
+that is why the east end of the picture goes murky while the clock still says
+afternoon.
+
+**Only cooked pixels are cached.** The source is a 240 kB JPEG every five
+minutes and a window of them is sixteen megabytes, which is not something to
+keep on a Pi's SD card or to hand to a demo that would then have to decode it.
+So `ftdata.py` decodes, crops and resizes each frame to the panel's exact
+geometry in the fetcher process and stores **only the 61 kB result**, as one
+`(N, 64, 320, 3)` uint8 array in a compressed `.npz` sidecar beside the JSON
+record. Seventy-two frames is **3.5 MB**, and it is worth saying that the
+compression is nearly pointless — 5.8 MB raw down to 3.5, nineteen per cent,
+because satellite imagery at 3.5 km a pixel is mostly texture. It stays
+compressed anyway: `np.load` of the whole thing is 18 ms on the desktop and it
+is read once per build.
+
+**And they are not cached on the SD card.** Sixty-one kilobytes a frame is a
+good number; rewriting all seventy-two of them every pass to add three is not.
+That is 3.5 MB a pass, 336 MB a day onto the card a Pi boots from, and by a wide
+margin the heaviest writer on the machine — everything else in the cache is a
+few hundred bytes to a few kilobytes of JSON. SD cards die of writes. So the
+record and its sidecar go to different filesystems: the JSON stays in
+`~/.cache/ftdata` on the card, where it is cheap and worth keeping across a
+reboot, and the sidecar goes to `FT_DATA_BLOBS`, which defaults to
+`/run/ftdata` and is tmpfs on Linux. Arranging for that directory to exist and
+be writable is the one deployment detail — a line of unit file if the fetcher
+is run under systemd, a `mkdir` if it is not — and it is optional, because a
+sidecar that cannot be written there is written beside the records instead.
+Measured over two consecutive passes against a populated cache on betelgeuse:
+**1,636 bytes to the card per pass, down from 3,365,556** — 157 kB a day
+against 323 MB, a two-thousandfold cut, and the 3.4 MB that moves is now 2% of
+a 182 MB tmpfs on a machine with 670 MB of RAM free. The fetcher's whole run
+peaks at 53 MiB including those pages.
+
+Splitting the frames into seventy-two files would have cut the writes too, and
+this is better: the pixels are pure cache with a half-hour TTL, so the right
+answer is not to write them more cleverly but not to write them to a card at
+all. What it costs is the window across a reboot — one honest `NO IMAGERY` card
+until the first fetch after it lands — and the records, which are the part
+worth keeping, still survive. It costs the demo nothing either way: a sandbox
+that leaves `/run` readable is enough, since the demo only ever reads the
+sidecar (verified on the Pi: it loads the array and gets `EROFS` if it tries to
+write there). And a checkout that has no `/run/ftdata` and cannot make one puts
+sidecars beside the records with no setup at all, so `python3 ftdata.py --once`
+followed by `python3 goes.py` works out of the box; `FT_DATA_BLOBS` overrides
+both.
+
+**The fetch is incremental, and it never asks for a directory listing.** The
+record lists the frame timestamps it already holds; a pass keeps the ones still
+inside the window, downloads only the slots that are new, and drops what has
+aged out. Frame names are *predicted* rather than discovered: GOES-18's psw
+scans start on a minute ending 1, 6, 11 … — ten days of the directory index,
+2888 files, without one exception — so the fetcher can name the file it wants.
+That matters, because the index itself is **3.1 MB** (349 kB gzipped) of every
+frame since last week, which would be a large download to learn three names.
+Cold start is the whole window: 66 frames, about 16 MB, 35 s. **Steady state at
+a fifteen-minute timer is three frames, about 735 kB a tick — 2.9 MB an hour**,
+plus one or two 404s at 150 bytes when the newest slot is not posted yet, which
+is normal and not an error.
+
+The sidecar is written under a fresh random name each pass —
+`goes-psw-fb9e2e0a.npz` — and the JSON record renamed over the old one
+afterwards. Write-then-rename makes each of two files atomic but says nothing
+about the *pair*, and a reader landing between the renames would otherwise get
+the new record with the old array and never know. Naming the array after its
+contents means every record ever visible points at a file that exists and holds
+exactly what it describes; the previous sidecars are swept the next pass — in
+both the tmpfs directory and the cache directory, which is how the move to
+`/run` cleans up after itself: the first pass after the change writes the window
+to RAM and deletes the 3.4 MB that had been sitting on the card, with no
+migration step to remember.
+
+**Missing, partial and stale are three different things and it says which.** No
+cache, no sidecar, a sidecar that will not open, a truncated one, or a record
+pointing outside the cache directory all get the same answer: the `NO IMAGERY`
+card with the fetcher's command and the cache path on it. A window shorter than
+asked for plays anyway and prints `12/72` beside the age — a cold start *is* a
+partial window, and half an hour of weather moving beats a card that says wait
+— though one or two slots missing out of seventy is the CDN having an ordinary
+day and is not worth a number on the wall. And a window whose newest frame has
+gone past its half-hour TTL keeps playing with `STALE` and the age in red,
+because six hours of real weather from this morning is still worth watching so
+long as nobody can mistake it for now.
+
+**Playback is an index and one blend, which is the whole point.** Every frame
+in the cache is already the right size and the right crop, so `render()` picks
+one, dissolves it into the next, and scatters two precomputed text masks. Each
+frame's timestamp belongs to the frame and not to the clock, so all seventy-odd
+labels are typeset in `build()`; the caption strip is smoked into the imagery
+there too, once, so it rides through the dissolve for free instead of being
+composited every frame. The blend is integer — `a + ((b - a) * k >> 7)` through
+an int16 scratch, five whole-frame passes — rather than demoscene's float
+crossfade, because integer is about three times cheaper on the wall's Pi and
+this runs thirty times a second forever. Sevenths and not eighths so it stays
+inside int16: 255 × 127 is 32385, with three hundred to spare.
+
+On betelgeuse's Pi 3 at 600 MHz, on a loaded machine, three runs of 1200 frames
+at 320x64: **p50 3.2 ms, p95 3.9–4.1 ms**, max 5.6, against a 6 ms budget —
+0.7/1.0 with `--no-blend`, 0.09/0.14 for the no-data card. Build is 0.59 s, and
+it is the array load and the label typesetting. The no-data card was 6.2/7.7 ms
+before it was baked once and copied, which is the same mistake in miniature as
+everything else on this wall: laying out four lines of type thirty times a
+second to draw the same picture. A non-default `--width`/`--height` resamples
+the whole stack in `build()` and that is not free — 3.2 s at 512x96 — so the
+geometry the fetcher stores should be the geometry the wall wants. Moving the
+sidecar into tmpfs changed neither: three runs each of the old code, the new
+code reading from the card, and the new code reading from `/run` came out at p50
+2.9–3.0 ms, p95 4.0–4.3, build 0.38–0.52 s on a 71-frame window, and all nine
+runs hashed to the same digest — the picture is identical byte for byte, which
+is the only thing a caching change is allowed to leave alone.
+
+**The fetcher has to be running.** Nothing in `goes.py` touches the network — it
+imports numpy and nothing else, no Pillow, no HTTP library, no JPEG decoder —
+and `ftdata.load()` and `load_blob()` open no transport either; the only thing
+either pulls in beyond the interpreter's baseline is `urllib.parse`, which
+`np.load` drags in through `zipfile` to parse nothing at all.
+
+```console
+$ python3 ftdata.py --loop 900                    # the fetcher, its own process
+$ python3 ftdata.py --once --only goes-psw        # one pass, top up the window
+$ python3 goes.py                                 # needs the fetcher running
+$ python3 goes.py --frame-rate 3 --hold 3         # slower, longer look at now
+$ python3 goes.py --no-blend                      # cut instead of dissolve
+$ python3 goes.py --bar 0                         # no caption, all picture
+$ python3 goes.py --at '2026-08-09 09:00'         # the STALE path, on demand
+$ FT_DATA_CACHE=/tmp/nothing python3 goes.py      # the no-data card
+$ FT_GOES_FRAMES=24 python3 ftdata.py --once --only goes-psw   # two hours, 1.2 MB
+```
+
+`FT_GOES_FRAMES` sets the window length and `FT_GOES_SECTOR` the sector;
+`FT_GOES_MAX_FETCH` caps how much one pass will pull, so a cold start on bad
+wifi fills in over several ticks rather than blocking on sixteen megabytes.
+
+### winds
+
+![winds](screenshots/winds.png)
+
+The wind over San Francisco Bay, drawn the way Windy draws it: a coastline,
+and a few hundred particles blown across it by the forecast field, streaking
+longer and warmer as the air speeds up and collapsing to slow embers where it
+goes calm. The speed scale runs along the bottom, the numbers at the Golden
+Gate along the top. A wind map with no scale is decoration.
+
+**The panel exists to show one thing, which is the sea-breeze jet.** The coast
+range runs unbroken from Bodega to Big Sur except in one place, and that place
+is the Golden Gate — a sea-level gap three kilometres wide with a metropolitan
+bay behind it. The Central Valley heats, the gradient tips inland, and the
+marine layer accelerates through the gap and spreads out over the water. It
+runs roughly east-west, which is the one thing this bay does that suits a
+panel five times wider than it is tall, and it is the reason this demo exists
+rather than a thermometer.
+
+**The crop: 37.74–37.90 N, 122.28–122.68 W.** Nine kilometres of open Pacific
+on the left, the Gate dead centre, the East Bay shoreline hard against the
+right-hand edge — 35.2 km by 17.8 km across 320 columns and 52 rows, so a
+column is 110 m, a row is 342 m, and the picture is stretched **3.1×
+horizontally**. Same deal `tide.py` makes and stated as plainly: at true scale
+a strip 35 km wide fitted to 52 rows would be 5.7 km tall and would have
+neither the ocean nor Berkeley on it, which would leave a slot through the
+Gate with no gradient in it — the one thing the map is for. The east edge is
+not a choice at all; `voxel-dem.npz` stops at 122.28 W, so downtown Oakland is
+a few hundred metres off the panel. North and south are: San Pablo Bay and the
+South Bay are outside, and the fan-out north past Angel Island is clipped.
+
+What the width buys is the whole length of the jet at once, and the jet does
+not run the way you would guess. The fastest air is not out over the ocean, it
+is **in the gap**, and it gives most of that back within ten kilometres. One
+real evening off this panel — six o'clock on a Sunday in August — 12.6 kt ten
+kilometres offshore, 17.9 at the bridge, 13.8 over Alcatraz, 6.5 at the Bay
+Bridge, 4.9 off Berkeley. A crop that stopped at the Gate would show the 17.9
+and none of the rest of that sentence.
+
+**The field is an interpolation of a coarse model grid. It is not a
+simulation, and the difference matters.** Open-Meteo is free, keyless, and
+takes comma-separated coordinate lists, so a whole grid is *one* request: 7×11
+points, snapped by the API to its own model cells — it tells you where each
+one landed — which come back about 3 km apart and are NOAA's HRRR. Seventy-
+seven cells over an area this size is a real mesoscale model at its real
+resolution, so it does know about the gap. But between those cells there is
+nothing here except inverse distance weighting. The panel can tell you the
+Gate is blowing and Berkeley is not; it cannot tell you about the wind shadow
+behind Angel Island, the lift off Yellow Bluff, or the convergence line that
+parks off Crissy Field on a good day, because none of those are in the numbers
+it was handed. Nothing here solves anything. The coastline is drawn on top of
+the field, not into it — the air does not know the shoreline is there.
+
+The interpolation runs on a 48×24 lattice and is upsampled bilinearly to the
+panel, because doing the weighting per pixel would be a 16 640×77 matrix and
+forty times the arithmetic for a field whose shortest real wavelength is 3 km.
+East and north components are interpolated separately, never speed and
+bearing: the mean of 350° and 10° is 180°, which is the wrong way up the map.
+The smoothing length was not guessed either — interpolate, then read the field
+back at each station's own coordinates, and the soft settings this started
+with (1/d², 2.4 km) came back 2.4 kt RMS low and turned a 20 kt jet into a
+14 kt one. Smoothing away the exact peak the panel exists to show is not a
+cosmetic failure, it is the map lying about the number. At 1/(d²+1.2²)^1.5 it
+reproduces the stations to 0.4 kt RMS and still falls off smoothly between
+them.
+
+**Direction is the bug that would have looked fine.** Meteorological wind
+direction is the bearing the wind comes *from* — 270° is a westerly, blowing
+*towards* the east — so `u = -speed·sin(dir)`, `v = -speed·cos(dir)`, and a
+field drawn without those two minus signs runs backwards, is entirely
+plausible on a wall, and is entirely wrong. Nobody catches that by looking. So
+`scripts/test-winds.py` asserts it three ways: against a synthetic cache of
+uniform 20 kt wind from each cardinal point, where a westerly must move the
+drifters right (+0.50 px/frame) and a southerly must move them up (−0.16);
+against the fetched JSON at each real station, stepping the render and taking
+the median drifter displacement, which comes back within **1.8° at worst
+across eight stations**; and — the one that cannot be fooled by a bug living
+between the particle array and the screen — by cross-correlating two rendered
+frames six apart in a window over the Gate and asking which way the *picture*
+went. With the header quoting 15.7 kt from 256°, the picture shifted (+0,+2)
+px in six frames: a bearing of 090 against the 076 the data demands, which is
+as close as a two-pixel integer shift can get. Pixel motion is not a
+bearing until the 3.1× stretch is undone, and the test undoes it with the same
+metres per pixel the demo used to apply it.
+
+**It animates the forecast, and says so in words.** Standing still on the
+current hour throws away the best thing in this data, which is that the sea
+breeze has a daily cycle you can watch: filling after noon, howling at six,
+easing overnight, dead by dawn. So the panel sweeps from now through the next
+twenty-four hours and loops, one model hour at a time — no invented in-between
+fields, every frame is a forecast hour that exists. The first frame of each
+sweep is *now*, interpolated between the two model hours either side of it,
+labelled `NOW 6:00P` in green; every other frame is labelled `FCST +7H 2:00A`
+in amber. A forecast mistaken for an observation would be worse than no panel
+at all. `--hours 0` pins it to now, `--hour 7` pins it to a chosen one.
+
+Gusts ride along because they are the one extra number that changes what
+somebody does about the answer: eighteen knots steady and eighteen gusting
+thirty are different afternoons on the water. They are drawn as a number and
+not as a picture, which is about the right weight for them.
+
+**Being polite to a free service is arithmetic, not vibes.** Open-Meteo counts
+a multi-location request as one call per location, so 77 points four times an
+hour is 7 392 location-calls a day against a 10 000/day fair-use budget and
+308/hour against a 5 000/hour one. That, and not aesthetics, is why the grid
+is 77 points and not 200 — and asking for points closer together than 3 km
+just returns the same model cell twice, which the fetcher deduplicates and
+stores under its snapped coordinates: the honest statement of where these
+numbers actually live.
+
+**Staleness, as everywhere else here.** A forecast keeps telling the truth for
+a while after it was fetched, so both questions get asked: the fetch age is in
+the corner via `ftdata.describe_age()`, and separately the payload's hours are
+checked against the present moment. Five hours old but still covering now
+draws normally with `STALE` in the corner. No file, a half-written file, some
+other product's payload, or a record whose hours have run out from under it
+all get the same answer — `NO WIND DATA`, the command that fixes it, and no
+wind. Stations the model declined to answer for are dropped and counted;
+a station with a hole in one hour keeps its good hours and is weighted out of
+the bad one, because `w @ nan` poisons an entire field.
+
+**The cost is in `build()`.** The coastline raster, the interpolation weights,
+every hour's field, its speed wash and its colour table are all baked once —
+25 hours of them, about 10 MB — and the frame loop advances drifters and
+composites. On the Pi 3 at 600 MHz, pinned to the windiest hour in the record
+so every drifter is moving, that is **p50 6.6–6.8 ms and p95 7.8–8.3 ms**
+across runs of 900 frames on a machine already at load 3.8, against a 9 ms
+budget; build is 1.2–1.6 s, next to tide's 1.2 and voxel's 8.2. Two things
+bought most of it. The streak colours are baked per hour as a `(4, pixels, 3)`
+table, so drawing a sample is one gather instead of two — a gather is three
+times the price of a whole-array pass on this machine and the loop does four
+of them. And "has this drifter left the frame?" is asked as "does clipping
+move it?", which is three numpy calls where four comparisons and three ors
+would be seven. Re-reading the cache re-bakes two dozen fields, which is a
+third of a second and four dropped frames if it happens inside `render()`, so
+it happens one hour per frame into a shadow list and the old fields stay on
+the wall until the new ones are all there.
+
+The font, the DEM crop, the sea mask and the clock are `tide.py`'s, imported
+rather than copied, the same way `propagation.py` borrows `defcon.py`'s
+glyphs. That is deliberate beyond saving lines: the two demos are looking at
+the same bay, and if they ever disagreed about where the coast is, one of them
+would be lying.
+
+The fetcher must be running, or the panel says so:
+
+```console
+$ python3 ftdata.py --loop 900                     # or --once --only wind-bay
+$ python3 winds.py                                 # sweeps 24 h in 52 s
+$ python3 winds.py --hours 0                       # just now, no animation
+$ python3 winds.py --hour 18 --units mph           # pinned, in mph
+$ python3 winds.py --cycle 20 --particles 700      # busier, faster sweep
+$ python3 winds.py --extent 37.70,37.94,-122.60,-122.30   # tighter on the bay
+$ python3 winds.py --at '2026-08-09 18:00' --hours 0      # a chosen evening
+$ python3 scripts/test-winds.py                    # the checks, against the cache
+```
+
+`FT_WIND_GRID=9x13 python3 ftdata.py --once --only wind-bay` asks for a denser
+grid if you are feeling less polite; anything finer than about 3 km spacing
+buys nothing but duplicate cells.
+
+### wx
+
+![wx](screenshots/wx.png)
+
+The weather outside *one building* — a street address, not a city — and an
+honest account of where each number came from. The default address is in the
+Mission in San Francisco, in the same spirit as `tide`'s default station, and
+`FT_WX_SITES` and `FT_WX_STATIONS` move it. Somebody walks past, looks for two
+seconds, and
+decides whether to roll the door up. What they must not be able to do is
+mistake a computed number for a measured one, and that turns out to be the
+whole design problem, because almost none of this can be measured near here.
+
+**Why it is a composite.** There is exactly one real instrument anywhere near
+the space. Unioning the station lists across a 7×7 block of NWS gridpoints
+around the address turns up 52 stations and precisely one inside San Francisco:
+**SFOC1, "San Francisco Downtown", 2.8 km away**. The next nearest is Oakland
+Museum at 12.3 km, across the Bay and in a different climate; KSFO is 16 km
+south and in another one again. And SFOC1 reports temperature, dewpoint and
+humidity and **nothing else** — no wind, no pressure. Not "sometimes": the
+fields are in the JSON, `null`, every hour, with a `Z` quality flag. Every
+dedicated personal-weather-station network that would have filled the gap now
+needs a key — Weather Underground PWS 401s, PurpleAir 403s, Synoptic 401s,
+AirNow 401s — which is exactly why this is a composite of three services rather
+than one tidy feed.
+
+So: temperature, dewpoint and humidity are **observed**, 2.8 km away. Wind,
+pressure and cloud are **modelled** at the exact address by met.no. Air quality
+is **modelled** by CAMS through Open-Meteo, for a grid cell a few kilometres
+wide. Blending those into one authoritative-looking readout would be worse than
+not building the panel, so the distinction is carried four ways at once,
+because any one of them fails on somebody:
+
+1. **Position.** Measured things live left of the first hairline; modelled
+   things live right of it. Nothing crosses.
+2. **A word.** Each zone is headed OBSERVED or MODELLED, with the instrument
+   and *how far away it is*, or the model and whose it is.
+3. **Colour.** Observed values are near-white, modelled values blue — two
+   hues, not two brightnesses, since brightness is already spoken for by the
+   aging state and would be destroyed exactly when provenance matters most.
+4. **A mark on every number.** A modelled value is printed `~5.4`, the way one
+   writes an approximation by hand. Crop the panel, photograph it, read it
+   colour-blind: the tilde is still there.
+
+The zone title, the hue and the mark are all *derived from the product's own
+provenance* rather than from where the zone happens to sit, so pointing the
+panel at the wrong kind of product makes it say so rather than quietly relabel
+the data.
+
+**Both temperatures are on the wall on purpose**, observed at the station and
+modelled here, with the difference printed beside the modelled one. When they
+disagree that is not an error to be hidden, it is the sea breeze — the gradient
+across a couple of kilometres of this city, which is the most interesting thing
+this panel knows. The wind is the model's alone and gets the arrow and the big
+type, since nobody within 12 km measures it; the arrow flies *downwind* and the
+label says FROM, because arrow conventions split the room and neither half is
+wrong. If the compass point will not fit it is dropped rather than truncated:
+shortening "FROM WSW" to "FROM W" does not abbreviate a label, it moves the
+wind two points and says so with a straight face.
+
+**The AQI is the number people actually cross the room for.** In this city, in
+fire season, it decides whether the roll-up door opens. So it gets a block of
+the EPA's own colour scale — ≤50 green, 51–100 yellow, 101–150 orange, 151–200
+red, 201–300 purple, 301+ maroon — with the category word beneath it, and the
+ink on the block flips from black to white when the block goes dark enough to
+need it. Those six colours are not adjusted for the panel: everybody here has
+spent a fire season learning to read exactly them, and a nicer green would only
+be a slower one to recognise. And it still says `~55`, because a chemistry model
+over the Mission is not a sensor on the roof. A bright confident block is the
+easiest thing on the wall to mistake for a measurement, which is precisely why
+the mark matters most there.
+
+**The data comes off a disk cache, not a socket.** `build()` calls
+`ftdata.load()`, which reads one JSON file and nothing else, for the reason in
+[`ftdata.py`](ftdata.py)'s docstring: the scheduler builds the next segment on a
+worker thread sharing the GIL with the render loop, so a `build()` that blocks
+on a socket stops the wall for everybody. **The fetcher has to be running:**
+
+```console
+$ python3 ftdata.py --once                  # one pass, to see it work
+$ python3 ftdata.py --loop 900 &            # its own process, every 15 min
+$ python3 ftdata.py --list                  # what is cached, and how old
+$ python3 wx.py --host 127.0.0.1
+$ python3 wx.py --station KSFO --lat 37.6188 --lon -122.3750 --site "SFO"
+$ python3 wx.py --blink-hz 0                # hold the flags, for a photo
+$ FT_DATA_CACHE=/tmp/nothing python3 wx.py  # the no-data card
+```
+
+It adds three products, all trimmed in the fetcher rather than in the demo,
+because the cache lives on a Pi on shop wifi: `wx-obs-<station>` is 450 bytes of
+NWS observation (ttl 5400 s), `wx-model-<lat>_<lon>` is 540 bytes — one instant
+out of 44 kB of hourly forecast, since a 64-row panel has no room for a forecast
+strip — and `wx-air-<lat>_<lon>` is 500 bytes of CAMS (both ttl 7200 s). Nothing
+assumes a field is present: every NWS value goes through a converter that
+returns absent unless there is a number *and* the unit code is the one being
+converted from, because windSpeed arrives as km/h from most stations and m/s
+from a few, and applying one conversion to the other turns a 5 m/s breeze into
+an 18 m/s gale.
+
+**met.no's terms are honoured in the fetcher, and they are not decorative.**
+The User-Agent identifies the project and carries a contact address (`FT_CONTACT`
+overrides it); the response's `Expires` and `Last-Modified` are stored in the
+payload; a fetch inside the Expires window makes **no request at all**, and one
+outside it is conditional on `If-Modified-Since` and takes the 304 — which
+api.met.no does return. A `--loop 900` fetcher therefore touches met.no about
+twice an hour, which is roughly how often the model changes. One consequence
+needs saying: a skipped or revalidated fetch rewrites the record with a new
+`fetched_at` and unchanged contents. So every payload carries `t`, the epoch the
+numbers *describe*, and the panel ages them by that instead. Age is part of the
+data, and the part that matters is the data's, not the socket's.
+
+**Staleness is propagation.py's three stages, in propagation.py's vocabulary**,
+since anything showing both panels shows them to the same person and a second
+vocabulary would be a second thing to learn. Fresh: full brightness. Past TTL: half brightness, amber ages,
+AGING. Past three TTLs: the numbers are withdrawn — `--`, never a plausible
+zero — the zone says OBSERVATION TOO OLD or MODEL RUN TOO OLD, and a red flag
+blinks. A product nobody has ever fetched is MISSING rather than STALE; calling
+an empty cache stale would imply there is something behind it. An entirely
+empty cache is a NO DATA card naming the fetcher, the command and the cache
+path. **The provenance survives every one of those states** — a stale zone
+keeps its header, its hue and every tilde. It has nothing to say and says so in
+the right voice.
+
+**Two upgrades are already on the table, and they slot in as products.** The
+panel does not know where a number came from; it knows what its *product* is
+called, and `--obs-product`, `--model-product` and `--aqi-product` each name
+one. A product whose name matches a prefix in `OBSERVED_PREFIXES` is drawn as
+observed — no tilde, near-white, OBSERVED in the header — and anything else is
+treated as modelled, because the failure that matters is claiming a measurement
+nobody made.
+
+* **PurpleAir**, if a key is obtained: add a `register_purpleair()` alongside
+  the other products in `ftdata.py` writing `wx-pa-<sensor>` with `us_aqi`,
+  `pm2_5`, `t` and a `label` such as `PURPLEAIR 0.4KM`, then run
+  `wx.py --aqi-product wx-pa-<sensor>`. The tile relabels itself, turns mint,
+  and the tilde comes off the big number, because a sensor a few hundred metres
+  away *is* an observation.
+* **A roof sensor over MQTT**: nothing about this needs a demo change either.
+  A subscriber that
+  writes `wx-local.json` into the same cache directory — same envelope,
+  `fetched_at` and a payload carrying `t`, `temp_c`, `dewpoint_c`, `rh_pct`,
+  optionally `wind_ms`/`wind_dir`, and `label: "ROOF"` — turns the observed
+  half from 2.8 km away into the building's own roof with
+  `wx.py --obs-product wx-local`. The wind line stops saying NO WIND AT THIS
+  STATION and starts printing a measured wind, unmarked, on its own.
+
+Both were tested with hand-written cache records before either service existed;
+neither needs a line of this panel changed.
+
+It is all baked. The layout, the type, the compass arrow and the AQI block are
+rasterised once in `build()`; `render()` copies that frame and repaints two
+small rectangles — the state flag and a heartbeat, which is there because a
+frozen render loop and a calm evening look identical on a panel made of static
+type. On the wall's Pi 3, throttled to 600 MHz, that is **0.11 ms p50 and 0.18
+ms p95** against a 6 ms budget, with `build()` costing 26 ms once on the worker
+thread — a quarter of what propagation's costs on the same machine. There are
+exactly two distinct frames over a full cycle, which is why the standalone
+default is 10 fps: the other twenty a second would be identical datagrams.
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
