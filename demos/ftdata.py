@@ -1846,6 +1846,230 @@ def _adsb_bay():
         "source": "airplanes.live",
     }
     payload.update({c: [r[c] for r in kept] for c in cols})
+# What California is running on. caiso.py draws this.
+#
+# CAISO's "Today's Outlook" page is backed by three keyless CSVs that are
+# rewritten every five minutes, and they are the whole product: no key, no
+# registration, no terms beyond ordinary politeness. The alternative is
+# EIA-930, which is the same picture an hour later and **needs an API key**,
+# and OASIS, which needs a client certificate and speaks zipped XML. So this
+# is the source, and it is fetched at a tenth of the rate it changes.
+#
+# **The paths have moved and will move again.** Every script older than about
+# a year fetches `/outlook/SP/fuelsource.csv`; that 404s now. What answers
+# today is `/outlook/current/<name>.csv`, with `/outlook/history/<YYYYMMDD>/`
+# alongside it for finished days. Both were checked by hand before this was
+# written, and CAISO_BASE is one string so the next move is one line.
+#
+# Three files rather than one because they are three different measurements
+# and only the first is a mix:
+#
+#   fuelsource.csv  thirteen fuels in MW, 5-minute, midnight to now
+#   demand.csv      day-ahead and hour-ahead forecasts for the *whole* day,
+#                   plus actual demand up to now and nulls after it
+#   co2.csv         emissions by source in metric tons an hour, to now
+#
+# The forecast columns are why demand.csv is worth a request of its own: they
+# are the only thing in any of this that knows what the evening looks like, so
+# the panel has something honest to draw to the right of the now-line instead
+# of dead space.
+#
+# **The Time column is CAISO's own local wall clock**, "HH:MM" with no date and
+# no offset, which is the Pacific zone whatever the machine fetching it thinks
+# it is in. So the timestamps are resolved here, once, against
+# America/Los_Angeles explicitly rather than against `localtime` -- a fetcher
+# run from a laptop in another zone would otherwise write a record whose
+# midnight is somebody else's midnight, and the panel would draw the whole day
+# shifted with nothing to say it had. Epoch seconds from there on, like the
+# tides. The two DST days are handled by resolving each row separately instead
+# of assuming 288 rows times 300 seconds spans a day: in March one of those
+# days is 276 rows long and in November one is 300, and a uniform grid laid
+# over either puts the evening peak an hour out.
+#
+# Everything is stored as published, ungrouped: thirteen fuels, not five bands.
+# How to group them so that sixty-four rows of LED can be read from across a
+# room is a *drawing* decision and it belongs in the demo, where it can be
+# argued with, rather than baked irreversibly into the cache.
+# --------------------------------------------------------------------------
+
+CAISO_BASE = os.environ.get("FT_CAISO_BASE", "https://www.caiso.com/outlook")
+CAISO_TZ = "America/Los_Angeles"
+
+# An hour. The numbers themselves arrive every five minutes, so a record this
+# old has missed eleven of them and the leading edge of the curve is visibly
+# behind the clock -- which is exactly when the panel should start saying so.
+# The rest of the day's curve is still perfectly true, so this is a warning
+# threshold and not a delete: caiso.py keeps drawing and flags it.
+CAISO_TTL = 3600
+
+# Ten minutes, against a five-minute source. Half the available resolution,
+# deliberately: nobody reads a 24-hour area chart closely enough to see one
+# missing sample, and this is a public server with no key on it.
+CAISO_INTERVAL = 600
+
+
+def _caiso_csv(name):
+    """One outlook CSV as (header, rows of strings). Raises if it is not one."""
+    url = "%s/current/%s.csv" % (CAISO_BASE, name)
+    text = get(url).decode("utf-8", "replace")
+    import csv
+    import io
+    rows = list(csv.reader(io.StringIO(text)))
+    if len(rows) < 2 or not rows[0] or rows[0][0].strip().lower() != "time":
+        # A 404 from this host is a styled HTML page with a 200-shaped body in
+        # front of it, so "did it parse as CSV" is not the question; "is the
+        # first column called Time" is.
+        raise ValueError("%s is not a Today's Outlook CSV" % url)
+    return [h.strip() for h in rows[0]], [r for r in rows[1:] if r], url
+
+
+def _caiso_key(header):
+    """'Small hydro' -> 'small_hydro'. The published name, mechanically."""
+    return "".join(c if c.isalnum() else "_" for c in header.strip().lower())
+
+
+def _caiso_epochs(datestr, stamps):
+    """['00:00', ...] on a given Pacific date -> epoch seconds.
+
+    Row by row rather than t0 + i*step, because two days a year are not 24
+    hours long and a uniform grid over either of them is an hour wrong by the
+    evening -- which is the half of the day this panel is about. A stamp that
+    does not advance means the file has walked into the next day, which is what
+    demand.csv's trailing 00:00 is.
+    """
+    import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(CAISO_TZ)
+    except Exception:                                        # noqa: BLE001
+        tz = None
+    day = datetime.date.fromisoformat(datestr)
+    out, prev, extra = [], None, 0
+    for s in stamps:
+        hh, mm = int(s[:2]), int(s[3:5])
+        minute = hh * 60 + mm
+        if prev is not None and minute <= prev:
+            extra += 1
+        prev = minute
+        when = datetime.datetime.combine(
+            day + datetime.timedelta(days=extra), datetime.time(hh, mm))
+        # No tzdata on the machine is a real possibility on a minimal image, and
+        # the fallback is right where it matters: the wall is in the same zone
+        # as the ISO. It is wrong elsewhere, which is why it is not the default.
+        out.append((when.replace(tzinfo=tz) if tz else when).timestamp())
+    return out
+
+
+def _caiso_today():
+    """Today's date in CAISO's zone, as the CSVs mean it."""
+    import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo(CAISO_TZ)).date().isoformat()
+    except Exception:                                        # noqa: BLE001
+        return datetime.date.today().isoformat()
+
+
+def _caiso_num(s):
+    """A cell as a float, or None. Blank means 'not yet', never zero.
+
+    The distinction is the whole reason this is not `float(s or 0)`: demand.csv
+    carries the rest of the day as empty cells, and a zero there would draw a
+    grid that had switched itself off at teatime.
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _caiso_table(name, datestr):
+    """(t, {column_key: [values]}, order, url) for one outlook CSV.
+
+    Trailing rows in which every column is blank are dropped -- the mix and
+    emissions files are written for the whole day and filled in as it happens,
+    so the tail is not missing data, it is data that has not happened yet.
+    """
+    header, rows, url = _caiso_csv(name)
+    keys = [_caiso_key(h) for h in header[1:]]
+    cols = {k: [] for k in keys}
+    stamps = []
+    for r in rows:
+        vals = [_caiso_num(v) for v in r[1:len(header)]]
+        vals += [None] * (len(keys) - len(vals))
+        stamps.append(r[0].strip())
+        for k, v in zip(keys, vals):
+            cols[k].append(v)
+    while stamps and all(cols[k][-1] is None for k in keys):
+        stamps.pop()
+        for k in keys:
+            cols[k].pop()
+    if not stamps:
+        raise ValueError("%s has no populated rows yet" % url)
+    return _caiso_epochs(datestr, stamps), cols, keys, url
+
+
+def _caiso_round(values, places=0):
+    """Store MW as integers. A tenth of a megawatt is not a thing anyone sees."""
+    if places:
+        return [None if v is None else round(v, places) for v in values]
+    return [None if v is None else int(round(v)) for v in values]
+
+
+@product("caiso-mix", ttl=CAISO_TTL, interval=CAISO_INTERVAL,
+         description="CAISO fuel mix, demand and CO2 for today, 5-minute")
+def _caiso_mix():
+    """Today's California grid: what generated it, how much of it, and its CO2.
+
+    Three requests and about 30 kB of record by the end of a day, which is the
+    largest thing in this cache that is not pixels. It is worth it and it is
+    deliberately not `volatile`: the payload is the day *so far*, so a record
+    that survives a reboot is the difference between coming back up with the
+    whole morning's duck curve and coming back up with a blank chart and one
+    sample on it.
+
+    Only the fuel mix is required. Demand and emissions are fetched separately
+    and each is allowed to fail on its own, because a panel that can say what
+    the state is burning is still worth having when the forecast endpoint is
+    having an afternoon -- and losing all three because one of them moved is
+    exactly the failure this file exists to avoid.
+    """
+    date = _caiso_today()
+    t, fuels, order, url = _caiso_table("fuelsource", date)
+    for k in order:
+        fuels[k] = _caiso_round(fuels[k])
+
+    payload = {
+        "date": date, "tz": CAISO_TZ,
+        "t": t, "n": len(t),
+        "span": [t[0], t[-1]],
+        # Midnight to midnight in CAISO's zone: the axis the day is drawn on,
+        # and not derivable from `t` once the record is only half a day long.
+        "day": [_caiso_epochs(date, ["00:00"])[0],
+                _caiso_epochs(date, ["00:00", "00:00"])[1]],
+        "fuels": fuels, "fuel_order": order,
+        "units": {"generation": "MW", "demand": "MW",
+                  "co2": "metric tons per hour"},
+        "demand": None, "co2": None,
+    }
+
+    try:
+        dt, dem, dorder, _ = _caiso_table("demand", date)
+        payload["demand"] = {"t": dt, "n": len(dt), "order": dorder,
+                             "series": {k: _caiso_round(dem[k]) for k in dorder}}
+    except Exception as e:                                   # noqa: BLE001
+        print("ftdata: caiso-mix demand unavailable: %r" % e, file=sys.stderr)
+
+    try:
+        ct, co2, corder, _ = _caiso_table("co2", date)
+        payload["co2"] = {"t": ct, "n": len(ct), "order": corder,
+                          "series": {k: _caiso_round(co2[k]) for k in corder}}
+    except Exception as e:                                   # noqa: BLE001
+        print("ftdata: caiso-mix co2 unavailable: %r" % e, file=sys.stderr)
+
     return payload, url
 
 
