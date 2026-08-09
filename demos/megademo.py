@@ -57,10 +57,12 @@ f32 = ds.f32
 # uses this: fading through black reads well going to or from one of these,
 # where a wipe or crossfade mostly just looks like a smear.
 SPARSE = {"starfield", "fireworks", "boing", "daliclock", "sierpinski_rain",
-          # Membership is about *readability*, not luminance. These four are
-          # small type, thin wireframe or a few sprites on black, and type
-          # blended under a busy effect is unreadable rather than merely dim.
-          "wardial", "ansi", "gibson", "toasters"}
+          # Membership is about *readability*, not luminance. These are small
+          # type or a few sprites on black, and type blended under a busy
+          # effect is unreadable rather than merely dim. gibson is deliberately
+          # NOT here: once its towers became filled glass it stopped being a
+          # few thin lines and became one of the densest things in the show.
+          "wardial", "ansi", "toasters"}
 
 # The default running order. Names not present in the checkout are dropped
 # with a warning, so effects still being written can already be listed here

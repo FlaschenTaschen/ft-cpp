@@ -1094,6 +1094,33 @@ most durable image the genre produced, because it has speed in it.
 A 5:1 letterbox has a vertical field of view of about 25 degrees, which would
 ruin a tunnel or a landscape and is exactly what you see through a windscreen.
 
+**The towers are translucent glass, and that is the whole trick.** One light
+blue, semi-transparent, with wireframe rims lighter than the faces — so a box in
+front tints the box behind it rather than hiding it, and where two overlap the
+pair goes paler than either. Nothing composites and nothing sorts by depth:
+everything is drawn as *density* into a scalar buffer and coloured once at the
+end through a single black→blue→white ramp. Two panes of the same blue stacked
+are simply a larger number than one, which is what glass does anyway, and it is
+order-independent.
+
+**A box face fills without a polygon rasteriser.** The camera looks straight
+down +z with no rotation, so a face at constant z — the front and back of an
+axis-aligned box — projects to an axis-aligned *rectangle*; and a whole batch of
+rectangles fills with no loop at all, by writing ±d at their corners into a
+difference image and running a cumulative sum down and then across. That is two
+cumsums over the panel however many towers are in shot. The four side faces are
+trapezoids and are left unfilled — perspective offsets the front and back
+rectangles from each other and the wireframe joins their corners, which is
+enough to read as a box.
+
+**The floor is behind the glass rather than added to it**, in its own buffer and
+attenuated where a box covers it. That attenuation has to be driven by
+*coverage*, not density — a pane of glass is faint but completely covers what is
+behind it, so scaling by density dimmed the grid by about a tenth and the lines
+went on marching across the towers as though painted there. It is deliberately
+not total: the grid staying faintly visible through a tower is most of what
+makes the tower read as glass.
+
 **Every line is drawn in one operation.** The obvious way to draw a few hundred
 wireframe edges is a loop with a couple of numpy calls each, which on the Pi 3
 is several hundred calls at 55–80 µs of overhead — 20 ms before a pixel is
@@ -1118,13 +1145,18 @@ because each class costs ~15 array operations whatever is in it and the two
 effects cancelled exactly. And `np.linspace` was being called once per class per
 frame to produce a fixed array of numbers, at 3.9 ms of a 45 ms frame.
 
-Together those took it from 44 ms to 23 on the wall's own hardware. What is
-given up is the summing: where two lines cross the pixel is whichever was
-written last, so `--gain` defaults above 1 to give back the glow the piling-up
-used to provide. Depth is the only shading — weight falls off with distance and
+Together those took it from 44 ms to 23 on the wall's own hardware; the glass
+added the two cumsums and put it back to 30 mean / 36 p95, which is where it
+sits — though the worst frame *improved*, 74 ms to 54, because filling costs the
+same every frame whereas the wireframe spiked whenever a tower swept the panel.
+What is given up is the summing: where two lines cross the pixel is whichever
+was written last. Depth is the only shading — weight falls off with distance and
 fades to nothing before the near plane, so nothing ever pops, and edges too
 faint to see are dropped before any work is done on them, which halved the worst
 frame because those are also the longest ones on screen.
+
+Filled towers make this one of the *densest* things in the rotation, so unlike
+the other three here it is deliberately not in megademo's `SPARSE` set.
 
 **It loops exactly.** The tower field repeats every 112 units, the camera covers
 that in a fixed time, and the sway that keeps it off rails is given exactly half
@@ -1132,7 +1164,8 @@ that frequency so the two come back into phase together.
 
 ```console
 $ python3 gibson.py --speed 26 --fov 130
-$ python3 gibson.py --no-floor --gain 1.4
+$ python3 gibson.py --fill 0                    # bare wireframe, as it started
+$ python3 gibson.py --fill 0.22 --occlude 1.0   # heavier glass, opaque to the grid
 ```
 
 ### toasters

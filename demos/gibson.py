@@ -14,6 +14,28 @@ degrees, which would ruin a tunnel or a landscape -- but it is exactly what you
 see through a windscreen, and the towers only have to be tall enough to leave
 the top of the frame to read as tall.
 
+**The towers are translucent glass, and that is the whole trick.** They are one
+light blue, they are semi-transparent, and their wireframe rims are lighter
+than their faces -- so a box in front does not hide the box behind it, it
+tints it, and where two overlap the pair goes paler than either. Nothing here
+composites and nothing sorts by depth: everything is drawn as *density* into a
+scalar buffer and coloured once at the end through a single black-blue-white
+ramp. Two panes of the same blue on top of each other are simply a larger
+number than one, which is what glass does anyway, and it is order-independent,
+so no depth sort is needed at any point.
+
+**A box face fills without a polygon rasteriser.** The camera looks straight
+down +z and has no rotation in it, so a face at constant z -- the front and the
+back of an axis-aligned box -- projects to an axis-aligned *rectangle*. And a
+whole batch of rectangles can be filled with no loop at all: each contributes
++d at two opposite corners and -d at the other two of a difference image, and
+a cumulative sum down and then across turns that sparse thing back into every
+filled rectangle at once, adding where they overlap. The cost is two cumsums
+over the panel no matter how many towers are in front of the camera. The four
+side faces are trapezoids and are left unfilled; perspective offsets the front
+and back rectangles from each other and the wireframe joins their corners,
+which is enough to read as a box.
+
 **Every line is drawn in one operation.** The obvious way to draw a few hundred
 wireframe edges is a loop with a couple of numpy calls per edge, which on the
 Pi 3 driving this wall would be several hundred calls at 55-80 microseconds of
@@ -42,10 +64,21 @@ recording because none of them is obvious from the desktop:
   - np.linspace was being called once per class per frame to produce a fixed
     array of numbers, at 3.9 ms of a 45 ms frame. It is baked in build() now.
 
-Together those took the frame from 44 ms to 23 on the wall's own hardware. The
-colour is packed into one integer per point rather than carried as three
-channels for the same reason: it makes the concatenation and the write
-singular.
+Together those took the frame from 44 ms to 23 on the wall's own hardware; the
+glass added the two cumsums and put it back to 30, which is where it sits. The
+sampler carries one scalar per point rather than a colour, for the same reason
+-- a third of the data through every concatenation and every write, and the
+ramp is applied to the finished panel instead.
+
+**The floor is behind the glass rather than added to it.** Its lines go into
+their own buffer and are attenuated where a box covers them, which is the
+difference between a grid seen through a window and a grid painted on one. That
+attenuation has to be driven by *coverage* and not by density, which was wrong
+the first time: a pane of glass is faint but it completely covers what is
+behind it, so scaling by density dimmed the grid by about a tenth and the lines
+went on marching across the towers as though painted there. It is deliberately
+not total -- the grid stays faintly visible through the towers, because that is
+most of what makes them read as glass.
 
 **Depth is the only shading.** There is no lighting model. An edge's weight
 falls off with distance, so the far end of the city is a dim haze and the tower
@@ -67,7 +100,8 @@ drifting frame clock all require.
 
 Run:  python3 gibson.py --host 127.0.0.1
       python3 gibson.py --speed 26 --fov 130
-      python3 gibson.py --no-floor --gain 1.8
+      python3 gibson.py --fill 0            # bare wireframe, as it started
+      python3 gibson.py --fill 0.22 --occlude 1.0
 """
 
 import sys
@@ -78,15 +112,20 @@ import demoscene as ds
 
 f32 = ds.f32
 
-# The neon the towers are lit in. Cyan and magenta are the film's, the green is
-# the terminal green everything else in this genre is written in, and the amber
-# is there so that a run of four towers never repeats a colour exactly.
-NEON = (
-    (90, 255, 255),
-    (255, 90, 220),
-    (110, 255, 140),
-    (255, 190, 70),
-)
+# The city is one colour, and the picture is made entirely of how much of it is
+# stacked up at a pixel. Low density is the deep blue of a single pane seen
+# edge on; the middle is the light blue the towers mostly are; the top is the
+# white the wireframe rims and the overlaps go. Nothing here is a "colour" any
+# object owns -- objects own density, and this decides what density looks like.
+GLASS = [
+    (0.00, (0, 0, 0)),
+    (0.05, (6, 20, 58)),
+    (0.16, (24, 78, 158)),
+    (0.32, (72, 152, 226)),
+    (0.55, (135, 200, 248)),
+    (0.80, (200, 232, 255)),
+    (1.00, (255, 255, 255)),
+]
 
 LANES = (-9.5, -4.4, 4.4, 9.5)      # tower centres; the gap is the corridor
 SLOTS = 14                          # depth positions before the field repeats
@@ -110,13 +149,26 @@ def add_arguments(ap):
     ap.add_argument("--floor", dest="floor", action="store_true", default=True)
     ap.add_argument("--no-floor", dest="floor", action="store_false",
                     help="drop the ground grid and fly through towers alone")
-    ap.add_argument("--gain", type=float, default=1.35,
-                    help="overall brightness of the lines. Above 1 because the "
-                         "earlier additive version got part of its glow from "
-                         "points piling up on a pixel, and writing rather than "
-                         "summing gives that back only if it is asked for")
+    ap.add_argument("--gain", type=float, default=1.0,
+                    help="overall density, which is what brightness is here: "
+                         "everything is drawn as how much glass is stacked at "
+                         "a pixel and coloured through one ramp at the end")
+    ap.add_argument("--fill", type=float, default=0.14,
+                    help="how solid the glass is, 0..1. 0 leaves bare "
+                         "wireframe; much above 0.25 and the stack of towers "
+                         "down the middle saturates to white and stops showing "
+                         "what is behind it, which is the whole effect")
+    ap.add_argument("--occlude", type=float, default=0.95,
+                    help="how much of the floor grid a box hides, 0..1. Not 1: "
+                         "the grid staying faintly visible through the glass is "
+                         "what makes it read as glass rather than as a hole")
+    ap.add_argument("--cover", type=float, default=14.0,
+                    help="exposure turning a face's density into how much it "
+                         "hides. High enough that any tower not still in the "
+                         "fog counts as solid for occlusion while staying "
+                         "translucent to look at")
     ap.add_argument("--seed", type=int, default=7,
-                    help="the city's layout: heights, widths and colours")
+                    help="the city's layout: heights and widths")
 
 
 def build(args):
@@ -147,7 +199,6 @@ def build(args):
     # Heights are drawn from a squared distribution so that most of the city is
     # low and a few towers are tall. A uniform height gives a suburb.
     t_h = (2.0 + 6.0 * rng.random(n) ** 2).astype(f32)
-    t_col = np.array(NEON, f32)[rng.integers(0, len(NEON), n)]
 
     # The eight corners, as offsets from the tower's centre column.
     #   0-3 the base, 4-7 the top, going round in the same order
@@ -194,9 +245,27 @@ def build(args):
     buckets = [(14.0, 16), (44.0, 48), (120.0, 128), (1e9, max(S, 340))]
     bucket_ss = [np.linspace(0.0, 1.0, count, dtype=f32)[None, :]
                  for _, count in buckets]
-    # One packed RGB integer per pixel, not three planes. See splat().
-    acc = np.zeros(H * W, np.uint32)
+    # Everything is drawn as *density* into three scalar buffers and coloured
+    # once at the end through one ramp. That is what makes the glass work: two
+    # panes of the same blue over each other are simply denser than one, so
+    # boxes behind show through boxes in front and the overlaps go pale on
+    # their own, with no compositing and no sorting by depth.
+    #
+    #   fill  the box faces, spread with a difference image (see render)
+    #   edge  the wireframe, written by the sampler
+    #   floor the ground grid, kept apart so the boxes can occlude it
+    diff = np.zeros((H + 1, W + 1), f32)      # scratch for the box fills
+    edge = np.zeros(H * W, f32)
+    floor_buf = np.zeros(H * W, f32)
+    idx = np.zeros((H, W), np.uint8)
     out = np.zeros((H, W, 3), np.uint8)
+
+    # One ramp, black through the blues to white. The fills land low on it and
+    # come out light blue; an edge lands high and comes out nearly white, which
+    # is the lighter rim the glass needs to read as an object rather than a
+    # stain. Anywhere two things overlap the density adds and the colour walks
+    # further up the ramp by itself.
+    pal = ds.gradient(GLASS, 256, dtype=np.uint8)
 
     # The sway is half the field's own frequency, so the two come back into
     # phase together and the whole flight is periodic. See the docstring.
@@ -235,12 +304,15 @@ def build(args):
         return (xa + dx * t0, ya + dy * t0,
                 xa + dx * t1, ya + dy * t1, keep)
 
-    def splat(xa, ya, xb, yb, weight, colour):
-        """Accumulate a batch of lines. weight is per edge, colour per edge.
+    def splat(xa, ya, xb, yb, weight, is_box):
+        """Draw a batch of lines as density. weight and is_box are per edge.
 
-        Returns False if nothing was drawn, so the caller can blank the frame
-        rather than leave the previous one on the wall.
+        Box edges land in `edge` and floor lines in `floor_buf`, kept apart so
+        that render() can let the boxes occlude the grid instead of the two
+        simply adding up. Returns False if nothing was drawn.
         """
+        edge[:] = 0.0
+        floor_buf[:] = 0.0
         if xa.size == 0:
             return False
         # Faintness first, before anything expensive touches these. The edges
@@ -253,13 +325,13 @@ def build(args):
         if not alive.any():
             return False
         xa, ya, xb, yb = xa[alive], ya[alive], xb[alive], yb[alive]
-        weight, colour = weight[alive], colour[alive]
+        weight, is_box = weight[alive], is_box[alive]
 
         xa, ya, xb, yb, keep = clip_to_frame(xa, ya, xb, yb)
         if not keep.any():
             return False
         xa, ya, xb, yb = xa[keep], ya[keep], xb[keep], yb[keep]
-        weight, colour = weight[keep], colour[keep]
+        weight, is_box = weight[keep], is_box[keep]
         length = np.maximum(np.abs(xb - xa), np.abs(yb - ya))
 
         # Each class produces a cloud of points; they are concatenated and
@@ -279,23 +351,13 @@ def build(args):
         # now whichever was written last rather than the sum of both. Points
         # are laid down shortest class first, so a long near edge overwrites a
         # short far one, which is the right way round anyway.
-        # The colour a pixel of this edge will be, worked out once per *edge*
-        # and packed into a single integer. Doing it here costs a handful of
-        # operations over a few hundred edges; carrying three separate channel
-        # arrays through the sampler instead costs three passes over a cloud of
-        # tens of thousands of points, three concatenations and three indexed
-        # writes. One packed integer per point makes all of that singular.
         #
-        # No division by the sample count: writing, unlike summing, puts the
-        # value on the pixel once however many points landed there. Scaling by
-        # length/count is right for np.bincount and halves the brightness here,
-        # which is exactly what it did before this was noticed.
-        lit = np.clip(weight[:, None] * colour, 0.0, 255.0).astype(np.uint32)
-        packed = (lit[:, 0] << 16) | (lit[:, 1] << 8) | lit[:, 2]
-
+        # One scalar per point, not a colour: everything is density now and the
+        # ramp is applied once at the end, so the sampler carries a third as
+        # much data as it did when it was carrying packed RGB.
         dx = xb - xa
         dy = yb - ya
-        flats, packs = [], []
+        flats, wgts, boxes = [], [], []
         lo = 0.0
         for (hi, count), ss in zip(buckets, bucket_ss):
             sel = (length > lo) & (length <= hi) if hi < 1e8 else (length > lo)
@@ -310,19 +372,24 @@ def build(args):
             # the whole cloud rather than two per class.
             flats.append((ys.astype(np.int32) * W
                           + xs.astype(np.int32)).reshape(-1))
-            packs.append(np.broadcast_to(packed[sel][:, None],
+            wgts.append(np.broadcast_to(weight[sel][:, None],
+                                        xs.shape).reshape(-1))
+            boxes.append(np.broadcast_to(is_box[sel][:, None],
                                          xs.shape).reshape(-1))
         if not flats:
             return False
         flat = np.clip(np.concatenate(flats), 0, H * W - 1)
-        acc[:] = 0
-        acc[flat] = np.concatenate(packs)
+        w = np.concatenate(wgts)
+        b = np.concatenate(boxes)
+        edge[flat[b]] = w[b]
+        floor_buf[flat[~b]] = w[~b]
         return True
 
     def render(t, frame):
         cam_z = float(args.speed) * t
         sway = float(np.sin(2.0 * np.pi * sway_hz * t)) * 1.6
-        edges = []                       # (xa, ya, xb, yb, weight, colour)
+        edges = []                       # (xa, ya, xb, yb, weight, is_box)
+        faces = None                     # (x0, x1, y0, y1, density) rectangles
 
         # --------------------------------------------------------- the towers
         # Wrap each slot into the window ahead of the camera. Doing it with a
@@ -336,7 +403,6 @@ def build(args):
             hw = t_hw[live]
             hd = t_hd[live]
             hh = t_h[live]
-            col = t_col[live]
 
             # corners: (m, 8)
             bx = xc[:, None] + ox[None, :] * hw[:, None]
@@ -356,15 +422,42 @@ def build(args):
             fade_far = np.clip((far - zc) / (far * 0.32), 0.0, 1.0)
             fade_near = np.clip((zc - near) / 7.0, 0.0, 1.0)
             bright = (fade_far * fade_near / (0.35 + zc * 0.055)).astype(f32)
+            m = px.shape[0]
 
             edges.append((px[:, E_A].reshape(-1), py[:, E_A].reshape(-1),
                           px[:, E_B].reshape(-1), py[:, E_B].reshape(-1),
                           np.repeat(bright, n_edge) * f32(args.gain),
-                          np.repeat(col, n_edge, axis=0)))
+                          np.ones(m * n_edge, bool)))
+
+            # ------------------------------------------------- the glass itself
+            # The front and back faces of a box sit at a constant z, and this
+            # camera has no rotation in it -- so each one projects to an
+            # axis-aligned *rectangle*. That is the whole reason the fill is
+            # affordable: a rectangle needs no polygon rasteriser, and a batch
+            # of them needs no loop at all (see the difference image below).
+            #
+            # Only those two faces are filled. The four sides are trapezoids
+            # and would need real scan conversion for very little: the pair of
+            # rectangles is offset on screen, because perspective pulls the
+            # further face towards the centre, and the wireframe joins their
+            # corners. What you read is a box.
+            zf = np.maximum(zc - hd, near * 0.6)
+            zb = zc + hd
+            fx0, fy_top = project(xc - hw, hh, zf)
+            fx1, fy_bot = project(xc + hw, np.zeros_like(hh), zf)
+            bx0, by_top = project(xc - hw, hh, zb)
+            bx1, by_bot = project(xc + hw, np.zeros_like(hh), zb)
+            # The back face is dimmer than the front, which is what stops a box
+            # reading as a flat card: you are looking through two panes and the
+            # far one has the near one's glass in front of it.
+            dens = bright * f32(args.fill) * f32(args.gain)
+            faces = (np.concatenate([fx0, bx0]), np.concatenate([fx1, bx1]),
+                     np.concatenate([fy_top, by_top]),
+                     np.concatenate([fy_bot, by_bot]),
+                     np.concatenate([dens, dens * f32(0.6)]))
 
         # ---------------------------------------------------------- the floor
         if args.floor:
-            grid_col = np.array((40, 130, 150), f32)
             # Lines running away from the camera, and cross ties sliding
             # towards it. The ties are placed relative to the camera so they
             # appear to move rather than being fixed in the world and popping.
@@ -373,8 +466,8 @@ def build(args):
                              np.full(n_long, zz[0], f32))
             bx2, by2 = project(grid_x - sway, np.zeros(n_long, f32),
                                np.full(n_long, zz[1], f32))
-            edges.append((ax, ay, bx2, by2, np.full(n_long, 0.55, f32),
-                          np.broadcast_to(grid_col, (n_long, 3))))
+            edges.append((ax, ay, bx2, by2, np.full(n_long, 0.30, f32),
+                          np.zeros(n_long, bool)))
 
             k = np.arange(1, n_cross + 1, dtype=f32)
             zt = k * (far - near) / (n_cross + 1) + near
@@ -385,8 +478,8 @@ def build(args):
             bx2, by2 = project(e - sway, np.zeros(n_cross, f32), zt)
             edges.append((ax, ay, bx2, by2,
                           (np.clip((far - zt) / (far * 0.5), 0.0, 1.0)
-                           * 0.5).astype(f32),
-                          np.broadcast_to(grid_col, (n_cross, 3))))
+                           * 0.28).astype(f32),
+                          np.zeros(n_cross, bool)))
 
         # Towers and floor go through the sampler together, as one batch. They
         # are different objects but they are the same *work*, and splitting
@@ -397,13 +490,64 @@ def build(args):
             out[:] = 0
             return out
 
+        # ------------------------------------------------------- the box fills
+        # A batch of axis-aligned rectangles, drawn without touching a single
+        # one of them individually. Each rectangle contributes +d at its top
+        # left and bottom right corners and -d at the other two; running a
+        # cumulative sum down and then across turns that sparse difference
+        # image back into the filled rectangles, all of them at once, and
+        # overlapping boxes add up on the way -- which is exactly the stacking
+        # the glass needs. The cost is two cumsums over the panel regardless of
+        # how many boxes are in front of the camera.
+        diff[:] = 0.0
+        if faces is not None:
+            rx0, rx1, ry0, ry1, rd = faces
+            # Clipping the corners clips the rectangle: a face hanging off the
+            # side contributes only the part that is on the panel, and a face
+            # entirely outside collapses to a zero-width one that adds and
+            # subtracts the same value at the same place.
+            #
+            # Ordered first. A tower shorter than the camera is eye height has
+            # its "top" projecting *below* its base, and an inverted rectangle
+            # does not merely draw upside down -- it flips the signs of the
+            # difference image and lays negative density inside itself and
+            # positive density across everything to its right.
+            lo_x = np.clip(np.minimum(rx0, rx1), 0, W).astype(np.int32)
+            hi_x = np.clip(np.maximum(rx0, rx1), 0, W).astype(np.int32)
+            lo_y = np.clip(np.minimum(ry0, ry1), 0, H).astype(np.int32)
+            hi_y = np.clip(np.maximum(ry0, ry1), 0, H).astype(np.int32)
+            rx0, rx1, ry0, ry1 = lo_x, hi_x, lo_y, hi_y
+            np.add.at(diff, (ry0, rx0), rd)
+            np.add.at(diff, (ry1, rx1), rd)
+            np.add.at(diff, (ry0, rx1), -rd)
+            np.add.at(diff, (ry1, rx0), -rd)
+            np.cumsum(diff, axis=0, out=diff)
+            np.cumsum(diff, axis=1, out=diff)
+        fill = diff[:H, :W].reshape(-1)
+
         # ------------------------------------------------------------- output
-        # Unpack the three channels back out. Already clamped to 0..255 when
-        # they were packed, so there is no clipping and no palette lookup here.
-        plane = acc.reshape(H, W)
-        np.copyto(out[:, :, 0], plane >> 16, casting="unsafe")
-        np.copyto(out[:, :, 1], (plane >> 8) & 0xFF, casting="unsafe")
-        np.copyto(out[:, :, 2], plane & 0xFF, casting="unsafe")
+        # Glass first, then the grid *behind* it. The floor is attenuated where
+        # the boxes are rather than added to them, which is the difference
+        # between a grid seen through a window and a grid painted on one. It is
+        # not fully hidden: these towers are translucent, so the lines stay
+        # faintly visible through them, which is most of what sells the look.
+        #
+        # Coverage is not the same thing as density and using density here was
+        # wrong the first time: a pane of glass is faint but it *completely*
+        # covers what is behind it, so attenuating by density dimmed the grid
+        # by about a tenth and the lines went on marching across the towers as
+        # though painted on. `--cover` is the exposure that turns a face's
+        # density back into "there is something in the way here", saturating
+        # for any tower that is not still out in the fog -- which is the right
+        # exception, because a tower in the fog genuinely should not hide much.
+        cover = np.clip(fill * f32(args.cover), 0.0, 1.0)
+        glass = fill + edge
+        np.clip(glass, 0.0, 1.0, out=glass)
+        glass += floor_buf * (1.0 - f32(args.occlude) * cover)
+        np.clip(glass, 0.0, 1.0, out=glass)
+        np.multiply(glass, 255.0, out=glass)
+        np.copyto(idx.reshape(-1), glass, casting="unsafe")
+        np.take(pal, idx, axis=0, out=out)
         return out
 
     return render
