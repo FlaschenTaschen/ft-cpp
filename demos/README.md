@@ -1098,20 +1098,33 @@ ruin a tunnel or a landscape and is exactly what you see through a windscreen.
 wireframe edges is a loop with a couple of numpy calls each, which on the Pi 3
 is several hundred calls at 55–80 µs of overhead — 20 ms before a pixel is
 written. Instead all edges are projected as arrays, clipped to the frame with a
-vectorised Liang-Barsky, sorted into length classes, sampled into one flat point
-cloud and accumulated with three `np.bincount` calls. Cost is set by the size of
-the cloud, not by how many objects are in the scene.
+vectorised Liang-Barsky, sorted into four length classes, sampled into one flat
+point cloud and written in a single indexed assignment. Cost is set by the size
+of the cloud, not by how many objects are in the scene.
 
 The length classes matter: one fixed sample count cannot serve both a twelve
 pixel tower edge and a floor line running the width of the panel, and the first
 version drew the floor as a dotted grid because of it. Clipping first is what
 bounds the longest class by the panel rather than by the geometry.
 
-Accumulating rather than assigning also buys the look for free — where edges
-cross, or where a distant tower's four verticals land in one column, the weights
-add and the pixel is brighter, which is how a bundle of receding lines should
-behave. Depth is the only shading: weight falls off with distance and fades to
-nothing before the near plane, so nothing ever pops.
+**The shape of this file is what the Pi measured, not what read well**, and
+three plausible ideas were wrong in ways a desktop hides. It began accumulating
+with `np.bincount`, which sums where points coincide and makes crossing lines
+glow for free — on the Pi that is 8.5–10 ms for three calls *however few points
+go in*, because the price is the 20480-bin output and the float64 it insists
+on; three indexed assignments over the same data are 1–2 ms. Making the length
+classes finer halved the point cloud and changed the frame time by nothing,
+because each class costs ~15 array operations whatever is in it and the two
+effects cancelled exactly. And `np.linspace` was being called once per class per
+frame to produce a fixed array of numbers, at 3.9 ms of a 45 ms frame.
+
+Together those took it from 44 ms to 23 on the wall's own hardware. What is
+given up is the summing: where two lines cross the pixel is whichever was
+written last, so `--gain` defaults above 1 to give back the glow the piling-up
+used to provide. Depth is the only shading — weight falls off with distance and
+fades to nothing before the near plane, so nothing ever pops, and edges too
+faint to see are dropped before any work is done on them, which halved the worst
+frame because those are also the longest ones on screen.
 
 **It loops exactly.** The tower field repeats every 112 units, the camera covers
 that in a fixed time, and the sway that keeps it off rails is given exactly half
