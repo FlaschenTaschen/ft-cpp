@@ -997,6 +997,168 @@ $ python3 esper.py --cycle 40 --speed 1.2       # the short version
 $ python3 esper.py --no-commands                # just the photograph moving
 ```
 
+### wardial
+
+![wardial](screenshots/wardial.png)
+
+A war dialer working through a San Francisco exchange: a log of what each
+number did, a map of the exchange filling in as it goes, and the call progress
+audio along the bottom. WarGames put one on screen in 1983 without naming it;
+by the time ToneLoc was being passed around on floppies it had a config file
+and a scan log, and this is that screen.
+
+**Every number is the reserved fictional block, and that is also the joke.**
+The scan runs 555-0100 to 555-0199, the range the numbering plan sets aside so
+that films can put a number on screen without ringing a stranger — which is
+exactly one hundred numbers, which is exactly a 10x10 map. And 555 was not
+chosen arbitrarily by the film industry either: in the days of two-letter
+exchange names it was KLondike 5, which is what the panel calls it. On a wall
+in a public workshop the safe choice and the authentic one turned out to be the
+same choice. The area code is 415, with `--area 628` for the overlay.
+
+**The whole scan is a schedule.** `build()` draws every attempt's outcome and
+duration from a seeded generator and sorts them into one list; `render()`
+binary searches it and carries no state between frames. The log is four baked
+strips copied into place and the map is one `np.take` through a baked index
+image, the way `wopr` paints its lamp banks.
+
+**The trace is call progress, not audio.** 320 columns cannot represent 1600 Hz
+and pretending otherwise draws noise, so it is an envelope — signal level
+against about a second and a half of history. What that does carry honestly is
+cadence, which is the part anyone recognises: the stutter of the dial, two-on
+four-off ringing, the half-second chop of a busy signal, and the flat unbroken
+wall of a carrier.
+
+Outcome timings differ, so the loop is seed-dependent: measured over 39 seeds
+it runs 41.2 to 44.9 s including the hold, which fits a 45 s slot with the
+exchange swept and totted up rather than cut off half way down the map.
+
+```console
+$ python3 wardial.py --area 628 --cps 3.5
+$ python3 wardial.py --seed 7 --order serial --no-trace
+```
+
+### ansi
+
+![ansi](screenshots/ansi.png)
+
+A BBS answering, and drawing its welcome screen one character at a time. Before
+a page arrived all at once, a screen arrived at the speed of the line and you
+watched it happen — the box border creeping across the top, the sysop's name
+appearing letter by letter. That reveal is the demo; everything else exists to
+give it something worth revealing.
+
+**The panel is a text screen, exactly.** 320x64 divides into 40 columns and 8
+rows of 8x8 cells with nothing left over. Glyphs are 1-bit the way a CP437 ROM
+font was, thresholded after rendering, because an antialiased edge on an LED
+wall is a smudge and was not something a character generator could produce. The
+font size is *measured* rather than assumed — a nominal 10 px face is not 10 px
+of capital, and it differs between DejaVu, Liberation and Pillow's fallback, so
+sizes are walked down until the capitals actually fit the cell. Picking a
+number instead shaved the bottom row off every E on one machine.
+
+**Box-drawing and shading characters are computed, not rendered.** A font may
+not have a double-line corner and the fallback certainly does not, so asking
+Pillow for one is a working panel here and a screen of empty rectangles on the
+Pi. But those glyphs are geometry — two rails at rows 2 and 5, two at columns 2
+and 5, and which directions the junction opens into — so they are built from
+that description and are identical everywhere.
+
+**Foreground colour only.** Real ANSI art leans on background colours; on an
+LED wall a lit background is expensive light that washes out the type sitting
+on it, so the shading is done with block characters in colour on black. The
+palette is the sixteen CGA colours at their real values, including a blue too
+dark to read, which is why nobody put text in it.
+
+**The reveal is two slice copies.** Cells arrive in reading order, so what has
+been sent is always "every row above this one, plus a prefix of this row" — two
+rectangles, no mask and no compositing. 300 baud is a deliberate lie: at the
+1200 and 2400 these boards ran, a 40-column screen paints in under two seconds
+and the reveal is over before you look up.
+
+```console
+$ python3 ansi.py --cps 80        # 1200 baud, if you want the truth
+$ python3 ansi.py --no-cursor --ring 0.5
+```
+
+### gibson
+
+![gibson](screenshots/gibson.png)
+
+Flying through the Gibson: glowing wireframe towers rushing past on both sides,
+a grid floor running to a vanishing point, no horizon to speak of. Hackers
+(1995) had to show what being inside a mainframe looks like and chose a night
+flight over a city — a completely fictional depiction of a computer, and the
+most durable image the genre produced, because it has speed in it.
+
+A 5:1 letterbox has a vertical field of view of about 25 degrees, which would
+ruin a tunnel or a landscape and is exactly what you see through a windscreen.
+
+**Every line is drawn in one operation.** The obvious way to draw a few hundred
+wireframe edges is a loop with a couple of numpy calls each, which on the Pi 3
+is several hundred calls at 55–80 µs of overhead — 20 ms before a pixel is
+written. Instead all edges are projected as arrays, clipped to the frame with a
+vectorised Liang-Barsky, sorted into length classes, sampled into one flat point
+cloud and accumulated with three `np.bincount` calls. Cost is set by the size of
+the cloud, not by how many objects are in the scene.
+
+The length classes matter: one fixed sample count cannot serve both a twelve
+pixel tower edge and a floor line running the width of the panel, and the first
+version drew the floor as a dotted grid because of it. Clipping first is what
+bounds the longest class by the panel rather than by the geometry.
+
+Accumulating rather than assigning also buys the look for free — where edges
+cross, or where a distant tower's four verticals land in one column, the weights
+add and the pixel is brighter, which is how a bundle of receding lines should
+behave. Depth is the only shading: weight falls off with distance and fades to
+nothing before the near plane, so nothing ever pops.
+
+**It loops exactly.** The tower field repeats every 112 units, the camera covers
+that in a fixed time, and the sway that keeps it off rails is given exactly half
+that frequency so the two come back into phase together.
+
+```console
+$ python3 gibson.py --speed 26 --fov 130
+$ python3 gibson.py --no-floor --gain 1.4
+```
+
+### toasters
+
+![toasters](screenshots/toasters.png)
+
+After Dark's flying toasters, 1989. Not from a hacker film — from the machines
+the films were about — and on a wall in a workshop it is the most immediately
+recognised thing in the rotation.
+
+**The angle is changed on purpose.** The original flies at roughly 45 degrees,
+which on a 320x64 panel puts a toaster on screen for a second and a half and
+reads as rain. The slope here is exactly (H + sprite height) / (W + sprite
+width) — the panel's own diagonal, about 1 in 4 — so a toaster enters at the top
+right, crosses the whole panel and leaves at the bottom left. That is the shape
+of the original gesture even though it is not the original angle.
+
+**That slope is also what makes it loop.** A sprite covers one panel-width
+horizontally in the same time it covers one panel-height vertically, so both
+wrap together and the field returns to its starting arrangement every
+`--period` seconds; speeds are whole multiples of one crossing per period and
+the flap rate is a whole number of beats in it, so the loop point is invisible.
+
+**The art is text**, a character grid with a palette beside it, so it diffs
+legibly and a row of the wrong length is caught by an assertion at build rather
+than by a smear on the wall. Four wing drawings are played 0-1-2-3-2-1, so the
+downstroke and upstroke are the same art seen twice. A frame is a black fill and
+one masked copy per sprite — nothing is scaled or rotated at run time.
+
+Two things were drawn wrong first and are worth recording: rounding both ends of
+the toast turns a slice of bread into a circle, which on black reads as an
+orange; and seating the body high enough to hide the wing shoulder also hides
+the whole downstroke, so the wings disappear for two frames in six.
+
+```console
+$ python3 toasters.py --toasters 10 --toast 6 --period 22
+$ python3 toasters.py --flaps 2
+```
+
 ### chladni
 
 ![chladni](screenshots/chladni.png)
