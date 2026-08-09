@@ -1507,6 +1507,84 @@ $ python3 twister.py --speed -0.35 --sway 0 --breathe 0    # the plain 1990 vers
 $ python3 twister.py --faces 8 --radius 0.45        # nearly a cylinder
 ```
 
+### scope
+
+![scope](screenshots/scope.png)
+
+A bench oscilloscope: the 10x8 graticule, a trace sweeping across in a second
+and fading behind itself, a trigger that mostly holds, and every half minute
+the timebase drops out and it flips to X-Y for Lissajous figures. 320x64 is
+very nearly a scope screen with its graticule stretched out, which is the
+whole reason this works on the wall.
+
+**The detail that sells it is that the beam moves at constant speed along the
+trace, so a pixel's brightness is inversely proportional to how fast the spot
+crossed it.** Peaks and flat tops glow; steep edges go thin and dim. It costs
+nothing, because it is not a shading pass at all: the path is cut into
+equal-*time* segments each carrying the same charge, and each segment's charge
+is split between the pixels it crosses and accumulated with `bincount`. Three
+sub-samples a pixel land on top of each other at a crest and spread over ten
+rows at a fast zero crossing. Measured on the AM carrier at columns of
+identical phosphor age, a crest reaches 213 of 255 and a crossing 114 — the
+histogram *is* the physics, and nothing anywhere computes dy/dx. A trace of
+even brightness is what this looks like when it silently is not working.
+
+Persistence is one float32 buffer decayed as a half-life in *seconds*
+(`--persist`, default 0.42), so the tail is the same length in wall time at 8
+fps as at 30 — the rule `laser.py` follows and for the same reason. At the
+default the trace has faded to about a fifth by the time the beam has crossed,
+which is what makes a sweep read as a sweep rather than as a plotted curve.
+The buffer is carried in palette-index units rather than 0..1 and mapped
+through a P31 green, P3 amber or P11 storage-blue ramp; the graticule is a
+baked static layer composited in that same index space, so it costs one uint8
+maximum a frame and never changes.
+
+Signals are baked once as 16k-sample tables, each rolled so that column zero
+is a rising crossing of the trigger level. That roll *is* the trigger, and it
+is why a repetitive waveform stands dead still with no state kept anywhere.
+Not everything locks. The decaying exponential creeps right about ten pixels a
+second, the way a bench scope does when the trigger is a hair off, and the
+previous sweep is still fading a few pixels behind it; noise has nothing to
+lock onto and jumps somewhere new every sweep. Dwells are quantised to whole
+sweeps, so the waveform never changes half way across a trace.
+
+X-Y is the moment worth pacing around, so it comes round twice in the 70 s
+cycle and takes a different quarter of the ratio list each time. X runs at a
+wider volts/division than Y, which is a real setting and the only way a
+Lissajous figure uses a panel five times wider than it is tall. Each ratio is
+detuned by a few hundredths so the figure precesses instead of standing still,
+and the detuning has to *shrink* as the ratio gets busier: a 5:4 precessing as
+fast as a 1:1 sweeps its whole envelope inside one phosphor half-life and
+fills the panel with solid green. Every mode change is preceded by one dead
+sweep with the beam off — cutting straight from a trace to a Lissajous with
+both still lit reads as a fault rather than as a knob being turned.
+
+The furniture is deliberately thin: s/div and V/div in the same baked 3x5
+pixel font the readouts elsewhere use, along the strip between the last
+division line and the border, plus a three pixel trigger-level arrowhead on
+the left edge. Both are drawn only where the trace provably cannot reach them,
+so below 60 rows they disappear rather than printing type through the signal.
+A mode caption and a trigger-state legend were both tried and cut: 64 rows do
+not have the room, and the left-hand readout already says `X-Y` when it is in
+X-Y.
+
+It runs in about 5.8 ms a frame on the wall's Pi 3, which is under-voltage
+throttled to 600 MHz. Almost all of what is left is the palette gather, and
+that is done as one packed 32-bit word a pixel into an RGBA frame whose first
+three channels are handed back — half the cost of a row gather out of a
+(256, 3) palette on that machine. The other half of the saving is that
+sampling three points a pixel makes nearly every segment shorter than a row,
+so the machinery for walking a vertical edge only runs on the frames that
+contain one.
+
+```console
+$ python3 scope.py --phosphor amber --timebase 0.05
+$ python3 scope.py --phosphor blue --persist 1.6        # long-persistence tube
+$ python3 scope.py --signals square,burst --dwell 12
+$ python3 scope.py --xy-dwell 40 --dwell 3              # mostly Lissajous
+$ python3 scope.py --no-readout --beam 0.7              # just the trace
+```
+
 ## demoscene.py
 
 The shared part. Each demo parses the usual options, precomputes what it can,
