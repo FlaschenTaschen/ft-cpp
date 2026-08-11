@@ -39,6 +39,12 @@ import sys
 import tempfile
 import time
 
+# The installation's own address, which three products here fetch for. Kept in
+# demos/site.json rather than written out once per product; see ftsite.py. It
+# imports nothing but the standard library, so this stays a cheap import and
+# load() still touches no network module.
+import ftsite
+
 CACHE_DIR = os.environ.get(
     "FT_DATA_CACHE", os.path.expanduser("~/.cache/ftdata"))
 
@@ -937,6 +943,278 @@ for _st in [CURRENT_STATION] + [s for s in
 
 
 # --------------------------------------------------------------------------
+# NDBC buoy observations -- what the ocean is actually doing, as opposed to
+# what the harmonic fit above says it will do. swell.py draws these.
+#
+# Every product above this line is a *prediction* served as JSON. This one is a
+# measurement served as fixed-width text by a machine that has been publishing
+# the same format since before JSON, and both of those differences matter.
+#
+# The file is newest row first, which is the good luck this section is built
+# on: the last day of a buoy's life is the first sixteen kilobytes of a file
+# that runs to six hundred, so a ranged GET takes the part we want and leaves
+# the rest on the server. NDBC serve these off CloudFront and honour
+# `Range:` with a 206; a server that ignored it would answer 200 with the whole
+# file and the parse below would still be right, just dearer. That is the only
+# reason this is safe to do at a ten-minute cadence over shop wifi.
+#
+# `MM` means missing and it is *common*: a buoy with a dead wave sensor keeps
+# reporting wind and water temperature for months, and the sample this was
+# written against had WVHT on one row, WTMP on the next and neither on the one
+# after. So nothing here assumes a row is complete. Each headline value is
+# taken from the newest row that actually has it, and it carries the time of
+# *that* row, because "1.9 m" and "1.9 m, six hours ago" are different claims
+# and only one of them is worth animating.
+#
+# Two files, because they answer different questions. `.txt` is the ten-minute
+# standard meteorological record -- one significant wave height, one dominant
+# period, one mean direction, which is the sea summarised as though it were a
+# single wave. `.spec` is the directional spectral summary, and it splits that
+# into the swell and the windsea with a height, a period and a direction each.
+# That split is the single most useful thing the data says: 1.9 m at 9 s out of
+# the northwest with a 0.4 m windsea on top is a clean groundswell, and the
+# same 1.9 m as 1.3 m of swell under 1.4 m of 4-second slop is a completely
+# different afternoon in a boat. Both files are parsed the same way, off their
+# own header line rather than off a hardcoded column order, so a column added
+# at the end of either does not silently shift everything after it.
+# --------------------------------------------------------------------------
+
+NDBC_REALTIME = "https://www.ndbc.noaa.gov/data/realtime2/"
+
+# An hour. The buoy reports every ten minutes, so a record that has not been
+# refreshed in six cycles means the fetcher or the network is down rather than
+# that the sea has stopped, and the panel should say so. Note this is the age of
+# the *fetch*; the age of the newest observation inside it is a separate number
+# and swell.py shows that one too -- see NDBC_HOURS.
+NDBC_TTL = 3600
+
+# The buoy's own cadence, and no faster. NDBC ask for a descriptive User-Agent
+# and for restraint; `get()` already sends the former and this is the latter.
+NDBC_INTERVAL = 600
+
+# How much history to keep. A day is what the demo plots; the extra two hours
+# are so a 24-hour window still fills after the fetcher has missed a pass or
+# two, and so the newest-row search has somewhere to look when a sensor has
+# been quiet for a while.
+NDBC_HOURS = 26
+NDBC_STEP = 600.0
+
+# Ranged-GET sizes. A standard-meteorological row is about a hundred bytes and
+# a spectral row about seventy, so 64 kB is four days of the first and 8 kB is
+# a day and a half of the second -- generous by a factor of three either way,
+# and still a fortieth of what fetching the whole file would cost.
+NDBC_BYTES = 65536
+NDBC_SPEC_BYTES = 8192
+
+# Station names. NDBC publish these in a 400 kB table of every buoy on the
+# planet, which is not worth a request to put four words on a wall, so the
+# handful anybody here would point this at are written down and everything else
+# falls back to its number.
+NDBC_NAMES = {
+    "46026": "SF 18NM W", "46237": "SF BAR", "46013": "BODEGA BAY",
+    "46012": "HALF MOON BAY", "46042": "MONTEREY", "46059": "W CALIFORNIA",
+    "46022": "EEL RIVER", "46028": "CAPE SAN MARTIN", "46214": "POINT REYES",
+}
+
+# The compass points the spectral file uses for direction, in the order that
+# makes the index the bearing. `.spec` gives a point and not a number -- the
+# directional estimate is not worth a degree -- so this is the whole conversion.
+NDBC_POINTS = ("N NNE NE ENE E ESE SE SSE "
+               "S SSW SW WSW W WNW NW NNW").split()
+
+
+def _ndbc_get(station, ext, nbytes):
+    """The first `nbytes` of a realtime2 file, as text.
+
+    Ranged, because these files are newest-first and we want the top of one.
+    Falls back to whatever the server sends: a 200 with the lot is a slow
+    success, not a failure, and the parser stops at the cutoff either way.
+    """
+    import urllib.request
+    url = NDBC_REALTIME + station + ext
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "flaschen-taschen-ftdata/1 (+wall display)",
+        "Range": "bytes=0-%d" % (nbytes - 1)})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        raw = resp.read(nbytes)
+    return raw.decode("ascii", "replace"), url
+
+
+def _ndbc_num(s):
+    """A column as a float, or None for NDBC's `MM` and anything unparseable."""
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ndbc_rows(text, cutoff):
+    """Parse a realtime2 file into (epoch, {column: text}) newest first.
+
+    Stops at the first row older than `cutoff`, which is what keeps this cheap:
+    the rows are in descending time order, so the loop touches a day of them and
+    returns. A truncated last line -- the guaranteed consequence of a ranged GET
+    landing mid-row -- has the wrong field count and is dropped by the same test
+    that drops a corrupt one.
+
+    Column names come from the file's own `#YY MM DD ...` header rather than
+    from a list here. The two files this parses have different columns, the
+    order has changed once in NDBC's history, and reading the header costs one
+    line.
+    """
+    import calendar
+    names, out = None, []
+    for line in text.splitlines():
+        if line.startswith("#"):
+            if names is None:
+                names = line[1:].split()
+            continue
+        f = line.split()
+        if names is None or len(f) != len(names) or len(f) < 6:
+            continue
+        try:
+            t = float(calendar.timegm(
+                (int(f[0]), int(f[1]), int(f[2]), int(f[3]), int(f[4]), 0,
+                 0, 1, -1)))
+        except ValueError:
+            continue
+        if t < cutoff:
+            break
+        out.append((t, dict(zip(names[5:], f[5:]))))
+    return out
+
+
+def _ndbc_latest(rows, key):
+    """The newest row that actually has `key`, as (value, time), or (None, None).
+
+    The reason this is a search and not `rows[0][key]`: a buoy whose wave sensor
+    has failed still reports wind and pressure every ten minutes, and the newest
+    row is then a row with `MM` where the interesting number goes. Taking the
+    newest *present* value and carrying its own timestamp is the only way to
+    show one without implying the other is that fresh.
+    """
+    for t, r in rows:
+        v = _ndbc_num(r.get(key))
+        if v is not None:
+            return v, t
+    return None, None
+
+
+def _ndbc_train(rows, hkey, pkey, dkey):
+    """One wave train out of the spectral file: height, period, direction.
+
+    All three from the *same* row, deliberately. Mixing this hour's swell height
+    with last hour's swell direction would draw a wave train that never existed,
+    and the whole point of the panel is that the picture is the measurement.
+    """
+    for t, r in rows:
+        h = _ndbc_num(r.get(hkey))
+        p = _ndbc_num(r.get(pkey))
+        if h is None or p is None or p <= 0:
+            continue
+        pt = (r.get(dkey) or "").upper()
+        deg = NDBC_POINTS.index(pt) * 22.5 if pt in NDBC_POINTS else None
+        return {"h": round(h, 2), "p": round(p, 1), "dir": deg, "pt": pt or "",
+                "t": t}
+    return None
+
+
+def _ndbc_history(rows, keys, hours=NDBC_HOURS, step=NDBC_STEP):
+    """The last `hours` of a few columns, resampled onto an exact grid.
+
+    Explicit timestamps beside every sample would double the record for no
+    information, and the buoy is already on a ten-minute grid; what it is not is
+    *gapless*, so a hole stays a hole. `null` in these arrays means the buoy did
+    not report, and swell.py draws a gap there rather than interpolating across
+    it -- a trend line that closes over a six-hour outage is a claim nobody
+    measured.
+    """
+    if not rows:
+        return None
+    n = int(hours * 3600.0 / step)
+    t1 = round(rows[0][0] / step) * step
+    t0 = t1 - (n - 1) * step
+    out = {"t0": t0, "step": step, "n": n}
+    for spec in keys:
+        out[spec[0]] = [None] * n
+    for t, r in rows:
+        i = int(round((t - t0) / step))
+        if not (0 <= i < n):
+            continue
+        for name, key, nd in keys:
+            v = _ndbc_num(r.get(key))
+            if v is not None and out[name][i] is None:
+                out[name][i] = round(v, nd)
+    return out
+
+
+def _ndbc_payload(station):
+    """One buoy: the present sea state, the spectral split, and a day of trend."""
+    cutoff = time.time() - NDBC_HOURS * 3600.0
+    text, url = _ndbc_get(station, ".txt", NDBC_BYTES)
+    rows = _ndbc_rows(text, cutoff)
+    if not rows:
+        raise ValueError("no recent rows for NDBC station %s" % station)
+
+    payload = {"station": station,
+               "name": NDBC_NAMES.get(station, station).upper(),
+               "units": {"h": "m", "p": "s", "dir": "degT", "spd": "m/s",
+                         "temp": "degC"}}
+    # Each headline value with the time of the row it came from. See
+    # _ndbc_latest() on why they are not all the same time.
+    for name, key, nd in (("wvht", "WVHT", 2), ("dpd", "DPD", 1),
+                          ("apd", "APD", 1), ("mwd", "MWD", 0),
+                          ("wspd", "WSPD", 1), ("wdir", "WDIR", 0),
+                          ("gst", "GST", 1), ("wtmp", "WTMP", 1),
+                          ("atmp", "ATMP", 1), ("pres", "PRES", 1)):
+        v, t = _ndbc_latest(rows, key)
+        payload[name] = None if v is None else round(v, nd)
+        payload[name + "_t"] = t
+    payload["hist"] = _ndbc_history(
+        rows, (("wvht", "WVHT", 2), ("dpd", "DPD", 1)))
+
+    # The spectral summary is a nice-to-have and is allowed to fail on its own:
+    # not every station publishes one, and a panel that can draw a single wave
+    # train from the standard file is much better than a panel that draws
+    # nothing because the second request timed out.
+    try:
+        stext, surl = _ndbc_get(station, ".spec", NDBC_SPEC_BYTES)
+        srows = _ndbc_rows(stext, cutoff)
+        payload["swell"] = _ndbc_train(srows, "SwH", "SwP", "SwD")
+        payload["windsea"] = _ndbc_train(srows, "WWH", "WWP", "WWD")
+        if srows:
+            payload["steepness"] = (srows[0][1].get("STEEPNESS") or "").upper()
+            payload["spec_t"] = srows[0][0]
+        payload["spec_url"] = surl
+    except Exception as e:                                   # noqa: BLE001
+        print("ftdata: %s spectral summary unavailable: %r" % (station, e),
+              file=sys.stderr)
+        payload["swell"] = payload["windsea"] = None
+    return payload, url
+
+
+def register_buoy(station):
+    """Register an `ndbc-<station>` product. Returns the product name."""
+    name = "ndbc-" + station
+
+    def fetch_buoy(station=station):
+        return _ndbc_payload(station)
+
+    fetch_buoy.__name__ = "_ndbc_" + station
+    product(name, ttl=NDBC_TTL, interval=NDBC_INTERVAL,
+            description="NDBC buoy %s: waves, wind and a day of trend"
+                        % station)(fetch_buoy)
+    return name
+
+
+SWELL_BUOY = "46026"                    # 18 nm west of the Golden Gate
+
+for _bu in [SWELL_BUOY] + [s for s in
+                           os.environ.get("FT_BUOYS", "").split(",") if s]:
+    register_buoy(_bu.strip())
+
+
+# --------------------------------------------------------------------------
 # GOES GeoColor imagery, from NESDIS STAR. goes.py plays these as a time lapse.
 #
 # This is the first product whose payload is not numbers, and it changes what
@@ -1348,7 +1626,7 @@ def _wind_bay():
 # Defaults, in the same spirit as tide.py's: somewhere real, so a checkout
 # draws a real panel, and overridable so it can be somewhere else. Set
 # FT_WX_SITES and FT_WX_STATIONS for your own address and nearest station.
-WX_LAT, WX_LON = 37.7627, -122.3966     # the Mission, San Francisco
+WX_LAT, WX_LON = ftsite.LAT, ftsite.LON  # Dogpatch/Potrero, San Francisco
 WX_STATION = "SFOC1"                    # San Francisco Downtown, 2.8 km away
 
 # met.no and NWS both want to know who is calling and how to reach them. This
@@ -1419,7 +1697,7 @@ def _wx_http_date(s):
 
 
 def _wx_site(lat, lon):
-    """The product-name suffix for a site: '37.7627_-122.3966'."""
+    """The product-name suffix for a site: '37.7625_-122.3997'."""
     return "%.4f_%.4f" % (float(lat), float(lon))
 
 
@@ -1734,9 +2012,9 @@ for _lat, _lon in _wx_sites:
 
 ADSB_URL = "https://api.airplanes.live/v2/point/%.4f/%.4f/%d"
 
-# The wall's own address, in the Mission. Everything on the panel is measured
-# from here, so this is the one number to change for another installation.
-ADSB_LAT, ADSB_LON = 37.7627, -122.3966
+# The wall's own address, in Dogpatch. Everything on the panel is measured from
+# here; it lives in demos/site.json now, which is the one place to change it.
+ADSB_LAT, ADSB_LON = ftsite.LAT, ftsite.LON
 
 # Nautical miles. Comfortably outside adsb.py's map crop, which reaches about
 # 32 nm at its far corner, so the panel is never showing the edge of the query
@@ -1847,6 +2125,378 @@ def _adsb_bay():
     }
     payload.update({c: [r[c] for r in kept] for c in cols})
     return payload, url
+
+
+# --------------------------------------------------------------------------
+# Every BART train, as a path through time. stringline.py draws these.
+#
+# **Why BART.** It publishes GTFS-Realtime with no API key, no signup and no
+# terms beyond politeness -- https://api.bart.gov/gtfsrt/tripupdate.aspx answers
+# 200 with about 39 KB of protobuf to anybody who asks. The obvious alternative
+# for a wall in the Mission is Muni, and 511.org's GTFS-RT returns 401 without a
+# free-but-registered key, which was verified before this was written. So BART.
+#
+# **The protobuf is decoded by hand, in about sixty lines.** The proper answer
+# is `gtfs-realtime-bindings`, which pulls in `protobuf`, which is a C extension
+# and a wheel and a version skew on a Raspberry Pi that already has enough of
+# those. What is actually needed here is five field numbers deep in a message
+# whose wire format is self-describing: every field is a tag varint carrying a
+# number and a type, and the four types that appear are varint, length-delimited
+# and two fixed widths that can be skipped. Nothing is validated against a
+# schema, which is the honest trade -- a field that changes meaning would be
+# read as the old meaning -- and against that, the reader cannot be broken by a
+# field being *added*, which is the thing that actually happens to these feeds.
+#
+# **A TripUpdate is only the future.** The feed carries, per running train, the
+# stops it has not reached yet; a stop drops out behind the train as it passes.
+# That is exactly half a stringline. So the fetcher keeps the other half: each
+# pass merges the new predictions into what it already had for that trip, and a
+# stop that has fallen out of the feed keeps the last time it was given. Since
+# the fetch runs every minute, that last time was published within sixty seconds
+# of the train actually being there, which makes it an observation in every
+# sense that matters to a panel. The record therefore *accumulates* -- it is the
+# only product here that is a function of its own previous value -- and the
+# ninety minutes it holds is what the past half of the diagram is drawn from.
+#
+# **Trips have to be matched to a line, and the feed does not say.** BART's
+# TripDescriptor carries a trip_id and nothing else: no route_id, no direction,
+# no headsign. Two things recover it, in order:
+#
+#   1. a trip_id -> line table baked into `stringline-lines.npz` from the static
+#      schedule. Trip ids are regenerated every time BART publishes a new
+#      schedule, so this table goes stale a few times a year -- and is therefore
+#      only ever a *hint*, accepted when the live stop list is consistent with
+#      it and ignored otherwise.
+#   2. failing that, the set of stations the trip calls at. A trip whose stops
+#      all lie on exactly one line is on that line. Checked against the whole
+#      static schedule, this is right for 2384 trips, wrong for none, and
+#      undecidable for 346 -- the SFO-Millbrae and Warm Springs-Berryessa
+#      shuttles, which really are on two lines at once.
+#
+# A trip that neither method resolves is counted and dropped, never guessed at.
+# Guessing would put a Red train on the Yellow diagram, which on a stringline is
+# not a small error: it invents a headway that does not exist.
+#
+# One minute is the interval and five the TTL, matching the ADS-B reasoning: a
+# minute of drift is a train a kilometre out of place, which the diagram absorbs
+# because it is drawn at two kilometres a row, and five minutes is the point at
+# which the panel should say so rather than keep drawing. `volatile` because it
+# is rewritten 1440 times a day and is worthless the next morning.
+# --------------------------------------------------------------------------
+
+BART_URL = "https://api.bart.gov/gtfsrt/tripupdate.aspx"
+
+BART_PRODUCT = "bart-stringline"
+BART_TTL = 300
+BART_INTERVAL = 60
+
+# How much history the record carries. The panel's default window is forty
+# minutes of past, and a train takes ninety to cross the Yellow line end to end,
+# so ninety keeps a whole run visible and bounds the record at the same time.
+BART_KEEP = 5400.0
+
+# Backstops, so a feed having a strange day cannot grow the record without
+# limit. Both are far above anything BART has ever put in it: 83 trips and 1098
+# stop times was a Monday teatime.
+BART_MAX_TRIPS = 300
+BART_MAX_POINTS = 60
+
+# The baked line geometry, which is stringline.py's asset and is read here for
+# one thing only: turning platform stop ids into stations and stations into
+# lines. Cached in a one-slot dict because --loop keeps this process alive for
+# weeks and the file does not change under it.
+BART_ASSET = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "stringline-lines.npz")
+_BART_GEOM = {}
+
+
+def _pb_varint(buf, i):
+    """A base-128 varint at `i`. Returns (value, next index)."""
+    r = s = 0
+    while True:
+        c = buf[i]
+        i += 1
+        r |= (c & 0x7F) << s
+        if not c & 0x80:
+            return r, i
+        s += 7
+
+
+def _pb_fields(buf):
+    """Decode one protobuf message into [(field number, wire type, value)].
+
+    Values are ints for varints and `bytes` for length-delimited fields; the
+    two fixed-width types are handed back as bytes too and are never used here.
+    Unknown field numbers cost nothing, which is the property that makes this
+    safe to point at a feed that gains fields later.
+    """
+    out = []
+    i, n = 0, len(buf)
+    while i < n:
+        key, i = _pb_varint(buf, i)
+        fn, wt = key >> 3, key & 7
+        if wt == 0:
+            v, i = _pb_varint(buf, i)
+        elif wt == 2:
+            ln, i = _pb_varint(buf, i)
+            v, i = buf[i:i + ln], i + ln
+        elif wt == 5:
+            v, i = buf[i:i + 4], i + 4
+        elif wt == 1:
+            v, i = buf[i:i + 8], i + 8
+        else:
+            raise ValueError("protobuf wire type %d at %d" % (wt, i))
+        out.append((fn, wt, v))
+    return out
+
+
+def _pb_get(fields, num):
+    return [v for f, _, v in fields if f == num]
+
+
+def _pb_signed(v):
+    """Protobuf writes a negative int32 as a 64-bit two's complement varint."""
+    return v - (1 << 64) if v >= (1 << 63) else v
+
+
+def _bart_geometry():
+    """(stop id -> station code, [ {code: index} per line ], hints, keys).
+
+    Loaded once. numpy is imported inside the function, like everything else
+    optional in this file, so `load()` stays free of it.
+    """
+    if "g" in _BART_GEOM:
+        return _BART_GEOM["g"]
+    import numpy as np
+    with np.load(BART_ASSET, allow_pickle=False) as z:
+        keys = [str(k) for k in z["line_key"]]
+        off = [int(v) for v in z["line_off"]]
+        code = [str(c) for c in z["st_code"]]
+        stop_of = dict(zip((str(s) for s in z["sid"]),
+                           (str(c) for c in z["sid_code"])))
+        index = [{c: i for i, c in enumerate(code[off[k]:off[k + 1]])}
+                 for k in range(len(keys))]
+        ends = [(0, off[k + 1] - off[k] - 1) for k in range(len(keys))]
+        hints = {}
+        for tid, li, dr, last in zip(z["trip_id"], z["trip_line"],
+                                     z["trip_dir"], z["trip_last"]):
+            hints[str(tid)] = (int(li), int(dr), int(last))
+    g = (stop_of, index, ends, hints, keys)
+    _BART_GEOM["g"] = g
+    return g
+
+
+def _bart_line_of(tid, codes, index, ends, hints):
+    """(line, direction) for a trip, or (None, None) if it cannot be told.
+
+    `codes` are the stations the trip still calls at, in order. Direction 0 is
+    towards the line's last station, which is the direction the panel draws
+    downwards.
+    """
+    hint = hints.get(tid)
+    if hint is not None:
+        li, dr, last = hint
+        ix = index[li]
+        if all(c in ix for c in codes):
+            # The live stop list has to be a *suffix* of the scheduled trip:
+            # every station on the line, running the scheduled way round, and
+            # ending at or before the scheduled terminal. Not "ending exactly
+            # at it", because BART's feed drops a trip's final stop a station
+            # early -- a Millbrae train's last update is SFO -- and requiring
+            # the terminal threw away a quarter of the feed. Three conditions
+            # together are still a strong enough check that a trip id reused by
+            # a later schedule for a different line will fail them.
+            seq = [ix[c] for c in codes]
+            step = -1 if dr else 1
+            fwd = all((seq[i + 1] - seq[i]) * step > 0
+                      for i in range(len(seq) - 1))
+            ends_ok = (seq[-1] <= last) if dr == 0 else (seq[-1] >= last)
+            if fwd and ends_ok:
+                return li, dr
+    cand = [li for li, ix in enumerate(index) if all(c in ix for c in codes)]
+    if len(cand) > 1:
+        # Several lines share the Market Street trunk, so a train seen only
+        # inside it is on all of them as far as its stop list can say. Its
+        # terminal breaks most of those ties; what it does not break stays
+        # undecided rather than being guessed.
+        cand = [li for li in cand if index[li][codes[-1]] in ends[li]]
+    if len(cand) != 1:
+        return None, None
+    li = cand[0]
+    a, b = index[li][codes[0]], index[li][codes[-1]]
+    if a == b:
+        return None, None
+    return li, (0 if b > a else 1)
+
+
+def _bart_parse(blob, stop_of):
+    """The feed as (feed timestamp, [(trip id, [(stop code, time)], delay)]).
+
+    Arrival is preferred over departure because a stringline is about when the
+    train *reaches* a place. Stops the feed marks SKIPPED are dropped, and so is
+    anything at a stop id the baked geometry does not know -- which is how the
+    OAK Airport shuttle, which is not one of the five lines, leaves quietly.
+    """
+    top = _pb_fields(blob)
+    feed_t = 0.0
+    head = _pb_get(top, 1)
+    if head:
+        ts = _pb_get(_pb_fields(head[0]), 3)
+        if ts:
+            feed_t = float(ts[0])
+    trips = []
+    for ent in _pb_get(top, 2):
+        tu = _pb_get(_pb_fields(ent), 3)
+        if not tu:
+            continue
+        tuf = _pb_fields(tu[0])
+        desc = _pb_get(tuf, 1)
+        if not desc:
+            continue
+        tid = _pb_get(_pb_fields(desc[0]), 1)
+        if not tid:
+            continue
+        delay = _pb_get(tuf, 5)
+        delay = _pb_signed(delay[0]) if delay else None
+        stops = []
+        for stu in _pb_get(tuf, 2):
+            sf = _pb_fields(stu)
+            rel = _pb_get(sf, 5)
+            if rel and rel[0] == 1:                          # SKIPPED
+                continue
+            sid = _pb_get(sf, 4)
+            if not sid:
+                continue
+            code = stop_of.get(sid[0].decode("ascii", "replace"))
+            if code is None:
+                continue
+            ev = _pb_get(sf, 2) or _pb_get(sf, 3)            # arrival, else dep
+            if not ev:
+                continue
+            evf = _pb_fields(ev[0])
+            when = _pb_get(evf, 2)
+            if not when:
+                continue
+            if delay is None:
+                d = _pb_get(evf, 1)
+                if d:
+                    delay = _pb_signed(d[0])
+            stops.append((code, float(when[0])))
+        if len(stops) >= 1:
+            trips.append((tid[0].decode("ascii", "replace"), stops,
+                          0.0 if delay is None else float(delay)))
+    return feed_t, trips
+
+
+def _bart_previous(cache_dir, index):
+    """Last pass's record, back as {trip id: [line, dir, {station: time}, delay]}.
+
+    Reading the product's own last output is what makes the past half of the
+    diagram exist. It is deliberately forgiving: a record from an older format,
+    or one naming a line that no longer exists, simply contributes nothing and
+    the history rebuilds itself over the next hour and a half.
+    """
+    out = {}
+    got = load(BART_PRODUCT, cache_dir)
+    if got is None:
+        return out
+    payload = got[0] or {}
+    for tr in payload.get("trips", []):
+        try:
+            li = int(tr["l"])
+            if not 0 <= li < len(index):
+                continue
+            t0 = float(tr["t0"])
+            pts = {int(s): t0 + float(a) for s, a in zip(tr["s"], tr["a"])}
+            if pts:
+                out[str(tr["i"])] = [li, int(tr.get("d", 0)), pts,
+                                     float(tr.get("y", 0.0))]
+        except Exception:                                    # noqa: BLE001
+            continue
+    return out
+
+
+@product(BART_PRODUCT, ttl=BART_TTL, interval=BART_INTERVAL, volatile=True,
+         description="BART trains as time-distance paths, from the keyless "
+                     "GTFS-Realtime TripUpdate feed")
+def _bart_stringline(cache_dir):
+    """A rolling ninety minutes of every BART train's path along its line."""
+    stop_of, index, ends, hints, keys = _bart_geometry()
+    feed_t, seen = _bart_parse(get(BART_URL, timeout=25), stop_of)
+    now = time.time()
+    if not 1e9 < feed_t < now + 3600:
+        # A feed with no timestamp, or one whose clock is wrong, is still full
+        # of usable predictions; only the "how old is this" line suffers.
+        feed_t = now
+
+    state = _bart_previous(cache_dir, index)
+    unknown = 0
+    for tid, stops, delay in seen:
+        codes = [c for c, _ in stops]
+        prev = state.get(tid)
+        if prev is not None:
+            li, dr = prev[0], prev[1]
+        else:
+            li, dr = _bart_line_of(tid, codes, index, ends, hints)
+            if li is None:
+                unknown += 1
+                continue
+            prev = state[tid] = [li, dr, {}, 0.0]
+        ix = index[li]
+        for code, when in stops:
+            i = ix.get(code)
+            if i is not None:
+                prev[2][i] = when
+        prev[3] = delay
+
+    cut = now - BART_KEEP
+    trips = []
+    for tid, (li, dr, pts, delay) in state.items():
+        pts = {s: t for s, t in pts.items() if t >= cut}
+        if len(pts) < 2:
+            continue
+        # Station order *is* travel order -- a train calls at them in sequence,
+        # which is the only ordering a Marey diagram can be drawn from.
+        order = sorted(pts, reverse=bool(dr))
+        if len(order) > BART_MAX_POINTS:
+            order = order[-BART_MAX_POINTS:]
+        times = [pts[s] for s in order]
+        # Forced non-decreasing. A prediction that goes backwards between two
+        # stops happens, rarely, when an estimate is revised across a fetch, and
+        # the demo interpolates against these as an x axis: numpy's interp on a
+        # non-increasing x is not an error, it is silently wrong.
+        for i in range(1, len(times)):
+            if times[i] < times[i - 1]:
+                times[i] = times[i - 1]
+        t0 = times[0]
+        trips.append((times[-1], {
+            "i": tid, "l": li, "d": dr, "t0": int(round(t0)),
+            "s": order, "a": [int(round(x - t0)) for x in times],
+            "y": int(round(delay)),
+        }))
+
+    # Newest last-known position first if anything has to go: a train that
+    # finished an hour ago is the least interesting thing in the record.
+    trips.sort(key=lambda r: -r[0])
+    kept = [r[1] for r in trips[:BART_MAX_TRIPS]]
+    payload = {
+        "t": now, "feed_t": feed_t, "lines": keys,
+        "keep": BART_KEEP,
+        "n_feed": len(seen), "n_trips": len(kept), "n_unknown": unknown,
+        "n_points": sum(len(tr["s"]) for tr in kept),
+        "units": {"t0": "epoch seconds", "a": "seconds after t0",
+                  "s": "station index within the line", "y": "delay seconds",
+                  "d": "0 towards the line's last station, 1 towards its first"},
+        "source": "BART GTFS-Realtime TripUpdates",
+        "trips": kept,
+    }
+    return payload, BART_URL
+
+
+# Not a flag on product(): marking the spec afterwards keeps the registration
+# helper exactly as the other products use it. This one wants the cache
+# directory because, uniquely here, its new record is a function of its old one.
+PRODUCTS[BART_PRODUCT]["blob"] = True
 
 
 # --------------------------------------------------------------------------
@@ -2078,6 +2728,1215 @@ def _caiso_mix():
 
 
 # --------------------------------------------------------------------------
+# Which way San Francisco's shared bikes are moving. bikes.py draws this.
+#
+# **GBFS publishes no trips, and this product does not pretend otherwise.** Bay
+# Wheels speaks GBFS -- the open standard every bikeshare system speaks -- and
+# every feed in it is a *snapshot*: how many bikes are in each dock at this
+# instant, and where the undocked ebikes are lying. There is no origin in it, no
+# destination, no journey and no rider. Anything anybody says about bikes moving
+# from A to B is inferred from how the counts changed between two snapshots, and
+# the whole design of this record is about making that inference small, checkable
+# and impossible to mistake for observation.
+#
+# So the fetcher takes a snapshot every ten minutes, differences it against the
+# one before, and stores two derived quantities per interval and nothing else:
+#
+#   mov    the sum of |change| over every station, matched by station. One bike
+#          ridden from one dock to another contributes 2 to it -- minus one at
+#          the dock it left, plus one at the dock it reached -- so `mov / 2` is a
+#          count of docked bikes that changed place. It is a **floor** and not a
+#          trip count: two riders swapping a dock inside one ten-minute window
+#          cancel and are invisible, a bike that leaves a dock and is left loose
+#          at the kerb is a departure with no matching arrival, and an operator's
+#          van moving fifteen bikes at once looks exactly like fifteen riders.
+#
+#   flow   the *net* change in docked bikes for each of forty bands of distance
+#          from the Ferry Building. This is the only thing here that is a field:
+#          its running sum along the axis is the net number of bikes that had to
+#          cross each distance, which is a conserved quantity and is what a swarm
+#          can honestly be drawn from. Churn inside a band cancels out of it by
+#          construction, which is the point -- what survives is structure.
+#
+# **The axis is distance from downtown, and that is a choice with a reason.**
+# San Francisco's 383 docks are a blob 11.9 km by 12.4 km, so a map of them on a
+# panel five times wider than it is tall would spend three hundred columns saying
+# that the city is square. Distance from the Ferry Building is instead the one
+# spatial variable the data actually varies along: the commute is in and out of
+# it, and it happens to run downhill, which is why the ground elevation is kept
+# alongside. `bikes.py` draws the pair as a cross-section -- how far out, and how
+# high up -- and the flow as a swarm over it.
+#
+# **It attaches an altitude to every station.** GBFS carries lat/lon and no
+# elevation. The heights come from a committed bake, `demos/bikes-terrain.npz`,
+# so nothing on the wall ever asks a terrain service anything -- see
+# BIKES_TERRAIN below for its provenance and for what happens to a station the
+# bake has never heard of.
+#
+# **It reduces 790 kB to about twenty.** Three feeds, 634 stations and 600-odd
+# loose bikes go in. What comes out is five short arrays over the stations inside
+# the city sorted by distance, a rolling twelve hours of forty-number flow
+# vectors, and a couple of dozen scalars. The arrays stay per-station rather than
+# being binned into panel columns here, for the same reason caiso-mix stores
+# thirteen fuels and not five bands: how to bin them is a drawing decision and it
+# belongs where it can be argued with. The *flow* is binned here, because a
+# rolling day of 383 numbers per interval would not be small and forty is enough
+# resolution for a field whose shortest real feature is a neighbourhood.
+#
+# **It remembers, and it has to.** A snapshot feed cannot answer "what happened
+# in the last hour" at all, so each pass appends one entry to a rolling series
+# kept in the record. Ten-minute buckets keyed on absolute epoch rather than a
+# growing list: a bucket fetched twice is overwritten, a bucket that is missed is
+# simply absent, the series is trimmed to twelve hours and 80 entries on every
+# write, and a record restored from before a reboot picks up where it left off.
+# That is why this product is deliberately *not* volatile -- the accumulated half
+# day is the only thing here that cannot be re-fetched. On a cold cache there is
+# no flow at all until the second pass lands, which is a state bikes.py draws in
+# words rather than hiding.
+#
+# **Cost.** Three requests, about 790 kB, every ten minutes: 1.3 kB/s averaged,
+# which is half what quake-week costs. station_information is nearly static and
+# could be fetched far more rarely, but re-fetching it is what makes a
+# newly-installed station appear correctly rather than being quietly dropped, and
+# 348 kB per ten minutes is not worth a staleness bug.
+# --------------------------------------------------------------------------
+
+BIKES_PRODUCT = "baywheels"
+
+# gbfs.baywheels.com 301-redirects here; using the destination directly saves a
+# round trip and makes the host visible in the record's `source`.
+BIKES_GBFS = os.environ.get("FT_GBFS_BASE", "https://gbfs.lyftbikes.com/gbfs/en")
+BIKES_STATUS_URL = BIKES_GBFS + "/station_status.json"
+BIKES_INFO_URL = BIKES_GBFS + "/station_information.json"
+BIKES_FREE_URL = BIKES_GBFS + "/free_bike_status.json"
+
+# The crop, as (lat0, lat1, lon0, lon1). Bay Wheels is one system covering four
+# separated cities -- San Francisco, Oakland/Emeryville/Berkeley across the bay,
+# and San Jose fifty miles south -- and they do not share a commute, a terrain or
+# a downtown. Mixing them would put a San Jose station 4 km from "downtown" on
+# the same axis as a Mission station and mean nothing by it. This box is the city
+# and county of San Francisco plus the few Daly City docks on its south edge:
+# 383 of the system's 634 stations, and the ones whose commute is the story.
+BIKES_BBOX = (37.700, 37.840, -122.530, -122.350)
+
+# The origin of the distance axis: the Ferry Building at the foot of Market
+# Street. Not the geometric centre of the city and not the centre of the dock
+# network -- the place the morning peak is pointed at. Every `dist_m` in the
+# record is a great-circle distance from here.
+BIKES_DOWNTOWN = (37.7955, -122.3937)
+
+# Half an hour. station_status is regenerated every minute and we take it every
+# ten, so a record this old has missed twenty updates -- which on a Friday
+# evening is enough for the picture to be a lie about which stations are dry.
+# It still draws, with the age on it; see bikes.py.
+BIKES_TTL = 1800
+
+# Ten minutes, matching the history bucket exactly so that one pass fills one
+# bucket and one bucket is one difference. A minute-cadence feed sampled every
+# ten minutes is a deliberate loss, and it is the loss that sets what `mov` can
+# mean: anything that happens and un-happens inside ten minutes is invisible to
+# this record. Sampling faster would raise the floor and cost the public server
+# more; ten minutes is where the two arguments met.
+BIKES_INTERVAL = 600
+
+# The rolling series. Ten-minute buckets, twelve hours, and a hard cap on the
+# entry count a little over twelve hours' worth -- belt and braces, because the
+# thing that must never happen to a record that appends to itself is unbounded
+# growth, and a clock that jumps is a real event on a Pi with no RTC.
+#
+# Twelve hours rather than the twenty-four this used to keep: the panel replays
+# the window as a swarm and half a day is already one whole commute plus both
+# of its shoulders, while the flow vector is forty numbers a bucket and 144 of
+# them would double the record to buy a second night nobody watches.
+BIKES_HIST_BUCKET = 600.0
+BIKES_HIST_HOURS = 12.0
+BIKES_HIST_MAX = 80
+
+# --------------------------------------------------------------------------
+# The calendar day, kept separately from the rolling twelve hours.
+#
+# `hist` is a *window*: twelve hours of forty-number flow vectors, capped at
+# eighty entries, which is what the swarm replay needs and is deliberately not
+# longer. A panel that draws today against a typical day needs something else
+# entirely -- every ten minutes since local midnight, whether that is one hour
+# ago or twenty-three -- and it needs almost nothing per slot: how much moved,
+# and over how many seconds that was measured.
+#
+# So this is 144 ten-minute slots from local midnight carrying two scalars
+# each, which is about 1.5 kB of JSON against the 20 kB the record already is,
+# and it is reset when the local date rolls over rather than rolling
+# continuously. Local midnight and not UTC: the thing being drawn is a *day* as
+# somebody who rides a bike experiences one, and the axis on the panel is
+# labelled in the time on their watch. `time.mktime` with `tm_isdst = -1`
+# resolves the two ambiguous hours a year the way the system zone says to.
+#
+# A slot is null until a pass lands in it. That is the whole cold-start story:
+# a wall that booted at three in the afternoon has 89 nulls in front of it and
+# the panel says where the trace starts instead of drawing a line from zero.
+BIKES_DAY_SLOTS = 144
+
+# Bands of distance from downtown, for the flow field and for the loose bikes.
+# Forty over twelve kilometres is a band every 300 m, which is eight columns of
+# a 320-wide panel and about ten docks. Finer would be storing noise: the median
+# ten-minute interval moves a couple of dozen docked bikes across the whole city.
+BIKES_FLOW_BINS = 40
+BIKES_FLOW_KM = 12.0
+
+# How far apart two snapshots have to be before their difference is worth
+# calling a flow, and how far apart before it stops being one.
+#
+# The floor exists because the timer can fire twice in quick succession -- a
+# manual `--once` next to a running loop -- and a four-minute difference scaled
+# up to an hourly rate is mostly quantisation. The ceiling is four missed passes:
+# past that the two snapshots straddle enough of a commute that "net change"
+# stops describing a flow and starts describing a different time of day.
+BIKES_FLOW_MIN_DT = 240.0
+BIKES_FLOW_MAX_DT = 2400.0
+
+# --------------------------------------------------------------------------
+# Observed journeys, for the free-floating ebikes only, and the privacy design
+# that goes with them.
+#
+# **What was measured.** free_bike_status carries two identifiers per undocked
+# ebike: `bike_id`, an opaque 32-hex token, and `name`, the number printed on
+# the physical bike ("190-591"). GBFS rotates `bike_id` between rentals
+# specifically so that trips cannot be reconstructed, and it does: across two
+# snapshots 36 minutes apart, 0 of 634 tokens survived, and across two four
+# minutes apart 590 of 624 survived but *not one of the survivors had moved* --
+# the token is stable exactly while the bike sits still. `name` is not rotated:
+# 585 of 620 survived 36 minutes, with a median displacement of 4.5 m and a
+# 90th percentile of 11 m, which is GPS jitter, and nine bikes that had plainly
+# been ridden somewhere.
+#
+# So for this subset -- and only this subset -- a journey is *observable*: the
+# same physical bike seen at two places at two times. That is a materially
+# better thing to draw than an inference, and it is what the panel now leads
+# with. What it is not is the whole system: about 620 free-floating ebikes
+# against 383 docks and some 2 700 docked bikes, and a bike that docks simply
+# vanishes from this feed. The panel says which fleet it is drawing.
+#
+# **The privacy design, which is deliberate and not boilerplate.** The spec
+# rotates `bike_id` to stop exactly what `name` makes possible again, and this
+# record is going to live on a wall in a public makerspace. So:
+#
+#   * The printed number is hashed the moment it is read and the raw string
+#     never reaches a variable that is stored. Nothing anywhere in the payload,
+#     and nothing on the panel, is a bike number.
+#   * The tokens live in `loose_base` only, which holds *one* snapshot and is
+#     overwritten on every pass. No identifier of any kind enters `hist`. So
+#     the record cannot link a bike across more than a single ten-minute
+#     interval, however long the fetcher has been running -- there is no
+#     accumulating trip history in it to obtain.
+#   * What survives into the history is a pair of positions on the panel's own
+#     distance axis, rounded to 100 m, with no way back to which bike made it.
+#
+# The hash is not itself the control and is not claimed as one: six-digit bike
+# numbers are a small enough space to enumerate, so an attacker holding a
+# record could recover the current snapshot's numbers -- which the public feed
+# already gives them. The control is that history carries no identifier at all.
+#
+# **The threshold.** 120 m, against a measured 90th-percentile jitter of 11 m.
+# Below it a bike has not moved; above it, it has been somewhere.
+BIKES_TRACK_MIN_M = 120.0
+
+# Most journeys kept per bucket. Two movers in four minutes at ten on a Monday
+# night; the morning peak is far busier, and the cap is what stops one
+# extraordinary interval from doubling the record. `seen`, `moved`, `gone` and
+# `came` are counted before the cap, so the panel's number is the true one even
+# when the drawn tracks are a sample of it.
+BIKES_TRACK_MAX = 48
+
+# The two ends of a journey are stored in hundreds of metres along the distance
+# axis, 0..119 over the twelve kilometre crop. That is three characters a
+# number in JSON against the panel's own 37 m per column, and the tracks are
+# drawn as motion between two neighbourhoods rather than as a GPS trace, which
+# is also the resolution the panel should be claiming.
+BIKES_TRACK_UNIT_M = 100.0
+
+# Ground elevation per station, in metres, baked once and committed.
+#
+#   source     opentopodata.org public API, dataset `ned10m` -- the USGS 3D
+#              Elevation Program 1/3 arc-second seamless DEM, ~10 m posting,
+#              public domain, no key and no signup
+#   stations   gbfs.lyftbikes.com/gbfs/en/station_information.json
+#   retrieved  2026-08-10, all 634 system stations, 100 locations a request
+#   arrays     ids, elev (m), lat, lon, meta (the recipe, as text)
+#
+# Baked rather than fetched because a terrain service is a second thing that can
+# be down, and the ground does not move. A station the bake has never heard of --
+# one installed since -- takes the elevation of the nearest baked station, which
+# in a city with a dock every few blocks is a good deal better than dropping it,
+# and is recorded in the payload as `interpolated` so the number is checkable.
+BIKES_TERRAIN = "bikes-terrain.npz"
+
+
+def _bikes_terrain():
+    """The baked elevation table. numpy only, no network, raises if absent."""
+    import numpy as np
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        BIKES_TERRAIN)
+    with np.load(path) as z:
+        return ({str(k): float(v) for k, v in zip(z["ids"], z["elev"])},
+                z["lat"].astype("float64"), z["lon"].astype("float64"),
+                z["elev"].astype("float64"))
+
+
+def _bikes_elevation(ids, lats, lons):
+    """Metres for each station, and how many had to be guessed.
+
+    Guessed means "installed since the bake": nearest baked station in the
+    plane, with longitude scaled by cos(latitude) so that a degree east and a
+    degree north are the same distance. Exact for every station in the table,
+    which today is all but none of them.
+    """
+    import numpy as np
+    table, blat, blon, belev = _bikes_terrain()
+    out = np.empty(len(ids), np.float64)
+    missing = []
+    for i, sid in enumerate(ids):
+        got = table.get(sid)
+        if got is None:
+            missing.append(i)
+        else:
+            out[i] = got
+    if missing:
+        kx = float(np.cos(np.radians(0.5 * (BIKES_BBOX[0] + BIKES_BBOX[1]))))
+        for i in missing:
+            dy = blat - lats[i]
+            dx = (blon - lons[i]) * kx
+            out[i] = belev[int(np.argmin(dy * dy + dx * dx))]
+    return out, len(missing)
+
+
+def _bikes_distance(lats, lons):
+    """Metres from BIKES_DOWNTOWN, as a float array.
+
+    Equirectangular and not haversine, deliberately: the longest distance in
+    this box is twelve kilometres and the flat-earth error over that is under a
+    metre, against a 300 m band width. quake.py uses haversine because its
+    radius reaches Cape Mendocino, which is a different argument.
+    """
+    import numpy as np
+    kx = float(np.cos(np.radians(BIKES_DOWNTOWN[0])))
+    dy = (lats - BIKES_DOWNTOWN[0]) * 111320.0
+    dx = (lons - BIKES_DOWNTOWN[1]) * 111320.0 * kx
+    return np.hypot(dx, dy)
+
+
+def _bikes_bin(dist_m):
+    """Which distance band each station falls in. Clipped, never dropped."""
+    import numpy as np
+    edge = BIKES_FLOW_KM * 1000.0
+    idx = (dist_m / edge * BIKES_FLOW_BINS).astype(np.int64)
+    return np.clip(idx, 0, BIKES_FLOW_BINS - 1)
+
+
+def _bikes_sid(ids):
+    """Six hex characters per station id, concatenated into one string.
+
+    The record has to carry enough of each station's identity to difference the
+    next snapshot against this one, and it must not carry 383 UUIDs to do it --
+    that is fourteen kilobytes of the same text every ten minutes forever. Six
+    hex digits is sixteen million buckets for 383 stations, so a collision is a
+    one-in-thirty-thousand event, and a collision merely misattributes one
+    station's change to another rather than corrupting anything.
+
+    Matching on a hash rather than on array position is what makes a station
+    being installed, removed or renumbered cost nothing: the stations that are
+    in both snapshots are differenced and the rest are simply not, whereas
+    position matching would silently shift every station past the new one and
+    invent a citywide flow out of an insertion.
+    """
+    import hashlib
+    return "".join(hashlib.sha1(s.encode("utf-8")).hexdigest()[:6]
+                   for s in ids)
+
+
+def _bikes_unsid(blob):
+    """The inverse of _bikes_sid: a string back into a list of six-hex keys."""
+    if not isinstance(blob, str) or len(blob) % 6:
+        return []
+    return [blob[i:i + 6] for i in range(0, len(blob), 6)]
+
+
+def _bikes_flow(previous, sid, bikes, bins, as_of):
+    """Difference this snapshot against the last one in the record.
+
+    Returns (flow, mov, dt, base), where `flow` is the net change in docked
+    bikes per distance band, `mov` is the sum of |change| over every station
+    matched by identity, `dt` is the seconds the difference covers, and `base`
+    is what the *next* pass should difference against.
+
+    The three ways this can decline to answer are all real and all benign:
+
+      no baseline      first pass after a cold start or a version change. One
+                       bucket with no flow in it, and bikes.py says so.
+      too close        the timer fired twice inside four minutes. The old
+                       baseline is *kept* rather than replaced, so the next
+                       ordinary pass still gets a full-length difference
+                       instead of inheriting a ten-second one.
+      too far or back  four missed passes, or a clock that jumped. The baseline
+                       is reset to now and the next pass starts clean; joining
+                       across the gap would draw an hour of commute as if it
+                       had happened in ten minutes.
+    """
+    import numpy as np
+    here = {"at": float(as_of), "sid": sid, "bikes": [int(v) for v in bikes]}
+    old = (previous or {}).get("base")
+    if not isinstance(old, dict):
+        return None, None, None, here
+    keys = _bikes_unsid(old.get("sid"))
+    counts = old.get("bikes")
+    try:
+        at = float(old["at"])
+    except (KeyError, TypeError, ValueError):
+        return None, None, None, here
+    if not keys or not isinstance(counts, list) or len(counts) != len(keys):
+        return None, None, None, here
+
+    dt = float(as_of) - at
+    if dt < BIKES_FLOW_MIN_DT:
+        # Too close together to mean anything -- and, crucially, keep the old
+        # baseline. Replacing it here is the bug that makes a doubled pass
+        # erase a good interval; see the docstring.
+        return None, None, None, (old if dt >= 0.0 else here)
+    if dt > BIKES_FLOW_MAX_DT:
+        return None, None, None, here
+
+    was = dict(zip(keys, counts))
+    now_keys = _bikes_unsid(sid)
+    flow = np.zeros(BIKES_FLOW_BINS, np.int64)
+    mov = 0
+    for i, k in enumerate(now_keys):
+        before = was.get(k)
+        if before is None:
+            continue
+        d = int(bikes[i]) - int(before)
+        if d:
+            mov += abs(d)
+            flow[bins[i]] += d
+    # `mov` counts both ends of a move, so it is even for anything that stayed
+    # inside the city and odd only where a bike joined or left the docked fleet.
+    # Halving happens in the demo, where the caveat can be printed next to it.
+    #
+    # This used to return `int(mov) * 2`, which was a plain bug: `mov` is
+    # already the sum of |change| over the stations and so already counts both
+    # ends, the record's own `units` block says "/2 is bikes moved", and the
+    # demo dutifully halved it -- so every bike-movement figure this product
+    # has ever produced was exactly twice the truth. Fixed here rather than
+    # compensated for in the demo, because the unit the record documents is the
+    # unit it should carry. Buckets written by the old code are twice as tall
+    # as they should be and age out of `hist` within twelve hours.
+    return [int(v) for v in flow], int(mov), round(dt, 1), here
+
+
+def _bikes_anon(name):
+    """A printed bike number as an opaque token, or None.
+
+    Called at the moment the feed is parsed, so that the number itself lives
+    only inside the parsing loop. See the BIKES_TRACK_* block for why this is
+    not the privacy control on its own and what is.
+    """
+    import hashlib
+    if not name:
+        return None
+    return hashlib.sha1(str(name).encode("utf-8")).hexdigest()[:8]
+
+
+def _bikes_tracks(previous, keys, lats, lons, as_of):
+    """Journeys observed for the free-floating ebikes since the last snapshot.
+
+    Returns (tracks, seen, gone, came, base):
+
+      tracks  a flat list [from, to, from, to, ...] in hundreds of metres
+              along the distance axis, one pair per bike that moved further
+              than BIKES_TRACK_MIN_M, capped at BIKES_TRACK_MAX by displacement
+              so that what is dropped is the shortest hops and not a slice of
+              the city. None if no comparison could be made.
+      seen    bikes present in both snapshots -- the denominator.
+      gone    bikes in the old snapshot and not the new one. Almost always a
+              bike that was docked or picked up by a van; occasionally one
+              rented and in flight. A journey with one end unobservable.
+      came    the reverse: undocked, released, or a rental ending.
+
+    `gone` and `came` are counted and never drawn. They are real events and
+    they are half-observations, and drawing a half-observation as a journey is
+    the one thing this whole product is arranged to avoid; a dot appearing out
+    of nothing on a map is read as a bike arriving from somewhere, which is
+    exactly the claim that cannot be made.
+    """
+    import numpy as np
+    n = len(keys)
+    here = {"at": float(as_of), "k": [], "lat": [], "lon": []}
+    if n:
+        here["k"] = [k for k in keys]
+        here["lat"] = [int(round(v * 1e4)) for v in lats]
+        here["lon"] = [int(round(v * 1e4)) for v in lons]
+    old = (previous or {}).get("loose_base")
+    if not isinstance(old, dict) or not n:
+        return None, 0, 0, 0, here
+    try:
+        at = float(old["at"])
+        ok, olat, olon = old["k"], old["lat"], old["lon"]
+    except (KeyError, TypeError, ValueError):
+        return None, 0, 0, 0, here
+    if not (isinstance(ok, list) and len(ok) == len(olat) == len(olon)):
+        return None, 0, 0, 0, here
+    dt = float(as_of) - at
+    if not (BIKES_FLOW_MIN_DT <= dt <= BIKES_FLOW_MAX_DT):
+        # The same three windows the docked flow uses, and for the same
+        # reasons; a doubled pass keeps the older baseline so the next
+        # ordinary one still sees a full-length interval.
+        return None, 0, 0, 0, (old if 0.0 <= dt < BIKES_FLOW_MIN_DT else here)
+
+    was = {}
+    for i, k in enumerate(ok):
+        if k is not None:
+            was[k] = (olat[i] * 1e-4, olon[i] * 1e-4)
+    now_keys = set(k for k in keys if k is not None)
+    seen = gone = 0
+    a_lat, a_lon, b_lat, b_lon = [], [], [], []
+    for i, k in enumerate(keys):
+        if k is None:
+            continue
+        before = was.get(k)
+        if before is None:
+            continue
+        seen += 1
+        a_lat.append(before[0])
+        a_lon.append(before[1])
+        b_lat.append(float(lats[i]))
+        b_lon.append(float(lons[i]))
+    gone = sum(1 for k in was if k not in now_keys)
+    came = len(now_keys) - seen
+    if not seen:
+        return [], 0, gone, came, here
+
+    a_lat = np.asarray(a_lat, np.float64)
+    a_lon = np.asarray(a_lon, np.float64)
+    b_lat = np.asarray(b_lat, np.float64)
+    b_lon = np.asarray(b_lon, np.float64)
+    kx = float(np.cos(np.radians(BIKES_DOWNTOWN[0])))
+    step = np.hypot((b_lat - a_lat) * 111320.0,
+                    (b_lon - a_lon) * 111320.0 * kx)
+    moved = np.flatnonzero(step >= BIKES_TRACK_MIN_M)
+    if len(moved) > BIKES_TRACK_MAX:
+        moved = moved[np.argsort(step[moved])[::-1][:BIKES_TRACK_MAX]]
+    da = _bikes_distance(a_lat[moved], a_lon[moved])
+    db = _bikes_distance(b_lat[moved], b_lon[moved])
+    cap = int(BIKES_FLOW_KM * 1000.0 / BIKES_TRACK_UNIT_M) - 1
+    qa = np.clip(np.round(da / BIKES_TRACK_UNIT_M), 0, cap).astype(int)
+    qb = np.clip(np.round(db / BIKES_TRACK_UNIT_M), 0, cap).astype(int)
+    tracks = []
+    for x0, x1 in zip(qa, qb):
+        tracks.append(int(x0))
+        tracks.append(int(x1))
+    return tracks, int(seen), int(gone), int(came), here
+
+
+def _bikes_history(previous, sample, now):
+    """Append one sample to the rolling series and bound it. Pure arithmetic.
+
+    Keyed on the absolute ten-minute bucket, which is what makes every failure
+    mode benign. A pass that runs twice inside one bucket overwrites rather than
+    lengthening the series. A pass that is missed leaves a hole, and the hole is
+    visible because the epochs are stored rather than assumed to be regular. A
+    clock that jumps backwards -- a Pi with no battery-backed RTC getting NTP
+    for the first time after boot -- would otherwise leave the series in an
+    order the demo would draw as a scribble, so anything at or after the new
+    bucket is dropped before appending.
+
+    `flow` is a list per entry rather than a scalar, which the length check
+    below handles without knowing that: every column is required to be a list as
+    long as `t`, and a record written by a version that stored different columns
+    simply fails that and starts a fresh series rather than being extended into
+    a shape the demo would misread.
+    """
+    keys = ("fleet_m", "docks_m", "bikes", "empty", "loose", "mov", "dt",
+            "flow", "trk", "seen", "gone", "came")
+    bucket = float(int(now // BIKES_HIST_BUCKET) * int(BIKES_HIST_BUCKET))
+    hist = {"t": []}
+    for k in keys:
+        hist[k] = []
+
+    old = (previous or {}).get("hist")
+    if isinstance(old, dict) and isinstance(old.get("t"), list):
+        n = len(old["t"])
+        # Every column has to be the same length as `t` or the record is from a
+        # version that stored different things and cannot be extended safely.
+        if all(isinstance(old.get(k), list) and len(old[k]) == n for k in keys):
+            keep = [i for i, t in enumerate(old["t"])
+                    if isinstance(t, (int, float)) and t < bucket
+                    and t > bucket - BIKES_HIST_HOURS * 3600.0]
+            keep = keep[-(BIKES_HIST_MAX - 1):]
+            hist["t"] = [float(old["t"][i]) for i in keep]
+            for k in keys:
+                hist[k] = [old[k][i] for i in keep]
+
+    hist["t"].append(bucket)
+    for k in keys:
+        hist[k].append(sample.get(k))
+    hist["bucket"] = BIKES_HIST_BUCKET
+    hist["hours"] = BIKES_HIST_HOURS
+    hist["bins"] = BIKES_FLOW_BINS
+    hist["n"] = len(hist["t"])
+    return hist
+
+
+def _bikes_day0(now):
+    """The epoch of the local midnight that starts the day containing `now`."""
+    lt = time.localtime(now)
+    return float(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday,
+                              0, 0, 0, 0, 0, -1)))
+
+
+def _bikes_today(previous, sample, now):
+    """The day so far, in 144 ten-minute slots from local midnight.
+
+    Two columns and no more: `mov`, the sum of |change| over the stations for
+    the difference that landed in this slot, and `dt`, the seconds that
+    difference actually covers. The second one is not redundant. A missed pass
+    makes the next difference forty minutes long instead of ten, and a rate
+    computed against the nominal slot would then draw a spike followed by three
+    holes; with `dt` in the record the demo can spread that one measurement
+    across the four slots it really describes, which is what it does.
+
+    Reset by date rather than rolled: if the stored `day0` is not the local
+    midnight of `now`, the arrays start empty. A record carried across a
+    reboot, a clock that jumps, and the ordinary passage of midnight are then
+    all the same code path. See BIKES_DAY_SLOTS.
+    """
+    n = BIKES_DAY_SLOTS
+    day0 = _bikes_day0(now)
+    mov = [None] * n
+    dt = [None] * n
+    old = (previous or {}).get("today")
+    if isinstance(old, dict):
+        try:
+            same = abs(float(old.get("day0")) - day0) < 1.0
+        except (TypeError, ValueError):
+            same = False
+        if same:
+            for key, dst in (("mov", mov), ("dt", dt)):
+                col = old.get(key)
+                if isinstance(col, list) and len(col) == n:
+                    dst[:] = [None if v is None else v for v in col]
+    slot = int((now - day0) // BIKES_HIST_BUCKET)
+    if 0 <= slot < n and sample.get("mov") is not None:
+        mov[slot] = int(sample["mov"])
+        dt[slot] = None if sample.get("dt") is None else float(sample["dt"])
+    return {"day0": day0, "bucket": BIKES_HIST_BUCKET, "n": n,
+            "mov": mov, "dt": dt}
+
+
+def _bikes_round(values, places=None):
+    """A list of numbers as ints (or `places` decimals), passing None through."""
+    if places is None:
+        return [None if v is None else int(round(float(v))) for v in values]
+    return [None if v is None else round(float(v), places) for v in values]
+
+
+@product(BIKES_PRODUCT, ttl=BIKES_TTL, interval=BIKES_INTERVAL,
+         description="Bay Wheels in SF: net bike flow by distance from downtown")
+def _baywheels(cache_dir):
+    """Bay Wheels reduced to a flow field: net docked-bike change by distance.
+
+    station_status and station_information are both required -- without the
+    second there are no coordinates, and so neither an altitude nor a distance
+    from downtown, which are the two axes. free_bike_status is allowed to fail
+    on its own, because the docked fleet is the entire flow field and losing it
+    to a hiccup in a feed about a different population would be the failure this
+    file exists to avoid.
+    """
+    import numpy as np
+
+    info_doc = get_json(BIKES_INFO_URL, timeout=30)
+    status_doc = get_json(BIKES_STATUS_URL, timeout=30)
+
+    lat0, lat1, lon0, lon1 = BIKES_BBOX
+    inside = {}
+    for s in info_doc["data"]["stations"]:
+        try:
+            la, lo = float(s["lat"]), float(s["lon"])
+            sid = str(s["station_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if lat0 <= la <= lat1 and lon0 <= lo <= lon1:
+            inside[sid] = (la, lo, int(s.get("capacity") or 0))
+
+    ids, lats, lons = [], [], []
+    caps, bikes, docks, renting, ebikes = [], [], [], [], []
+    for s in status_doc["data"]["stations"]:
+        got = inside.get(str(s.get("station_id")))
+        if got is None:
+            continue
+        la, lo, cap = got
+        # `is_installed` 0 is a dock that has been pulled out of the ground for
+        # the season. It is not an empty station and it is not a station at all.
+        if not int(s.get("is_installed") or 0):
+            continue
+        b = int(s.get("num_bikes_available") or 0)
+        d = int(s.get("num_docks_available") or 0)
+        # Capacity as published, falling back to what the four dock counts add
+        # up to. They agree everywhere today; the fallback is for the station
+        # whose capacity field is missing or zero, where the counts are still a
+        # true denominator and a dropped station is not.
+        c = cap or (b + d + int(s.get("num_bikes_disabled") or 0)
+                    + int(s.get("num_docks_disabled") or 0))
+        if c <= 0:
+            continue
+        ids.append(str(s["station_id"]))
+        lats.append(la)
+        lons.append(lo)
+        caps.append(c)
+        bikes.append(min(b, c))
+        docks.append(d)
+        ebikes.append(int(s.get("num_ebikes_available") or 0))
+        # `is_renting` 0 with the dock still installed is a station taken out of
+        # service -- construction, a street fair, a broken kiosk. Its bikes are
+        # real and its emptiness is not somebody's commute, so it is kept and
+        # flagged rather than either counted or dropped.
+        renting.append(1 if int(s.get("is_renting") or 0) else 0)
+
+    if len(ids) < 20:
+        raise ValueError("only %d Bay Wheels stations inside the SF box"
+                         % len(ids))
+
+    lats = np.asarray(lats, np.float64)
+    lons = np.asarray(lons, np.float64)
+    elev, interpolated = _bikes_elevation(ids, lats, lons)
+    dist = _bikes_distance(lats, lons)
+
+    # Sorted by distance from downtown once, here, so that every array in the
+    # record and every band index computed from it agree by construction. That
+    # is a change of axis from the version of this product that sorted by
+    # altitude, and it is the axis the panel now draws along. `kind="stable"` so
+    # two stations at the same metre keep a fixed order between passes, which is
+    # what stops the panel shimmering where the docks are dense.
+    order = np.argsort(dist, kind="stable")
+    ids = [ids[i] for i in order]
+    dist = dist[order]
+    elev = elev[order]
+    lats, lons = lats[order], lons[order]
+    caps = np.asarray(caps, np.float64)[order]
+    bikes = np.asarray(bikes, np.float64)[order]
+    docks = np.asarray(docks, np.float64)[order]
+    ebikes = np.asarray(ebikes, np.float64)[order]
+    renting = np.asarray(renting, np.int64)[order]
+    n = len(elev)
+    bins = _bikes_bin(dist)
+
+    total_bikes = float(bikes.sum())
+    total_caps = float(caps.sum())
+    # The two altitudes the old version of this panel was built on, kept because
+    # they cost four numbers a bucket and they are the one sentence about
+    # gravity that survives without a hillside to draw it on. `fleet_m` is the
+    # mean height of a bike you could go and unlock; `docks_m` is the mean height
+    # of a *parking space*, which is where the fleet would sit if it were spread
+    # evenly. The difference goes negative when the fleet has run downhill.
+    fleet_m = float((elev * bikes).sum() / total_bikes) if total_bikes else None
+    docks_m = float((elev * caps).sum() / total_caps) if total_caps else None
+
+    open_ = renting == 1
+    empty = int(((bikes == 0) & open_).sum())
+    jammed = int(((docks == 0) & open_).sum())
+
+    loose_bins = [0] * BIKES_FLOW_BINS
+    loose_n = loose_off = 0
+    free_url = None
+    free_key, free_lat, free_lon = [], [], []
+    try:
+        free_doc = get_json(BIKES_FREE_URL, timeout=30)
+        free_url = BIKES_FREE_URL
+        fl, fo = [], []
+        for b in free_doc["data"]["bikes"]:
+            try:
+                la, lo = float(b["lat"]), float(b["lon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (lat0 <= la <= lat1 and lon0 <= lo <= lon1):
+                continue
+            if int(b.get("is_disabled") or 0) or int(b.get("is_reserved") or 0):
+                loose_off += 1
+                continue
+            fl.append(la)
+            fo.append(lo)
+            # See _bikes_anon() and the BIKES_TRACK_* block: the printed bike
+            # number is read here and turned into an opaque token immediately.
+            # It is never put in a variable that reaches the payload.
+            free_key.append(_bikes_anon(b.get("name")))
+        if fl:
+            # Binned on the same distance axis as everything else, which for a
+            # loose bike is exact rather than approximate: it has a position of
+            # its own and the axis is a function of position. The old version
+            # had to borrow the altitude of the nearest dock; nothing is
+            # borrowed here.
+            free_lat = np.asarray(fl, np.float64)
+            free_lon = np.asarray(fo, np.float64)
+            fd = _bikes_distance(free_lat, free_lon)
+            loose_n = int(len(fd))
+            loose_bins = np.bincount(_bikes_bin(fd),
+                                     minlength=BIKES_FLOW_BINS).tolist()
+    except Exception as e:                                   # noqa: BLE001
+        print("ftdata: baywheels free_bike_status unavailable: %r" % e,
+              file=sys.stderr)
+
+    now = time.time()
+    # The feed's own timestamp, not ours: `dt` is the interval the difference
+    # actually covers, and the fetch can sit behind a slow request or a retry.
+    # Falling back to the wall clock keeps a feed that omits it working.
+    as_of = float(status_doc.get("last_updated") or now)
+    previous = load(BIKES_PRODUCT, cache_dir)
+    prev_payload = previous[0] if previous else None
+    sid = _bikes_sid(ids)
+    flow, mov, dt, base = _bikes_flow(prev_payload, sid, bikes, bins, as_of)
+    tracks, seen, gone, came, loose_base = _bikes_tracks(
+        prev_payload, free_key, free_lat, free_lon, as_of)
+
+    sample = {"fleet_m": None if fleet_m is None else round(fleet_m, 2),
+              "docks_m": None if docks_m is None else round(docks_m, 2),
+              "bikes": int(total_bikes), "empty": empty, "loose": loose_n,
+              "mov": mov, "dt": dt, "flow": flow,
+              "trk": tracks, "seen": seen, "gone": gone, "came": came}
+
+    payload = {
+        "as_of": as_of,
+        "region": "San Francisco",
+        "bbox": list(BIKES_BBOX),
+        "downtown": list(BIKES_DOWNTOWN),
+        "n": n,
+        # Five arrays over the stations, ascending by distance from downtown.
+        # Everything the panel draws about *now* comes out of these.
+        "dist_m": _bikes_round(dist),
+        "elev_m": _bikes_round(elev),
+        "fill_pct": _bikes_round(bikes / np.maximum(caps, 1.0) * 100.0),
+        "free_docks": _bikes_round(docks),
+        "open": [int(v) for v in renting],
+        "loose_bins": loose_bins,
+        "totals": {
+            "stations": n,
+            "closed": int(n - open_.sum()),
+            "capacity": int(total_caps),
+            "bikes": int(total_bikes),
+            "ebikes": int(ebikes.sum()),
+            "free_docks": int(docks.sum()),
+            "empty": empty,
+            "jammed": jammed,
+            "loose": loose_n,
+            "loose_unavailable": loose_off,
+        },
+        "altitude_m": {"fleet": sample["fleet_m"], "docks": sample["docks_m"],
+                       "low": round(float(elev.min()), 1),
+                       "high": round(float(elev.max()), 1)},
+        "flow": {"bins": BIKES_FLOW_BINS, "km": BIKES_FLOW_KM,
+                 "min_dt": BIKES_FLOW_MIN_DT, "max_dt": BIKES_FLOW_MAX_DT,
+                 "track_m": BIKES_TRACK_MIN_M, "track_max": BIKES_TRACK_MAX,
+                 "track_unit_m": 100.0},
+        "interpolated": int(interpolated),
+        "hist": _bikes_history(prev_payload, sample, now),
+        # The calendar day so far, which `hist` cannot answer: see
+        # BIKES_DAY_SLOTS. Two columns of 144 slots, reset at local midnight.
+        "today": _bikes_today(prev_payload, sample, now),
+        # Not for drawing. These two are the snapshot the *next* pass
+        # differences against, and they are the only things in this payload
+        # that are state rather than observation. Kept in the record and not in
+        # a sidecar because a sidecar lives in tmpfs and a reboot would cost a
+        # bucket every time. `loose_base` is overwritten on every pass and
+        # never enters `hist`, which is the whole of the privacy design; see
+        # the BIKES_TRACK_* block above.
+        "base": base,
+        "loose_base": loose_base,
+        "units": {"dist_m": "metres from the Ferry Building",
+                  "elev_m": "metres above NAVD88", "fill_pct": "percent",
+                  "hist.t": "epoch seconds, start of a 10 minute bucket",
+                  "hist.dt": "seconds the flow difference covers",
+                  "hist.mov": "sum of |change| over stations; /2 is bikes moved",
+                  "hist.flow": "net docked-bike change per distance band",
+                  "hist.trk": "observed free-ebike journeys, [from, to, ...] "
+                              "in hundreds of metres from downtown",
+                  "hist.seen": "free ebikes present in both snapshots",
+                  "hist.gone": "free ebikes that vanished: docked or taken",
+                  "hist.came": "free ebikes that appeared: undocked or freed",
+                  "today.day0": "epoch of the local midnight the slots start at",
+                  "today.mov": "as hist.mov, in 10 minute slots from midnight",
+                  "today.dt": "seconds the slot's difference covers"},
+        "sources": [BIKES_INFO_URL, BIKES_STATUS_URL, free_url],
+    }
+    return payload, BIKES_STATUS_URL
+
+
+# Not a flag on product(), for the same reason goes-psw does it this way: the
+# helper stays exactly as the other products use it. This product is not pixels
+# and writes no sidecar -- it needs the cache directory for the other reason,
+# which is that it reads its own previous record both to extend the rolling
+# series and to difference this snapshot against the last one, and doing that
+# against ftdata's default cache while the fetcher was pointed at another one
+# would silently graft two machines' histories together.
+PRODUCTS[BIKES_PRODUCT]["blob"] = True
+
+# --------------------------------------------------------------------------
+# The bike docks within a walk of the front door. docks.py draws this.
+#
+# **A different question from `baywheels`, off the same three feeds.** That
+# product is about the city: a flow field over twelve kilometres, differenced
+# between snapshots, replayed over half a day. This one is about the next sixty
+# seconds for somebody standing in the workshop -- is there a bike within a few
+# minutes' walk, is it an ebike, and coming the other way, is there a free dock
+# to put one in. Nothing here is differenced against anything and nothing here
+# accumulates: it is a snapshot of about forty docks, and when it is stale it is
+# simply wrong rather than incomplete, which is why the TTL is short and the
+# panel prints the age.
+#
+# It is a separate product rather than more fields on `baywheels` because the
+# two want opposite things from the fetcher. `baywheels` must not be sampled
+# faster than its ten-minute history bucket and must never be volatile, because
+# the accumulated half day is the only thing in it that cannot be re-fetched.
+# This one wants two minutes and is worth nothing after a reboot.
+#
+# **The docked ebike count is `num_ebikes_available`, and this is the one field
+# it is easy to get wrong.** GBFS 2.x also defines
+# `num_bikes_available_types`, which is the obvious place to look and which
+# Lyft's SF feed does not publish at all -- the key is absent from every one of
+# the 634 stations, so code that reads it gets zero everywhere and quietly
+# reports that San Francisco has no docked ebikes. It has plenty: 36 of the 100
+# docked bikes within a kilometre of the wall on the evening this was written.
+# `num_ebikes_available` is a *subset* of `num_bikes_available`, so the classic
+# count is the difference and the two add up to the total, which is how the
+# panel columns it.
+#
+# **The crop is a circle and not a bounding box.** `baywheels` takes a lat/lon
+# box because it wants a city; this wants "how far do I have to walk", so the
+# radius is a real distance from one point and the payload is sorted by it.
+# 1.5 km stored against the panel's default 1.0 km of drawing, so `--radius` can
+# be turned up on the wall without the fetcher having to agree.
+#
+# **Cost, and the one piece of caching in this file.** Three feeds are 795 kB:
+# station_information 348, station_status 243, free_bike_status 204. Taking all
+# three every two minutes would be 6.6 kB/s sustained, which is five times what
+# `baywheels` costs and more than this panel is worth. But station_information
+# is *near-static* -- names, coordinates and dock capacities, changing when a
+# station is installed or moved -- so the trimmed version of it (the forty-odd
+# stations inside the radius, about a kilobyte) is kept in the record and reused
+# for an hour. Steady state is then status plus free bikes, 447 kB every two
+# minutes, 3.7 kB/s, with one 348 kB request an hour on top. What that costs is
+# that a station installed inside the radius can take up to an hour to appear,
+# which for a thing that happens a few times a year is the right trade. Set
+# DOCKS_INFO_TTL to 0 to turn the cache off.
+# --------------------------------------------------------------------------
+
+DOCKS_PRODUCT = "docks-nearby"
+
+# The wall's own address, from the site config -- Sequoia Fabrica, Dogpatch,
+# San Francisco, surveyed to the building rather than to the block.
+#
+# This product was written while `adsb.py`, `quake.py` and QUAKE_LAT/QUAKE_LON
+# still carried (37.7627, -122.3966), 273 m north-east, and it kept a private
+# constant rather than inherit an address it knew to be wrong. That conflict is
+# now resolved the other way: every one of them reads `ftsite`, so this reads it
+# too. Worth keeping the reason on record, because this is the panel where it
+# mattered -- at 39 m to the pixel, 273 m is seven pixels and the difference
+# between the nearest dock being Jackson Playground and being Rhode Island St,
+# where on a 50 nautical mile radar picture it is a fifth of one.
+DOCKS_SITE = (ftsite.LAT, ftsite.LON)
+
+# How far out to collect, in metres of straight line. 1.5 km is 45 docks, 235
+# docked bikes and 851 free docks on a Monday evening -- comfortably more than
+# the panel draws, so `--radius` is a drawing decision and not a fetch one.
+DOCKS_RADIUS_M = 1500.0
+
+# Hard caps, so a feed that suddenly reports every station in the Bay at the
+# same coordinates cannot turn a 6 kB record into a 300 kB one. Both are well
+# clear of the live numbers (45 stations, 27 loose bikes inside 1.5 km).
+DOCKS_MAX = 64
+DOCKS_LOOSE_MAX = 48
+
+# Metres a minute on foot, for the walk times that are the panel's units.
+#
+# 75 m/min is 4.5 km/h, an ordinary adult pace, and it is applied to the
+# *straight-line* distance -- so these are optimistic by whatever the street
+# grid costs, which in Dogpatch is not much because the grid is a grid. The
+# number is here rather than in the demo because it is what makes `dist_m` mean
+# something to a person, and because the panel and this file must not be able to
+# disagree about it.
+DOCKS_WALK_M_PER_MIN = 75.0
+
+# Ten minutes. station_status is regenerated every minute; a record this old has
+# missed nine updates, which on a Friday evening is enough for a dock the panel
+# says has two bikes in it to have none. It still draws, with the age on it.
+DOCKS_TTL = 600
+
+# Two minutes. Fast enough to be worth calling a "right now" panel, slow enough
+# not to hammer a public feed: 30 requests an hour against a file regenerated 60
+# times an hour. Under FAST_INTERVAL, so the fast timer takes it.
+DOCKS_INTERVAL = 120
+
+# How long the trimmed station_information block is reused. See the cost note.
+DOCKS_INFO_TTL = 3600.0
+
+
+def _docks_metres(lat, lon, site=None):
+    """Straight-line metres from the wall. Equirectangular, plain Python.
+
+    Flat-earth over 1.5 km is wrong by well under a centimetre, and there are a
+    few hundred stations to test rather than a few hundred thousand, so this
+    stays out of numpy entirely -- the whole loop costs less than the import.
+    """
+    import math
+    la0, lo0 = site or DOCKS_SITE
+    kx = math.cos(math.radians(la0))
+    dy = (float(lat) - la0) * 111320.0
+    dx = (float(lon) - lo0) * 111320.0 * kx
+    return math.hypot(dx, dy)
+
+
+def _docks_walk_min(dist_m):
+    """Straight-line metres as whole minutes on foot. See DOCKS_WALK_M_PER_MIN."""
+    return int(round(float(dist_m) / DOCKS_WALK_M_PER_MIN))
+
+
+def _docks_site_elevation():
+    """Ground height at the wall, in metres, off the committed terrain bake.
+
+    There is no DEM in this tree, only `bikes-terrain.npz`, which is elevations
+    at the 634 dock locations -- so this is the height of the nearest *dock*,
+    which today is Jackson Playground 290 m away and 4 m lower than the shop
+    floor's true figure. That is fine for what it is used for, which is the sign
+    and rough size of the climb to each dock, and it is why the payload calls it
+    `approx`. Returns None rather than raising if the bake is missing: an
+    elevation is a nice-to-have and the dock counts are not.
+    """
+    try:
+        elev, _missing = _bikes_elevation(
+            ["__wall__"], [DOCKS_SITE[0]], [DOCKS_SITE[1]])
+        return float(elev[0])
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def _docks_info(previous, radius_m):
+    """The trimmed station_information block: reused if young enough, else fetched.
+
+    Returns (info, fetched), where `info` is a dict of parallel lists over the
+    stations inside the radius and `fetched` says whether the 348 kB request
+    actually happened on this pass. Anything at all wrong with the cached block
+    -- missing, short, from a run with a different radius or a different site --
+    is treated as absent, because the alternative is pairing this pass's counts
+    with last hour's coordinates and there is no way to notice that on a wall.
+    """
+    keys = ("id", "name", "lat", "lon", "cap")
+    old = (previous or {}).get("info")
+    if DOCKS_INFO_TTL > 0 and isinstance(old, dict):
+        try:
+            fresh = time.time() - float(old["at"]) < DOCKS_INFO_TTL
+            same = (float(old["radius_m"]) == float(radius_m)
+                    and [round(v, 7) for v in old["site"]]
+                    == [round(v, 7) for v in DOCKS_SITE])
+            n = len(old["id"])
+            whole = all(isinstance(old.get(k), list) and len(old[k]) == n
+                        for k in keys)
+            if fresh and same and whole and n:
+                return old, False
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    doc = get_json(BIKES_INFO_URL, timeout=30)
+    info = {"at": time.time(), "radius_m": float(radius_m),
+            "site": list(DOCKS_SITE)}
+    for k in keys:
+        info[k] = []
+    for s in doc["data"]["stations"]:
+        try:
+            la, lo = float(s["lat"]), float(s["lon"])
+            sid = str(s["station_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if _docks_metres(la, lo) > radius_m:
+            continue
+        info["id"].append(sid)
+        # The published name, verbatim. Shortening "Rhode Island St at 17th St"
+        # into something that fits 22 characters of 3x5 type is a drawing
+        # decision and it lives in the demo, where it can be argued with.
+        info["name"].append(str(s.get("name") or "")[:48])
+        info["lat"].append(round(la, 5))
+        info["lon"].append(round(lo, 5))
+        info["cap"].append(int(s.get("capacity") or 0))
+    return info, True
+
+
+@product(DOCKS_PRODUCT, ttl=DOCKS_TTL, interval=DOCKS_INTERVAL, volatile=True,
+         description="Bay Wheels docks within a walk of the wall: "
+                     "bikes, ebikes and free docks, nearest first")
+def _docks_nearby(cache_dir):
+    """The docks inside DOCKS_RADIUS_M, sorted by how far they are to walk.
+
+    station_status is required. station_information is required the first time
+    and once an hour after that; in between its trimmed form comes out of the
+    previous record. free_bike_status is allowed to fail on its own -- a
+    free-floating ebike parked on the kerb is worth drawing and is not what the
+    panel is for, so losing that feed costs one line of the panel and not the
+    panel.
+    """
+    previous = load(DOCKS_PRODUCT, cache_dir)
+    prev_payload = previous[0] if previous else None
+    info, info_fetched = _docks_info(prev_payload, DOCKS_RADIUS_M)
+    status_doc = get_json(BIKES_STATUS_URL, timeout=30)
+
+    near = {}
+    for i, sid in enumerate(info["id"]):
+        near[sid] = i
+
+    rows = []
+    for s in status_doc["data"]["stations"]:
+        i = near.get(str(s.get("station_id")))
+        if i is None:
+            continue
+        # `is_installed` 0 is a dock pulled out of the ground for the season.
+        # It is not an empty station; there is nothing there to walk to.
+        if not int(s.get("is_installed") or 0):
+            continue
+        la, lo = info["lat"][i], info["lon"][i]
+        bikes = int(s.get("num_bikes_available") or 0)
+        # See the block comment: this field and not num_bikes_available_types,
+        # which Lyft's feed does not publish. Clamped because a subset that
+        # exceeds its superset would come out of the arithmetic as a negative
+        # number of classic bikes, and the panel would draw it.
+        ebikes = min(bikes, int(s.get("num_ebikes_available") or 0))
+        free = int(s.get("num_docks_available") or 0)
+        cap = info["cap"][i] or (bikes + free
+                                 + int(s.get("num_bikes_disabled") or 0)
+                                 + int(s.get("num_docks_disabled") or 0))
+        dist = _docks_metres(la, lo)
+        rows.append({
+            "d": dist, "sid": info["id"][i], "name": info["name"][i],
+            "lat": la, "lon": lo,
+            "bikes": bikes, "ebikes": ebikes, "free": free, "cap": int(cap),
+            # `is_renting` 0 with the dock installed is a station out of service
+            # -- construction, a street fair, a dead kiosk. Its bikes are real
+            # and you cannot have them, so it is kept and flagged rather than
+            # either counted or dropped. Same call baywheels makes.
+            "open": 1 if int(s.get("is_renting") or 0) else 0,
+            "ret": 1 if int(s.get("is_returning") or 0) else 0,
+        })
+
+    rows.sort(key=lambda r: r["d"])
+    del rows[DOCKS_MAX:]
+    if not rows:
+        raise ValueError("no Bay Wheels stations within %.0f m of the wall"
+                         % DOCKS_RADIUS_M)
+
+    site_elev = _docks_site_elevation()
+    try:
+        # Exact for every station in the bake, which is all of them today; one
+        # installed since takes the nearest baked station's height. Same helper
+        # and the same caveat as baywheels, which is the point of sharing it.
+        elev, _missing = _bikes_elevation(
+            [r["sid"] for r in rows],
+            [r["lat"] for r in rows], [r["lon"] for r in rows])
+        elev = [round(float(v), 1) for v in elev]
+    except Exception as e:                                   # noqa: BLE001
+        print("ftdata: docks-nearby elevation unavailable: %r" % e,
+              file=sys.stderr)
+        elev = [None] * len(rows)
+
+    loose = {"n": 0, "dist_m": [], "lat": [], "lon": [], "elec": [],
+             "unavailable": 0, "source": None}
+    try:
+        free_doc = get_json(BIKES_FREE_URL, timeout=30)
+        loose["source"] = BIKES_FREE_URL
+        found = []
+        for b in free_doc["data"]["bikes"]:
+            try:
+                la, lo = float(b["lat"]), float(b["lon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            d = _docks_metres(la, lo)
+            if d > DOCKS_RADIUS_M:
+                continue
+            if int(b.get("is_disabled") or 0) or int(b.get("is_reserved") or 0):
+                loose["unavailable"] += 1
+                continue
+            found.append((d, la, lo,
+                          1 if str(b.get("type")) == "electric_bike" else 0))
+        found.sort()
+        # No identifier of any kind is read out of this feed, let alone stored.
+        # `baywheels` hashes the printed bike number because it needs to match
+        # one snapshot to the next; this product never compares two snapshots,
+        # so it has no use for identity and takes none. See the BIKES_TRACK_*
+        # block above for why that distinction is worth being explicit about.
+        del found[DOCKS_LOOSE_MAX:]
+        loose["n"] = len(found)
+        loose["dist_m"] = [int(round(d)) for d, _la, _lo, _e in found]
+        loose["lat"] = [round(la, 5) for _d, la, _lo, _e in found]
+        loose["lon"] = [round(lo, 5) for _d, _la, lo, _e in found]
+        loose["elec"] = [e for _d, _la, _lo, e in found]
+    except Exception as e:                                   # noqa: BLE001
+        print("ftdata: docks-nearby free_bike_status unavailable: %r" % e,
+              file=sys.stderr)
+
+    open_rows = [r for r in rows if r["open"]]
+    payload = {
+        # The feed's own stamp rather than ours: the panel's honesty about how
+        # old its counts are should not include our request latency, and should
+        # include the feed's own.
+        "as_of": float(status_doc.get("last_updated") or time.time()),
+        "site": list(DOCKS_SITE),
+        "site_name": "Sequoia Fabrica",
+        "site_elev_m": None if site_elev is None else round(site_elev, 1),
+        "radius_m": DOCKS_RADIUS_M,
+        "walk_m_per_min": DOCKS_WALK_M_PER_MIN,
+        "n": len(rows),
+        # Parallel arrays over the stations, ascending by distance. Everything
+        # the panel draws comes out of these; nothing is pre-binned, because how
+        # to bin them is a drawing decision.
+        "name": [r["name"] for r in rows],
+        "dist_m": [int(round(r["d"])) for r in rows],
+        "walk_min": [_docks_walk_min(r["d"]) for r in rows],
+        "lat": [r["lat"] for r in rows],
+        "lon": [r["lon"] for r in rows],
+        "bikes": [r["bikes"] for r in rows],
+        "ebikes": [r["ebikes"] for r in rows],
+        "free_docks": [r["free"] for r in rows],
+        "capacity": [r["cap"] for r in rows],
+        "elev_m": elev,
+        "open": [r["open"] for r in rows],
+        "returning": [r["ret"] for r in rows],
+        "loose": loose,
+        "totals": {
+            "stations": len(rows),
+            "closed": len(rows) - len(open_rows),
+            "bikes": sum(r["bikes"] for r in open_rows),
+            "ebikes": sum(r["ebikes"] for r in open_rows),
+            "free_docks": sum(r["free"] for r in open_rows),
+            "capacity": sum(r["cap"] for r in open_rows),
+            "empty": sum(1 for r in open_rows if r["bikes"] == 0),
+            "jammed": sum(1 for r in open_rows if r["free"] == 0),
+            "loose": loose["n"],
+        },
+        # Kept so the next pass can skip the 348 kB request. Not for drawing:
+        # `name`, `lat`, `lon` and `capacity` above are the same values in the
+        # order the panel wants them.
+        "info": info,
+        "info_fetched": bool(info_fetched),
+        "units": {"dist_m": "straight-line metres from the wall",
+                  "walk_min": "whole minutes at %.0f m/min, straight line"
+                              % DOCKS_WALK_M_PER_MIN,
+                  "elev_m": "metres above NAVD88, from bikes-terrain.npz",
+                  "site_elev_m": "approx: the nearest baked dock's elevation",
+                  "bikes": "docked bikes available, ebikes included",
+                  "ebikes": "of those, electric; classic is bikes - ebikes",
+                  "free_docks": "empty docks, i.e. places to leave one",
+                  "loose": "free-floating bikes, mostly electric, no docks"},
+        "sources": [BIKES_INFO_URL, BIKES_STATUS_URL, loose["source"]],
+    }
+    return payload, BIKES_STATUS_URL
+
+
+# Same reason as baywheels above, for half of it: this product reads its own
+# previous record, to reuse the trimmed station_information rather than fetch
+# 348 kB of it every two minutes. It writes no sidecar.
+PRODUCTS[DOCKS_PRODUCT]["blob"] = True
+
+# --------------------------------------------------------------------------
 # The ground under the building. quake.py draws this.
 #
 # **One feed, two scales, and a third request that is not a feed.** USGS
@@ -2125,8 +3984,8 @@ QUAKE_FEED = ("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/"
 QUAKE_FDSN = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
 # The wall's own address, the same one wx.py uses: Sequoia Fabrica, 1736 18th
-# Street. Every distance and bearing in the payload is from here.
-QUAKE_LAT, QUAKE_LON = 37.7627, -122.3966
+# Street, from demos/site.json. Every distance and bearing here is from it.
+QUAKE_LAT, QUAKE_LON = ftsite.LAT, ftsite.LON
 
 QUAKE_LOCAL_KM = 300.0          # "near here", generously drawn
 QUAKE_WORLD_MAG = 4.5           # the planet's week, the conventional threshold
@@ -2261,6 +4120,483 @@ def _quake_usgs():
                   "biggest": biggest, "events": world},
         "baseline": baseline,
     }, QUAKE_FEED
+
+
+# --------------------------------------------------------------------------
+# Raw ground motion, from the seismometer ten miles from the wall.
+# helicorder.py draws these as a drum recorder.
+#
+# quake-usgs above is the *processed* end of this pipeline: events, located,
+# with a magnitude on them, after somebody's algorithm has decided they are
+# events at all. This is the other end -- the ground going up and down at one
+# station, which is the measurement everything else is derived from, and which
+# is mostly a flat line with a microseism wobble in it. That is the point of
+# drawing it: the quiet is the data too.
+#
+# **The station is BK.BRK, Byerly Vault on the UC Berkeley campus**, an STS-2
+# broadband seismometer 17 km from the wall -- close enough that anything the
+# room would feel is emphatic on this trace, and it is a real instrument that a
+# person could walk to. BHZ is the 40 sps vertical channel. Berkeley's own
+# network is served by NCEDC's FDSN endpoints, keyless, no signup, no quota
+# published; the same query shape works for BK.BRIB and BK.BKS if this vault
+# ever goes off the air.
+#
+# **The data is miniSEED with Steim2 compression and there is no ASCII option
+# for this network**, which is the one real cost in this product. EarthScope's
+# `irisws/timeseries` will hand out ASCII but it does not archive BK, only the
+# global networks, and a panel captioned "ground motion near you" showing a
+# station in New Mexico would be a lie told to avoid a hundred lines of code.
+# So `_steim_decode()` below is that hundred lines. It is checked on every
+# record against the reverse integration constant -- Steim2 stores the last
+# sample of each record redundantly in the header frame precisely so that a
+# decoder can prove it walked the differences correctly -- and a mismatch
+# raises rather than storing a plausible wrong wiggle.
+#
+# **What is stored is an envelope, not a waveform.** Six hours at 40 sps is
+# 864,000 samples and 1.7 MB of miniSEED; what the panel can draw is 1800
+# columns one pixel wide. Each column is 12 seconds reduced to its minimum and
+# its maximum, which is exactly what a helicorder pen does and is the one
+# decimation that does not lie about amplitude -- a mean would flatten every
+# burst, and a subsample would hit or miss one at random. 3600 numbers, about
+# 22 kB of JSON: the whole six hours at the finest resolution the panel can
+# actually show.
+#
+# **It tops up rather than refetching.** The grid is anchored to absolute
+# 12-second bins, so a fetch five minutes after the last one asks NCEDC for
+# five minutes (23 kB) and slides the previous columns along. A cold start, or
+# a gap longer than the window, fetches the whole six hours once. That is the
+# difference between 7 MB an hour off the shop wifi and 300 kB.
+#
+# The baseline is removed before storing: an STS-2 wanders a couple of thousand
+# counts over six hours with the temperature and the tide, which at this scale
+# is half a trace lane of slow drift that has nothing to do with anything. A
+# two-minute box smoothing of each column's midpoint is subtracted, which is
+# the modern equivalent of the pen's zero adjustment. Everything above about a
+# minute of period goes with it, and nothing a local earthquake does is that
+# slow.
+#
+# FT_HELICORDER_END pins the end of the window to a fixed time, which is how
+# the screenshot of a real earthquake in the README was made and how the tests
+# get a known six hours. Unset -- always, on the wall -- it means now.
+# --------------------------------------------------------------------------
+
+HELI_DATASELECT = "https://service.ncedc.org/fdsnws/dataselect/1/query"
+HELI_STATION_URL = "https://service.ncedc.org/fdsnws/station/1/query"
+
+HELI_NET, HELI_STA, HELI_CHA = "BK", "BRK", "BHZ"
+
+# Six lanes of one hour. One hour a lane is the classic drum format and the
+# unit a person actually thinks in; six of them is what fits in 54 rows with
+# nine rows a lane, which is the least a trace can be and still have a shape.
+HELI_SPAN_H = 6
+HELI_TRACE_COLS = 300                  # columns per hour, one panel pixel each
+HELI_BIN_S = 3600.0 / HELI_TRACE_COLS  # 12 s a column
+HELI_COLS = HELI_SPAN_H * HELI_TRACE_COLS
+
+# Half an hour. Past that the panel says STALE and keeps drawing: a drum with
+# an honest gap at the right-hand end is still six hours of ground motion, and
+# is exactly what the paper would look like if the pen had run dry.
+HELI_TTL = 1800
+HELI_INTERVAL = 300
+
+# The zero adjustment: the baseline subtracted from each column is a box
+# smoothing of the column midpoints this many seconds wide. Two minutes is
+# well outside anything a local earthquake does and well inside the thermal
+# and tidal wander of a broadband vault.
+HELI_BASE_S = 120.0
+
+# The response -- counts per m/s -- changes when somebody recalibrates the
+# vault, which is a thing that has happened eight times since 1996 and never
+# twice in a day. Refetched daily; carried in the record in between.
+HELI_META_MAX_AGE = 86400
+
+HELI_PRODUCT = "helicorder-bk"
+
+# Steim2's seven packings. (nibble, dnib) -> (differences per word, bits each).
+# The fields are packed right-aligned against bit 0, which is the one thing in
+# the format that is easy to get backwards: for c=1 four 8-bit differences fill
+# all 32 bits, but for c=2 and c=3 the top two bits are the dnib and the
+# differences live in what is left, so seven 4-bit differences occupy bits 0-27
+# and bits 28-29 are simply unused. Shifting down from bit 31 instead decodes
+# every quiet record into a plausible-looking wrong number.
+_STEIM2_PACK = {
+    (1, 0): (4, 8), (1, 1): (4, 8), (1, 2): (4, 8), (1, 3): (4, 8),
+    (2, 1): (1, 30), (2, 2): (2, 15), (2, 3): (3, 10),
+    (3, 0): (5, 6), (3, 1): (6, 5), (3, 2): (7, 4),
+}
+
+# Steim1: same frame structure, three packings, no dnib.
+_STEIM1_PACK = dict(((1, d), (4, 8)) for d in range(4))
+_STEIM1_PACK.update(dict(((2, d), (2, 16)) for d in range(4)))
+_STEIM1_PACK.update(dict(((3, d), (1, 32)) for d in range(4)))
+
+
+def _steim_decode(payload, nsamples, order=2):
+    """Steim1/2 -> samples. Returns (samples, x0, xn); caller checks xn.
+
+    Vectorised rather than looped because this also runs on the wall's Pi, and
+    six hours is 864,000 samples: a per-sample Python loop is a minute there
+    and about eighty milliseconds like this.
+
+    The shape of the format: 64-byte frames of sixteen big-endian 32-bit words,
+    word 0 a map of two bits per following word saying how many differences
+    that word holds, and the samples are the running sum of those differences.
+    Frame 0's words 1 and 2 are not differences -- they are X0, the first
+    sample, and Xn, the last -- and their map nibbles are 0, so the mask
+    arithmetic drops them without a special case. The first *difference* in the
+    stream is the step from the previous record's last sample and is therefore
+    meaningless here, which is why the cumulative sum starts at d[1].
+    """
+    import numpy as np
+
+    w = np.frombuffer(payload, dtype=">u4")
+    nframes = len(w) // 16
+    if nframes < 1 or nsamples <= 0:
+        return np.zeros(0, np.int64), 0, 0
+    w = w[:nframes * 16].reshape(nframes, 16)
+
+    nib = (w[:, :1] >> (30 - 2 * np.arange(1, 16, dtype=np.uint32))) & 3
+    body = w[:, 1:]
+    dnib = (body >> 30) & 3
+
+    # Every word decodes into at most seven differences; `count` says how many
+    # of the seven slots are real, and the boolean take at the end flattens
+    # them back into stream order (frame, then word, then position).
+    diffs = np.zeros((nframes, 15, 7), np.int32)
+    count = np.zeros((nframes, 15), np.int8)
+    for key, spec in (_STEIM2_PACK if order == 2 else _STEIM1_PACK).items():
+        n, bits = spec
+        m = (nib == key[0]) & (dnib == key[1])
+        if not m.any():
+            continue
+        sel = body[m]
+        for k in range(n):
+            if bits == 32:
+                v = sel.astype(np.int64)
+            else:
+                shift = np.uint32(bits * (n - 1 - k))
+                v = ((sel >> shift) & np.uint32((1 << bits) - 1)).astype(np.int64)
+            v -= (v >= (1 << (bits - 1))) * (1 << bits)
+            diffs[m, k] = v.astype(np.int32)
+        count[m] = n
+
+    d = diffs[np.arange(7)[None, None, :] < count[:, :, None]]
+    x0 = int(w[0, 1]) - (int(w[0, 1]) >> 31) * (1 << 32)
+    xn = int(w[0, 2]) - (int(w[0, 2]) >> 31) * (1 << 32)
+
+    out = np.empty(nsamples, np.int64)
+    out[0] = x0
+    if nsamples > 1:
+        if len(d) < nsamples:
+            raise ValueError("steim%d: %d differences for %d samples"
+                             % (order, len(d), nsamples))
+        np.cumsum(d[1:nsamples].astype(np.int64), out=out[1:])
+        out[1:] += x0
+    return out, x0, xn
+
+
+def _mseed_series(data):
+    """miniSEED bytes -> ([(start_epoch, samples), ...], sample_rate).
+
+    Fixed 48-byte header, then a chain of blockettes of which the only one that
+    matters here is 1000: it carries the encoding and the record length, and
+    without it there is no way to know how far the next record is. Records with
+    an encoding this cannot read raise rather than being skipped -- a drum with
+    silently missing hours is worse than no drum.
+    """
+    import datetime
+    import struct
+
+    import numpy as np
+
+    segs, rate, off, n = [], None, 0, len(data)
+    while off + 64 <= n:
+        hdr = data[off:off + 48]
+        nsamp, = struct.unpack(">H", hdr[30:32])
+        factor, mult = struct.unpack(">hh", hdr[32:36])
+        nblk = hdr[39]
+        data_off, = struct.unpack(">H", hdr[44:46])
+        blk_off, = struct.unpack(">H", hdr[46:48])
+
+        reclen, enc, p = None, None, blk_off
+        for _ in range(nblk):
+            if not p or off + p + 8 > n:
+                break
+            btype, nxt = struct.unpack(">HH", data[off + p:off + p + 4])
+            if btype == 1000:
+                enc = data[off + p + 4]
+                reclen = 1 << data[off + p + 6]
+                break
+            p = nxt
+        if reclen is None:
+            raise ValueError("miniSEED record with no blockette 1000")
+        if enc not in (10, 11):
+            raise ValueError("miniSEED encoding %r is not Steim1 or Steim2" % enc)
+
+        year, doy, hh, mm, ss, _u, ticks = struct.unpack(">HHBBBBH", hdr[20:30])
+        jan1 = datetime.datetime(year, 1, 1,
+                                 tzinfo=datetime.timezone.utc).timestamp()
+        start = (jan1 + (doy - 1) * 86400.0 + hh * 3600.0 + mm * 60.0
+                 + ss + ticks * 1e-4)
+
+        # SEED's two-field sample rate: a positive factor is samples per
+        # second, a negative one is seconds per sample, and the multiplier
+        # does the same trick again.
+        if factor > 0:
+            r = float(factor * mult) if mult > 0 else -float(factor) / mult
+        elif factor < 0:
+            r = -float(mult) / factor if mult > 0 else 1.0 / (factor * mult)
+        else:
+            r = 0.0
+        if r > 0:
+            rate = r
+
+        if nsamp:
+            s, _x0, xn = _steim_decode(data[off + data_off:off + reclen],
+                                       nsamp, 2 if enc == 11 else 1)
+            # The whole reason the reverse integration constant exists.
+            if int(s[-1]) != xn:
+                raise ValueError("steim: record at %d ends %d, header says %d"
+                                 % (off, int(s[-1]), xn))
+            segs.append((start, np.asarray(s, np.int32)))
+        off += reclen
+    if not segs or not rate:
+        raise ValueError("no decodable miniSEED records")
+    return segs, rate
+
+
+def _heli_iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t))
+
+
+def _heli_window_url(t0, t1):
+    from urllib.parse import urlencode
+    return HELI_DATASELECT + "?" + urlencode({
+        "net": HELI_NET, "sta": HELI_STA, "cha": HELI_CHA,
+        "starttime": _heli_iso(t0), "endtime": _heli_iso(t1)})
+
+
+def _heli_bins(segs, rate, t0, t1):
+    """Reduce samples to per-column (min, max). Returns (lo, hi, have).
+
+    One expanded array at the sample rate and then a reshape-and-min, rather
+    than np.minimum.at over scattered indices: ufunc.at is roughly a
+    microsecond an element, which is a second here on a desktop and half a
+    minute on the wall. The expansion costs 7 MB for six hours and is thrown
+    away immediately.
+    """
+    import numpy as np
+
+    ncols = int(round((t1 - t0) / HELI_BIN_S))
+    per = int(round(HELI_BIN_S * rate))
+    if ncols <= 0 or per <= 0:
+        return None
+    big = np.iinfo(np.int32).max
+    lo_s = np.full(ncols * per, big, np.int32)
+    hi_s = np.full(ncols * per, -big, np.int32)
+    for start, s in segs:
+        i = int(round((start - t0) * rate))
+        a, b = max(0, i), min(ncols * per, i + len(s))
+        if b <= a:
+            continue
+        chunk = s[a - i:b - i]
+        lo_s[a:b] = chunk
+        hi_s[a:b] = chunk
+    lo = lo_s.reshape(ncols, per).min(1)
+    hi = hi_s.reshape(ncols, per).max(1)
+    have = lo != big
+    return lo, hi, have
+
+
+def _heli_centre(lo, hi, have):
+    """Subtract a two-minute smoothing of the column midpoints, in place-ish.
+
+    The pen's zero adjustment. Gaps are filled with the median before smoothing
+    so that a missing minute does not drag the baseline through the hole and
+    bend the trace either side of it.
+    """
+    import numpy as np
+
+    mid = np.where(have, (lo.astype(np.float64) + hi) * 0.5, np.nan)
+    if not have.any():
+        return lo.astype(np.int32), hi.astype(np.int32)
+    mid = np.where(have, mid, np.nanmedian(mid))
+    k = int(HELI_BASE_S / HELI_BIN_S) | 1
+    k = min(k, len(mid) if len(mid) % 2 else len(mid) - 1)
+    if k >= 3:
+        pad = k // 2
+        # Edge-padded so the first and last columns get a full window rather
+        # than a baseline that tapers towards zero and tips the trace up.
+        ext = np.concatenate([np.full(pad, mid[0]), mid, np.full(pad, mid[-1])])
+        base = np.convolve(ext, np.full(k, 1.0 / k), mode="valid")
+    else:
+        base = mid
+    return (np.round(lo - base).astype(np.int32),
+            np.round(hi - base).astype(np.int32))
+
+
+def _heli_station_meta(when):
+    """Latitude, longitude and counts-per-m/s for the epoch covering `when`.
+
+    The text format is one line per response epoch and the vault has had eight
+    of them; picking the current one matters because the sensitivity changed by
+    a factor of four in 2010 and every micron on the panel is scaled by it.
+    """
+    import calendar
+
+    url = (HELI_STATION_URL + "?net=%s&sta=%s&cha=%s&level=channel&format=text"
+           % (HELI_NET, HELI_STA, HELI_CHA))
+    text = get(url, timeout=30).decode("utf-8", "replace")
+
+    def _epoch(s):
+        s = s.strip().split(".")[0]
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                return calendar.timegm(time.strptime(s, fmt))
+            except ValueError:
+                continue
+        return None
+
+    best = None
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        f = [c.strip() for c in line.split("|")]
+        if len(f) < 17:
+            continue
+        t0, t1 = _epoch(f[15]), _epoch(f[16])
+        if t0 is None or t0 > when or (t1 is not None and t1 <= when):
+            continue
+        best = {"net": f[0], "sta": f[1], "loc": f[2], "cha": f[3],
+                "lat": float(f[4]), "lon": float(f[5]), "elev": float(f[6]),
+                "instrument": f[10][:40], "scale": float(f[11]),
+                "scale_units": f[13], "rate": float(f[14]),
+                "meta_at": time.time()}
+    if best is None:
+        raise ValueError("no %s.%s.%s response epoch covering %s"
+                         % (HELI_NET, HELI_STA, HELI_CHA, _heli_iso(when)))
+    return best
+
+
+def _heli_end():
+    """The end of the window. Now, unless FT_HELICORDER_END pins it."""
+    s = os.environ.get("FT_HELICORDER_END", "").strip()
+    if not s:
+        return time.time()
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    import calendar
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return float(calendar.timegm(time.strptime(s, fmt)))
+        except ValueError:
+            continue
+    raise ValueError("cannot read a UTC time out of FT_HELICORDER_END=%r" % s)
+
+
+@product(HELI_PRODUCT, ttl=HELI_TTL, interval=HELI_INTERVAL,
+         description="NCEDC BK.BRK BHZ: six hours of raw vertical ground "
+                     "motion, 24 s min/max envelope")
+def _helicorder(cache_dir):
+    """Top up the six-hour envelope and rewrite it.
+
+    Takes `cache_dir` -- and is therefore flagged as a blob product below --
+    for one reason: it reads its own previous record so that a five-minute
+    fetch is a five-minute request. It writes no sidecar. The flag is the only
+    hook `fetch()` has for "this fetcher needs to know where the cache is".
+    """
+    import math
+
+    import numpy as np
+
+    end = _heli_end()
+    t1 = math.floor(end / HELI_BIN_S) * HELI_BIN_S
+    t0 = math.floor(t1 / 3600.0) * 3600.0 - (HELI_SPAN_H - 1) * 3600.0
+
+    lo = np.zeros(HELI_COLS, np.int32)
+    hi = np.zeros(HELI_COLS, np.int32)
+    have = np.zeros(HELI_COLS, bool)
+
+    prev = load(HELI_PRODUCT, cache_dir)
+    meta, filled_to = None, t0
+    if prev is not None:
+        p = prev[0] or {}
+        try:
+            shift = int(round((t0 - float(p["t0"])) / HELI_BIN_S))
+            if 0 <= shift < HELI_COLS and int(p.get("cols", 0)) == HELI_COLS:
+                keep = HELI_COLS - shift
+                plo = np.array([0 if v is None else v for v in p["lo"]], np.int32)
+                phi = np.array([0 if v is None else v for v in p["hi"]], np.int32)
+                phave = np.array([v is not None for v in p["lo"]], bool)
+                lo[:keep], hi[:keep] = plo[shift:], phi[shift:]
+                have[:keep] = phave[shift:]
+                filled_to = max(t0, min(t1, float(p.get("filled_to", t0))))
+            m = p.get("station") or {}
+            if m.get("scale") and time.time() - float(
+                    m.get("meta_at", 0)) < HELI_META_MAX_AGE:
+                meta = m
+        except Exception:                                    # noqa: BLE001
+            # A record from an older layout is not an error, it is a cold
+            # start: fall through and fetch the whole window.
+            lo[:], hi[:], have[:] = 0, 0, False
+            filled_to = t0
+
+    if meta is None:
+        meta = _heli_station_meta(t1)
+
+    # The source recorded is what was asked for on this pass, which on a
+    # top-up is a few minutes and not the six hours on the panel. When nothing
+    # was due the whole window is named instead, because "we asked for zero
+    # seconds of data" is a true statement that tells a reader nothing.
+    source = (_heli_window_url(filled_to, t1) if t1 - filled_to >= HELI_BIN_S
+              else _heli_window_url(t0, t1))
+    if t1 - filled_to >= HELI_BIN_S:
+        data = get(source, timeout=180 if t1 - filled_to > 3600 else 60)
+        segs, rate = _mseed_series(data)
+        got = _heli_bins(segs, rate, filled_to, t1)
+        if got is not None:
+            nlo, nhi, nhave = got
+            clo, chi = _heli_centre(nlo, nhi, nhave)
+            a = int(round((filled_to - t0) / HELI_BIN_S))
+            b = min(HELI_COLS, a + len(clo))
+            if b > a:
+                lo[a:b], hi[a:b] = clo[:b - a], chi[:b - a]
+                have[a:b] = nhave[:b - a]
+        filled_to = t1
+        meta["rate"] = float(rate)
+
+    p2p = (hi - lo)[have]
+    noise = float(np.median(p2p)) if len(p2p) else 0.0
+    peak, peak_t = 0.0, None
+    if have.any():
+        amp = np.maximum(np.abs(lo), np.abs(hi))
+        amp = np.where(have, amp, 0)
+        i = int(np.argmax(amp))
+        peak = float(amp[i])
+        peak_t = t0 + (i + 0.5) * HELI_BIN_S
+
+    km, bearing = _quake_km_bearing(meta["lat"], meta["lon"])
+    return {
+        "station": meta,
+        "site": [QUAKE_LAT, QUAKE_LON], "km": round(km, 1),
+        "bearing": round(bearing),
+        "t0": t0, "t1": t0 + HELI_COLS * HELI_BIN_S, "filled_to": filled_to,
+        "bin_s": HELI_BIN_S, "cols": HELI_COLS,
+        "trace_cols": HELI_TRACE_COLS, "span_h": HELI_SPAN_H,
+        "lo": [None if not h else int(v) for v, h in zip(lo, have)],
+        "hi": [None if not h else int(v) for v, h in zip(hi, have)],
+        "n_have": int(have.sum()),
+        "noise": round(noise, 1), "peak": round(peak, 1), "peak_t": peak_t,
+    }, source
+
+
+# The one thing this flag does in fetch() is pass cache_dir to the fetch
+# function; see _helicorder's docstring. No sidecar is written, so there is
+# nothing for prune_blobs() to sweep.
+PRODUCTS[HELI_PRODUCT]["blob"] = True
 
 
 # --------------------------------------------------------------------------
@@ -2430,6 +4766,484 @@ def _sats():
         "units": {"n": "rev/day", "ndot2": "rev/day^2", "angles": "deg",
                   "epoch": "epoch seconds UTC"},
     }, sources[0] if sources else CELESTRAK_GP
+
+
+# --------------------------------------------------------------------------
+# The global routing table, churning, as San Francisco hears it. bgp.py draws
+# it as a per-second chart of the last quarter hour with a ticker of the actual
+# prefixes underneath.
+#
+# **Why RouteViews at SFMIX and not the obvious live feed.** RIPE's RIS Live
+# streams the whole default-free zone over plain HTTP as newline-delimited
+# JSON, and it was the first thing tried here. It works, and it is the wrong
+# tool for this panel for two reasons. Unfiltered it delivered 78 MB in 25
+# seconds -- that is not going anywhere near a Pi on shop wifi -- and even
+# filtered to one collector it can only ever be *sampled*: the fetcher opens
+# the socket, reads for twenty seconds, and closes it, so the other hundred and
+# sixty seconds of every three minutes are simply not observed. A burst that
+# lasted a minute would be missed entirely, and a chart that silently omits the
+# interesting parts is a worse chart than a coarser one that does not.
+#
+# The RouteViews archive has the opposite shape. Every collector writes a
+# complete MRT dump of every update it saw in each fifteen-minute window and
+# publishes it about a minute after the window closes, bzip2'd. One 1.2 MB file
+# gets **the entire window**, 75,000 messages, with per-second resolution and
+# nothing sampled away. It is a quarter of an hour behind, and that is a trade
+# worth making: this panel is about rate and texture, not about the last
+# second, and the age is on the screen anyway.
+#
+# And the collector is `route-views.sfmix` -- RouteViews' vantage point inside
+# the San Francisco Metropolitan Internet Exchange, which is a couple of miles
+# from the wall and is where the makerspace's own ISP hands off its traffic.
+# The routes this panel draws are the ones the room's packets are actually
+# steered by, which is not a claim any of the other collectors could make.
+# Eight networks peer with it -- Cloudflare and Amazon among them -- so the
+# feed is a genuinely local view of a global table rather than a global average
+# of one.
+#
+# **MRT is parsed here, by hand, and that needs justifying.** The usual answer
+# is libbgpstream or mrtparse, and neither is going on a Pi for this: the first
+# is a C library with a build, the second pulls in a dependency tree to do
+# something this file already does for PDFs. The wire format is RFC 6396 and
+# RFC 4271 and the part of it a churn counter needs is small -- walk the record
+# frames, find the BGP UPDATEs, count the prefixes in the withdrawn block, the
+# NLRI block and the two multiprotocol attributes, and read the AS_PATH. What
+# is deliberately *not* implemented is everything else: communities, MED,
+# aggregators, the legacy two-byte-ASN subtypes nobody has emitted this decade.
+# An attribute this does not understand is skipped by its own length field,
+# which is why an unknown one cannot desynchronise the parse.
+#
+# **Where the cost is.** 12.5 MB of MRT and 75,000 records is 0.5 s of pure
+# Python on a desktop, so call it ten on the wall, once every fifteen minutes,
+# in the fetcher process and never in a demo. Both ends are capped anyway --
+# see BGP_MAX_BZ2, BGP_MAX_MRT and BGP_MAX_RECORDS -- and a capped parse says
+# so in the record rather than quietly reporting a low rate.
+# --------------------------------------------------------------------------
+
+BGP_ARCHIVE = "https://archive.routeviews.org"
+
+# The collector, and the words for where it is. Overridable because somebody
+# forking this wall for another city should not have to edit code to move the
+# vantage point, and every RouteViews collector publishes the identical layout.
+BGP_COLLECTOR = os.environ.get("FT_BGP_COLLECTOR", "route-views.sfmix")
+BGP_SITE = os.environ.get("FT_BGP_SITE", "SFMIX SAN FRANCISCO")
+
+# RouteViews rolls an updates file every fifteen minutes and publishes it a
+# minute or so after the window closes. Asking on the same cadence is exactly
+# right; asking faster only re-downloads a file we already have.
+BGP_INTERVAL = 900
+
+# Three quarters of an hour. Two missed windows and the panel should start
+# saying so: churn is the one thing here that genuinely does not keep, and a
+# fifteen-minute picture of the routing table from two hours ago is a picture
+# of an event that is over.
+BGP_TTL = 2700
+
+# How many fifteen-minute slots back to look for the newest published file.
+# Six is an hour and a half, which covers the publisher having a bad afternoon
+# without turning a fetch into a crawl of the archive.
+BGP_LOOKBACK = 6
+
+# Caps, in the order they bite. The compressed file is normally 1.0-1.6 MB and
+# the decompressed MRT 10-16 MB; these are roughly five times that, so they
+# never fire in normal operation and do fire on the day some collector emits a
+# pathological window. A capped fetch is still a usable fetch -- the record
+# carries the span actually parsed and the rates are computed against it, not
+# against the fifteen minutes it was supposed to be.
+BGP_MAX_BZ2 = 8 << 20
+BGP_MAX_MRT = 64 << 20
+BGP_MAX_RECORDS = 250000
+
+# Time resolution kept in the record. Two seconds over a nine-hundred second
+# window is 450 numbers a series, which is more columns than the panel has and
+# small enough to sit in a JSON record without apology. Per-second would be
+# 900 and would let the demo redraw at a resolution no 320-pixel panel can
+# show; the binning is done here so the demo never has to know it happened.
+BGP_BIN_SECS = 2
+
+# Lines the ticker can draw. Reservoir-sampled across the whole window rather
+# than taken from the front of it, because the front of a fifteen-minute window
+# is frequently one router dumping its table and forty lines of the same peer
+# is not what the routing table looks like.
+BGP_SAMPLES = 48
+
+# Origin ASNs kept, by how many prefixes each announced. The tail is thousands
+# long and the head is the story.
+BGP_ORIGINS = 12
+
+
+def _bgp_slot(epoch):
+    """(url, filename) for the fifteen-minute window starting at `epoch`."""
+    lt = time.gmtime(epoch)
+    name = "updates.%s.bz2" % time.strftime("%Y%m%d.%H%M", lt)
+    return ("%s/%s/bgpdata/%s/UPDATES/%s"
+            % (BGP_ARCHIVE, BGP_COLLECTOR, time.strftime("%Y.%m", lt), name),
+            name)
+
+
+def _bgp_newest(now=None, lookback=BGP_LOOKBACK):
+    """Find the newest published updates file. Returns (url, name, size).
+
+    Walks back a slot at a time from the present and HEADs each candidate. The
+    filenames are derived from the clock rather than from the directory
+    listing, which is a month of two thousand eight hundred links and would be
+    a bigger download than half the products in this file.
+    """
+    import urllib.error
+    import urllib.request
+    now = time.time() if now is None else now
+    slot = int(now // BGP_INTERVAL) * BGP_INTERVAL
+    last = None
+    for k in range(1, lookback + 1):
+        url, name = _bgp_slot(slot - k * BGP_INTERVAL)
+        req = urllib.request.Request(url, method="HEAD", headers={
+            "User-Agent": "flaschen-taschen-ftdata/1 (+wall display)"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                size = int(resp.headers.get("Content-Length") or 0)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue                 # not published yet; try the one before
+            raise
+        if size > BGP_MAX_BZ2:
+            # Refusing is better than truncating here: a bz2 stream cut mid
+            # block does not decompress, so a partial download of an oversized
+            # file buys nothing at all.
+            last = "%s is %d bytes, over the %d cap" % (name, size, BGP_MAX_BZ2)
+            continue
+        return url, name, size
+    raise RuntimeError(last or "no updates file published in the last %d slots"
+                       % lookback)
+
+
+def _bgp_fetch_mrt(url):
+    """Download and decompress one updates file, both ends capped."""
+    import bz2
+    import urllib.request
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "flaschen-taschen-ftdata/1 (+wall display)"})
+    dec = bz2.BZ2Decompressor()
+    chunks = []
+    raw = out = 0
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        while True:
+            block = resp.read(1 << 16)
+            if not block:
+                break
+            raw += len(block)
+            if raw > BGP_MAX_BZ2:
+                raise RuntimeError("compressed stream ran past the %d cap"
+                                   % BGP_MAX_BZ2)
+            piece = dec.decompress(block)
+            if piece:
+                out += len(piece)
+                if out > BGP_MAX_MRT:
+                    # Stop cleanly rather than raise: whole MRT records already
+                    # decoded are perfectly good data, and the parse below finds
+                    # the end of the last complete one by itself.
+                    chunks.append(piece)
+                    break
+                chunks.append(piece)
+    return b"".join(chunks), raw
+
+
+def _bgp_prefixes(buf, i, end, v6=False, want_first=False):
+    """Walk an RFC 4271 NLRI block; return (count, first_prefix_or_None).
+
+    One length-in-bits byte then that many bits rounded up to whole octets,
+    with the trailing zero octets of the prefix left off the wire entirely --
+    which is why the bytes are padded back out before being formatted. The
+    same encoding carries v4 and v6; only the width of the padding differs.
+    """
+    n = 0
+    first = None
+    width = 16 if v6 else 4
+    while i < end:
+        bits = buf[i]
+        i += 1
+        nb = (bits + 7) >> 3
+        if nb > width or i + nb > end:
+            # Malformed, or a SAFI whose NLRI is not a plain prefix (labelled
+            # unicast and VPN routes both prepend fields here). Either way the
+            # rest of this block cannot be walked, and guessing would corrupt
+            # the count far more than stopping does.
+            break
+        if want_first and first is None:
+            pad = buf[i:i + nb] + b"\0" * (width - nb)
+            if v6:
+                import socket
+                first = "%s/%d" % (socket.inet_ntop(socket.AF_INET6, pad), bits)
+            else:
+                first = "%d.%d.%d.%d/%d" % (pad[0], pad[1], pad[2], pad[3], bits)
+        i += nb
+        n += 1
+    return n, first
+
+
+def _bgp_as_path(buf, i, end):
+    """Decode an AS_PATH attribute body into a list of four-byte ASNs.
+
+    Segments are (type, count, ASNs); AS_SET and AS_SEQUENCE are flattened
+    together because the distinction does not survive being drawn four pixels
+    high, and the four-byte width is safe because every RouteViews collector
+    has spoken RFC 6793 since long before it started writing these files.
+    """
+    out = []
+    from struct import unpack_from
+    while i + 2 <= end:
+        count = buf[i + 1]
+        i += 2
+        for k in range(count):
+            if i + 4 > end:
+                return out
+            out.append(unpack_from(">I", buf, i)[0])
+            i += 4
+    return out
+
+
+def _bgp_parse(data):
+    """Count churn out of a raw MRT stream. Everything happens in one pass.
+
+    Returns the counters bgp.py needs and nothing else -- twelve megabytes in,
+    about nine kilobytes out. The expensive part is deliberately not done for
+    every record: the AS_PATH's byte range is noted while walking the
+    attributes, which is free, and it is only decoded into a list of integers
+    for the few dozen records the ticker reservoir keeps.
+    """
+    import random
+    from struct import Struct
+    hdr = Struct(">IHHI").unpack_from
+    u16 = Struct(">H").unpack_from
+    u32 = Struct(">I").unpack_from
+
+    # MRT types and subtypes, RFC 6396 s4.4. Only BGP4MP is ever in an updates
+    # file; the _ET flavour is identical but for four bytes of microseconds
+    # ahead of the body, which is why it is a `+= 4` and not a second parser.
+    BGP4MP, BGP4MP_ET = 16, 17
+    AS4_SUBTYPES = (4, 7)               # MESSAGE_AS4, MESSAGE_AS4_LOCAL
+    AS2_SUBTYPES = (1, 6)               # MESSAGE, MESSAGE_LOCAL
+
+    n = len(data)
+    i = 0
+    records = 0
+    truncated = False
+    ann = wdr = 0
+    t_first = t_last = None
+    ann_sec = {}
+    wdr_sec = {}
+    peers = {}
+    origins = {}
+    reservoir = []
+    seen_lines = 0
+    rng = random.Random()
+
+    while i + 12 <= n:
+        if records >= BGP_MAX_RECORDS:
+            truncated = True
+            break
+        ts, mtype, sub, length = hdr(data, i)
+        i += 12
+        end = i + length
+        if end > n:
+            # A short final record, which is what the decompression cap leaves
+            # behind. Everything before it is intact.
+            truncated = True
+            break
+        j = i
+        i = end
+        if mtype == BGP4MP_ET:
+            j += 4
+        elif mtype != BGP4MP:
+            continue
+        if sub in AS4_SUBTYPES:
+            if j + 8 > end:
+                continue
+            peer_as = u32(data, j)[0]
+            j += 8
+        elif sub in AS2_SUBTYPES:
+            if j + 4 > end:
+                continue
+            peer_as = u16(data, j)[0]
+            j += 4
+        else:
+            continue                     # a state change, not a message
+        j += 2                           # interface index
+        if j + 2 > end:
+            continue
+        afi = u16(data, j)[0]
+        j += 2
+        j += 2 * (4 if afi == 1 else 16)         # peer and local addresses
+
+        # The BGP message itself: sixteen marker bytes, a length and a type.
+        if j + 19 > end:
+            continue
+        if data[j + 18] != 2:            # not an UPDATE (OPEN, KEEPALIVE, ...)
+            continue
+        msg_end = min(j + u16(data, j + 16)[0], end)
+        k = j + 19
+        if k + 2 > msg_end:
+            continue
+        wlen = u16(data, k)[0]
+        k += 2
+        nw, w_first = _bgp_prefixes(data, k, min(k + wlen, msg_end),
+                                    want_first=True)
+        k += wlen
+        if k + 2 > msg_end:
+            continue
+        alen = u16(data, k)[0]
+        k += 2
+        attr_end = min(k + alen, msg_end)
+
+        path_span = None
+        v6_ann = v6_wdr = 0
+        v6_first = None
+        p = k
+        while p + 3 <= attr_end:
+            flags = data[p]
+            atype = data[p + 1]
+            if flags & 0x10:             # extended length
+                if p + 4 > attr_end:
+                    break
+                blen = u16(data, p + 2)[0]
+                p += 4
+            else:
+                blen = data[p + 2]
+                p += 3
+            aend = min(p + blen, attr_end)
+            if atype == 2:                                   # AS_PATH
+                path_span = (p, aend)
+            elif atype == 14 and p + 4 <= aend:              # MP_REACH_NLRI
+                mafi = u16(data, p)[0]
+                nh = data[p + 3]
+                q = p + 4 + nh + 1       # next hop, then one reserved octet
+                c, f = _bgp_prefixes(data, q, aend, v6=(mafi == 2),
+                                     want_first=(mafi == 2))
+                v6_ann += c
+                if v6_first is None:
+                    v6_first = f
+            elif atype == 15 and p + 3 <= aend:              # MP_UNREACH_NLRI
+                mafi = u16(data, p)[0]
+                c, f = _bgp_prefixes(data, p + 3, aend, v6=(mafi == 2),
+                                     want_first=(mafi == 2))
+                v6_wdr += c
+                if w_first is None:
+                    w_first = f
+            p = aend
+
+        na, a_first = _bgp_prefixes(data, attr_end, msg_end, want_first=True)
+        if a_first is None:
+            a_first = v6_first
+        na += v6_ann
+        nw += v6_wdr
+        if not (na or nw):
+            continue                     # a pure keepalive-ish UPDATE
+
+        records += 1
+        ann += na
+        wdr += nw
+        if t_first is None:
+            t_first = ts
+        t_last = ts
+        if na:
+            ann_sec[ts] = ann_sec.get(ts, 0) + na
+        if nw:
+            wdr_sec[ts] = wdr_sec.get(ts, 0) + nw
+        peers[peer_as] = peers.get(peer_as, 0) + 1
+
+        origin = None
+        if path_span is not None and na:
+            # The origin only needs the last ASN of the last segment, so this
+            # walks the segment headers rather than decoding every hop -- the
+            # difference over seventy-five thousand records is most of the
+            # parse. The full path is decoded below, for the ticker only.
+            q, qe = path_span
+            while q + 2 <= qe:
+                count = data[q + 1]
+                q += 2
+                if count and q + 4 * count <= qe:
+                    origin = u32(data, q + 4 * (count - 1))[0]
+                q += 4 * count
+            if origin is not None:
+                origins[origin] = origins.get(origin, 0) + na
+
+        # Reservoir sampling, so the ticker is a fair draw from the whole
+        # window instead of the first forty-eight lines of it. Both kinds of
+        # line go in the same reservoir on purpose: withdrawals are two per
+        # cent of the traffic and they should be two per cent of the ticker,
+        # because the panel's whole claim is that these numbers are real.
+        for kind, pfx, npfx in (("A", a_first, na), ("W", w_first, nw)):
+            if not pfx:
+                continue
+            seen_lines += 1
+            if len(reservoir) < BGP_SAMPLES:
+                slot = len(reservoir)
+                reservoir.append(None)
+            else:
+                slot = rng.randrange(seen_lines)
+                if slot >= BGP_SAMPLES:
+                    continue
+            path = []
+            if path_span is not None:
+                path = _bgp_as_path(data, path_span[0], path_span[1])
+            reservoir[slot] = {
+                "k": kind, "p": pfx, "n": npfx, "peer": peer_as,
+                "o": (path[-1] if path else None), "path": path[-6:],
+                "t": ts,
+            }
+
+    if t_first is None:
+        raise RuntimeError("no BGP UPDATEs in %d bytes of MRT" % n)
+
+    # Bin to a fixed grid anchored on the window's first second, so the demo
+    # can index it with arithmetic rather than searching timestamps.
+    span = max(1, t_last - t_first + 1)
+    nbins = -(-span // BGP_BIN_SECS)
+    ann_bins = [0] * nbins
+    wdr_bins = [0] * nbins
+    for src, dst in ((ann_sec, ann_bins), (wdr_sec, wdr_bins)):
+        for ts, v in src.items():
+            dst[(ts - t_first) // BGP_BIN_SECS] += v
+
+    peak_at, peak = t_first, 0
+    for ts in set(ann_sec) | set(wdr_sec):
+        v = ann_sec.get(ts, 0) + wdr_sec.get(ts, 0)
+        if v > peak:
+            peak, peak_at = v, ts
+
+    top = sorted(origins.items(), key=lambda kv: -kv[1])[:BGP_ORIGINS]
+    reservoir = [s for s in reservoir if s]
+    reservoir.sort(key=lambda s: s["t"])
+    return {
+        "t0": t_first, "t1": t_last, "secs": span,
+        "records": records, "truncated": truncated,
+        "ann": ann, "wdr": wdr,
+        "ann_s": round(ann / float(span), 2), "wdr_s": round(wdr / float(span), 2),
+        "peak": peak, "peak_at": peak_at,
+        "bin_secs": BGP_BIN_SECS, "ann_bins": ann_bins, "wdr_bins": wdr_bins,
+        "peers": sorted(peers.items(), key=lambda kv: -kv[1]),
+        "n_peers": len(peers),
+        "origins": [[a, c] for a, c in top], "n_origins": len(origins),
+        "samples": reservoir,
+    }
+
+
+@product("bgp-sfmix", ttl=BGP_TTL, interval=BGP_INTERVAL,
+         description="BGP churn at %s (RouteViews %s)"
+                     % (BGP_SITE, BGP_COLLECTOR))
+def _bgp_sfmix():
+    """One complete fifteen-minute MRT window from the SFMIX collector."""
+    url, name, size = _bgp_newest()
+    data, raw = _bgp_fetch_mrt(url)
+    payload = _bgp_parse(data)
+    payload.update({
+        "collector": BGP_COLLECTOR, "site": BGP_SITE,
+        "file": name, "bytes": raw, "mrt_bytes": len(data),
+        "units": {"t0": "epoch seconds UTC", "ann_s": "prefixes/second",
+                  "bins": "prefixes per bin_secs seconds",
+                  "ann": "prefixes announced in the window",
+                  "wdr": "prefixes withdrawn in the window"},
+    })
+    return payload, url
 
 
 # --------------------------------------------------------------------------
@@ -2831,6 +5645,277 @@ def _sfport_cruise():
             "revised": revised, "calls": uniq,
             "note": "berth times as published, not Golden Gate transit times",
             "sources": used}, used[0]
+
+
+# --------------------------------------------------------------------------
+# The San Francisco Metropolitan Internet Exchange: what is on its backbone
+# right now, and how much of it there is. sfmix.py draws the weathermap.
+#
+# **Three endpoints, all keyless, all the exchange's own.**
+#
+#   /statistics/map/map.json   the public structure -- sites, metros, and the
+#                              inter-metro trunks with their real fibre routes
+#                              as coarse lon/lat polylines.
+#   /statistics/map/traffic    live bits per second per opaque cable id, with a
+#                              24 hour series and a per-member breakdown.
+#   /statistics/metrics/?panel=ix_total&range=24h
+#                              the aggregate everybody quotes: total ingress
+#                              and egress across every member port, 300 s step.
+#
+# **The generation field is a safety interlock and it is used as one.** Both
+# map.json and the traffic feed carry the same `generation` string, and the
+# cable ids are opaque *per generation* -- they are rebuilt from scratch every
+# time the portal re-runs its NetBox build. Joining traffic from one generation
+# onto geometry from another does not fail loudly: it silently drops some links
+# and, worse, could colour a trunk with a number belonging to a different one.
+# So the two are fetched, compared, and refetched once if they disagree (which
+# is the ordinary race -- the builder republished between our two GETs). A
+# second disagreement raises, and `fetch()` keeps the last good record.
+#
+# **What is thrown away here, and why.** The three responses are about 135 KB
+# together and almost none of it survives:
+#
+#   * The twelve *sites* collapse to five *metros*. At the scale this panel
+#     draws -- eighty kilometres across two hundred columns, so a third of a
+#     kilometre a pixel -- the six Santa Clara facilities are the same pixel,
+#     and the six intra-metro cables between them are zero pixels long. The
+#     portal's own zoomed-out tier already solved this: `metro_cables` are
+#     pre-aggregated inter-metro trunks with their own routes, and traffic is
+#     summed onto them exactly the way the portal's frontend does it.
+#   * The 24 hour per-link series and the per-member breakdowns go entirely.
+#     The panel shows *now* per trunk; the history it shows is the exchange
+#     total, which is a different and much smaller series.
+#   * The routes are Douglas-Peucker simplified to about a tenth of their
+#     vertices. 846 points down to under a hundred, at a tolerance well under
+#     one panel pixel, so the drawn line is unchanged.
+#   * The ix_total series is bucketed down from 289 points to 97 and carried in
+#     megabits rather than bits. Bucket *maximum* rather than mean, and the true
+#     peak and its timestamp are carried separately, because the peak is the
+#     number an exchange is judged by and a decimation that shaved it would be
+#     the one lie this record could tell.
+#
+# What lands in the cache is about 6 KB.
+# --------------------------------------------------------------------------
+
+SFMIX_MAP_URL = "https://portal.sfmix.org/statistics/map/map.json"
+SFMIX_TRAFFIC_URL = "https://portal.sfmix.org/statistics/map/traffic"
+SFMIX_METRICS_URL = ("https://portal.sfmix.org/statistics/metrics/"
+                     "?panel=%s&range=24h")
+
+# Half an hour. The traffic feed is a five-minute Prometheus rate behind a
+# thirty-second server-side cache, so a record older than this is showing a
+# backbone load that has had time to move; the structure underneath it is good
+# for days. Thirty minutes is where "this is what the exchange is doing" stops
+# being true and the panel has to say so.
+SFMIX_TTL = 1800
+
+# Five minutes, which is the resolution of the underlying counters. Asking
+# faster returns the same numbers and costs the portal a Prometheus burst.
+SFMIX_INTERVAL = 300
+
+# How many points of the 24 hour total curve to keep. The chart it draws is
+# about ninety columns wide, so ninety-seven buckets of fifteen minutes each is
+# a hair over one sample a column and nothing is thrown away that could be seen.
+SFMIX_SERIES_POINTS = 97
+
+# Douglas-Peucker tolerance for the trunk routes, in degrees. 0.0012 deg is
+# about 110 m, which at the panel's ~330 m a pixel is a third of a pixel: the
+# simplification is invisible by construction, and it takes 846 vertices to 90.
+SFMIX_PATH_TOL = 0.0012
+
+
+def _sfmix_simplify(path, tol):
+    """Douglas-Peucker on a [[lon, lat], ...] polyline. Iterative, no recursion.
+
+    Plain arithmetic in degrees rather than metres: the tolerance is a panel
+    pixel and the aspect error over half a degree of latitude is smaller than
+    the rounding that follows, so converting would be precision theatre.
+    """
+    if len(path) < 3:
+        return [list(p) for p in path]
+    keep = [False] * len(path)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(path) - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        if i1 <= i0 + 1:
+            continue
+        x0, y0 = path[i0]
+        x1, y1 = path[i1]
+        dx, dy = x1 - x0, y1 - y0
+        norm = (dx * dx + dy * dy) ** 0.5
+        worst, at = -1.0, -1
+        for i in range(i0 + 1, i1):
+            x, y = path[i]
+            if norm == 0.0:
+                d = ((x - x0) ** 2 + (y - y0) ** 2) ** 0.5
+            else:
+                d = abs(dy * (x - x0) - dx * (y - y0)) / norm
+            if d > worst:
+                worst, at = d, i
+        if worst > tol:
+            keep[at] = True
+            stack.append((i0, at))
+            stack.append((at, i1))
+    return [[round(path[i][0], 5), round(path[i][1], 5)]
+            for i in range(len(path)) if keep[i]]
+
+
+def _sfmix_metro_code(codes):
+    """The three-letter airport-ish prefix a metro's site codes agree on.
+
+    'sfo01', 'sfo02' -> 'SFO'; the Santa Clara metro's six codes are five scl
+    and one snv, and the majority wins. Derived rather than hardcoded because a
+    table of pretty names in this file would be the thing that went stale the
+    first time a site was added.
+    """
+    counts = {}
+    for code in codes:
+        head = str(code)[:3].upper()
+        if len(head) == 3 and head.isalpha():
+            counts[head] = counts.get(head, 0) + 1
+    if not counts:
+        return "?"
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
+def _sfmix_buckets(values, stamps, n):
+    """Bucket a series down to `n` points, keeping the maximum of each bucket.
+
+    Maximum and not mean: this is a traffic curve whose whole shape question is
+    "how high did it get", and averaging four five-minute samples into a
+    quarter hour shaves the top off every spike it touches.
+    """
+    if not values:
+        return [], []
+    n = min(n, len(values))
+    out_v, out_t = [], []
+    for k in range(n):
+        lo = k * len(values) // n
+        hi = max(lo + 1, (k + 1) * len(values) // n)
+        chunk = [v for v in values[lo:hi] if v is not None]
+        out_v.append(max(chunk) if chunk else None)
+        out_t.append(int(stamps[hi - 1]))
+    return out_v, out_t
+
+
+def _sfmix_mbps(v):
+    return None if v is None else int(round(float(v) / 1e6))
+
+
+@product("sfmix-ix", ttl=SFMIX_TTL, interval=SFMIX_INTERVAL,
+         description="SFMIX metro trunks, utilisation and 24h exchange total")
+def _sfmix_ix():
+    """The exchange's backbone as five trunks, plus the total curve for today.
+
+    Traffic is summed onto a trunk from its member cables the way the portal's
+    own frontend does it -- utilisation is `max(in, out) / capacity`, the
+    convention every weathermap has used since MRTG, because a link is as busy
+    as its busier direction and averaging the two hides a saturated one.
+
+    Direction is resolved per member rather than assumed. A trunk's `out` is
+    a_metro to z_metro, and each member cable carries its own a_site; where a
+    member happens to be cabled the other way round its two figures are swapped
+    before they are added, so the arrows on the panel point at the direction
+    the bits are actually going.
+    """
+    struct = get_json(SFMIX_MAP_URL, timeout=30)
+    traffic = get_json(SFMIX_TRAFFIC_URL, timeout=30)
+    gen = struct.get("generation")
+    if gen != traffic.get("generation"):
+        # The ordinary case is a rebuild landing between our two GETs. Refetch
+        # the structure once, which is the half that just changed.
+        struct = get_json(SFMIX_MAP_URL, timeout=30)
+        gen = struct.get("generation")
+    if not gen or gen != traffic.get("generation"):
+        raise ValueError("map generation %r != traffic generation %r"
+                         % (gen, traffic.get("generation")))
+
+    metros_in = struct.get("metros") or {}
+    links = traffic.get("links") or {}
+    site_metro = {code: site.get("metro")
+                  for code, site in (struct.get("sites") or {}).items()}
+    cable_a = {c["id"]: c.get("a_site") for c in (struct.get("cables") or [])}
+
+    metros = {}
+    for name, m in metros_in.items():
+        codes = m.get("codes") or []
+        metros[name] = {"lat": round(float(m["lat"]), 5),
+                        "lon": round(float(m["lon"]), 5),
+                        "code": _sfmix_metro_code(codes),
+                        "sites": len(codes)}
+
+    trunks = []
+    for g in struct.get("metro_cables") or []:
+        a_metro, z_metro = g.get("a_metro"), g.get("z_metro")
+        cap = float(g.get("capacity_bps") or 0.0)
+        in_bps = out_bps = 0.0
+        seen = 0
+        for cid in g.get("member_ids") or []:
+            tr = links.get(cid)
+            if not tr:
+                continue
+            seen += 1
+            # `out` on a cable leaves its own a_site. If that site is in the
+            # trunk's z metro the cable is cabled the other way round and its
+            # two directions belong to the trunk's other arrow.
+            flip = site_metro.get(cable_a.get(cid)) == z_metro
+            in_bps += float(tr.get("out_bps") or 0.0) if flip \
+                else float(tr.get("in_bps") or 0.0)
+            out_bps += float(tr.get("in_bps") or 0.0) if flip \
+                else float(tr.get("out_bps") or 0.0)
+        trunks.append({
+            "a": a_metro, "z": z_metro,
+            "cap_mbps": int(round(cap / 1e6)),
+            "in_mbps": _sfmix_mbps(in_bps), "out_mbps": _sfmix_mbps(out_bps),
+            "util_pct": round(100.0 * max(in_bps, out_bps) / cap, 2)
+                        if cap > 0 else 0.0,
+            "status": g.get("status") or "up",
+            "members": len(g.get("member_ids") or []),
+            "reporting": seen,
+            "path": _sfmix_simplify(g.get("path") or [], SFMIX_PATH_TOL),
+        })
+    if not trunks:
+        raise ValueError("SFMIX map carried no metro trunks")
+
+    # Every inter-site cable, whether or not it is inside a metro trunk. This
+    # is the "13 backbone links" the panel can honestly claim; the intra-site
+    # LAGs and cross-connects are not backbone and are not counted.
+    inter = [c for c in (struct.get("cables") or [])
+             if c.get("scope") == "inter"]
+
+    total = get_json(SFMIX_METRICS_URL % "ix_total", timeout=30)
+    stamps = [int(x) for x in (total.get("timestamps") or [])]
+    series = {s.get("name", "").lower(): s.get("values") or []
+              for s in (total.get("series") or [])}
+    ingress = series.get("ingress") or []
+    if not stamps or len(ingress) != len(stamps):
+        raise ValueError("ix_total series does not line up with its timestamps")
+
+    # Ingress and egress differ by about two parts in ten thousand, which is
+    # what an exchange looks like when it is working: what a member sends into
+    # the fabric is what some other member receives out of it. One curve, and
+    # the panel says "exchanged" rather than picking a side.
+    finite = [(v, ts) for v, ts in zip(ingress, stamps) if v is not None]
+    if not finite:
+        raise ValueError("ix_total series is entirely null")
+    peak_v, peak_t = max(finite, key=lambda vt: vt[0])
+    now_v, now_t = finite[-1]
+    curve, curve_t = _sfmix_buckets(ingress, stamps, SFMIX_SERIES_POINTS)
+
+    return {"generation": gen,
+            "generated_at": struct.get("generated_at"),
+            "metros": metros,
+            "trunks": trunks,
+            "backbone_links": len(inter),
+            "sites": len(site_metro),
+            "total": {"now_mbps": _sfmix_mbps(now_v), "now_at": int(now_t),
+                      "peak_mbps": _sfmix_mbps(peak_v), "peak_at": int(peak_t),
+                      "step_s": int(total.get("step") or 300),
+                      "t": curve_t,
+                      "mbps": [_sfmix_mbps(v) for v in curve]},
+            "note": "util is max(in,out)/capacity per trunk, portal convention",
+            }, SFMIX_MAP_URL
 
 
 def main():
