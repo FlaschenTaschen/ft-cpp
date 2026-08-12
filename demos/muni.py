@@ -30,33 +30,56 @@ Now the geometry carries it:
     slides *inwards* and touches the name at the moment it pulls in. Two buses
     on the same street heading opposite ways, meeting the place you stand,
     which is what is physically out there.
-  * **The gap around the name is your walk, drawn to scale, twice.** A post
-    stands on the road at exactly walking-time from the centre on each side,
-    and between the two posts the road is dotted rather than solid. The width
-    of that dotted gate *is* the walk: De Haro & 18th is 140 m away so its gate
-    is a narrow collar around its name, and 16th & Wisconsin is 413 m away so
-    its gate is half the row. Nothing is drawn equidistant; the three real
-    distances are the picture.
+  * **The gap around the name is your walk, drawn to scale, twice, and now
+    also written out.** A post stands on the road at exactly walking-time from
+    the centre on each side, and between the two posts the road is dotted
+    rather than solid. The width of that dotted gate *is* the walk: De Haro &
+    18th is 140 m away so its gate is a narrow collar around its name, and 16th
+    & Wisconsin is 413 m away so its gate is half the row. Nothing is drawn
+    equidistant; the three real distances are the picture. Beside each gate,
+    **in the gate's own colour**, the row says `7 MIN WALK` in figures -- see
+    below for why that stopped being optional.
   * **A bus outside the gate you can still catch. A bus inside it is gone** --
     it will reach the stop before you can walk there -- and it turns grey to
     say so. Same rule as the first layout, mirrored, and still no legend.
-  * **The two numbers flanking the name are minutes before you must leave**,
-    one per direction, on the side of the name that direction comes from. NOW
-    means put your shoes on.
+  * **The two readouts flanking the name say `LEAVE 4`**, one per direction, on
+    the side of the name that direction comes from -- and when the answer is
+    "now" the readout becomes a lit block that pulses, `LEAVE NOW` in dark type
+    on a warm plate, the only filled block anywhere on the panel.
+
+**This is the third layout and the second round of it was watched on the wall.**
+What came back was two things. The lines were unclear -- "it seems like there is
+a dotted line under each bus somehow?" -- and what the numbers measured was
+unclear. Both were real and both had the same root: the panel was saying three
+things and drawing two of them the same way.
+
+  * **Two different quantities were both dotted.** The gate was the walk. A
+    second dotted rule under each bus was its lateness, running back to a cap
+    at the time the timetable had promised. A viewer sees dotted marks in two
+    places and reasonably concludes they mean the same kind of thing, and at
+    64 rows that is fatal to both. Lateness is now **not drawn at all**. It was
+    the least important of the three things the panel said -- the expected time
+    is the truth and it is already where the bus is drawn; how far that has
+    slipped from a promise is context, not an answer -- and cutting it left the
+    gate as the only dotted mark on the panel, which is the whole point. It
+    also gave back two rows in every row of the panel, which is where the
+    bigger buses and the room for the walk caption came from.
+  * **A bare number beside a stop name means "minutes until the bus", to
+    everyone.** This panel's number never meant that; it meant arrival minus
+    your walk. So it was being read as the wrong quantity, silently, which is
+    the worst way for a panel to be wrong. It now carries its verb: `LEAVE 4`.
+    The alternative -- print minutes-to-arrival and move leave-by elsewhere --
+    was rejected because minutes-to-arrival is *already on screen*, to scale,
+    as the bus's own distance from the centre; printing it again as a figure
+    would spend the panel's most valuable columns saying something the picture
+    already says.
 
 **The rows are not the same height, on purpose.** Six (route, direction) lanes
 of eight rows each was the old panel and it was six equal bands of a thing that
 is not equal. Grouping by stop instead collapses the six into four real places
 -- the 55 and the 22 each have both directions at one corner -- and the nearest
-of those four gets a taller row, a taller bus and more air than the far ones.
-The stop you can reach in two minutes is the one you can act on.
-
-**The bar along the road is lateness, and it is drawn to the same scale as
-everything else.** 511 gives both what the timetable promised and what is
-actually going to happen, so the gap between them is a length on this axis, not
-a number to read. A mark trailing behind a bus is one running late; a mark
-ahead of it is one running early, which sounds harmless and is not -- an early
-22 is a 22 you will miss.
+of those four gets a taller row and a taller bus than the far ones. The stop
+you can reach in two minutes is the one you can act on.
 
 **Live where it can be, honest where it cannot.** The header says LIVE and goes
 green when it is drawing 511 predictions of tracked vehicles. A bus 511 is not
@@ -88,7 +111,7 @@ function of `t` from there. So a segment animates, a preview bakes
 reproducibly, and `--now` pins the moment, which is how the tests and the
 screenshot get a fixed picture.
 
-    $ python3 muni.py --now 1786566746        # a fixed weekday morning
+    $ python3 muni.py --now 1786562001        # the screenshot's moment
     $ python3 muni.py --horizon 25            # a longer approach
     $ python3 muni.py --source schedule       # ignore live, draw the timetable
 """
@@ -183,9 +206,15 @@ def blit_text(dst, y, x, s, rgb):
 # column, because the middle column is the stop.
 #
 # Vertically: five rows of header, one rule, and the rest handed out to rows of
-# stops. A row needs 8 + 2*bus rows -- name, a lateness rule and a bus band
-# each side of one road row -- so 14 rows at its smallest and 16 with the taller
-# bus. `_allocate` hands the spare rows to the nearest stops first; see there.
+# stops. A row needs 6 + 2*bus rows -- a line of type for the name, then a bus
+# band each side of one road row -- so 14 rows at its smallest and 16 with the
+# taller bus. `_allocate` hands the spare rows to the nearest stops first.
+#
+# It used to be 8 + 2*bus: a row also carried a lateness rule above and below
+# the road. Cutting lateness gave those two rows back, and rather than leaving
+# them as air they went into the buses, which are now four and five rows
+# instead of three and four. A bus a third taller on a wall read at three
+# metres is worth considerably more than two rows of gap.
 # --------------------------------------------------------------------------
 
 W, H = ds.WIDTH, ds.HEIGHT
@@ -195,9 +224,9 @@ RULE_Y = HDR_H                          # the rule, which doubles as the axis
 LANE_TOP = HDR_H + 1
 LANE_BUDGET = H - LANE_TOP              # 58 rows of stops
 
-LANE_MIN_BUS = 3                        # rows of bus in the smallest row
-LANE_MAX_BUS = 4
-LANE_MIN_H = 8 + 2 * LANE_MIN_BUS       # 14
+LANE_MIN_BUS = 4                        # rows of bus in the smallest row
+LANE_MAX_BUS = 5
+LANE_MIN_H = 6 + 2 * LANE_MIN_BUS       # 14
 LANE_MAX_LANES = LANE_BUDGET // LANE_MIN_H
 
 CX = W // 2                             # the stop: the middle column
@@ -232,6 +261,14 @@ C_BG = (6, 7, 10)
 C_ROAD = (26, 29, 38)                   # the street, outside the gate
 C_ROAD_DEAD = (13, 14, 19)              # a half with no service at this stop
 C_WALK = (86, 76, 56)                   # the gate: the walk, dotted
+# The walk written out in figures, and it is the gate's colour scaled up by
+# about three quarters -- bright enough to read across a room, dim enough that
+# the stop's name still outranks it. Same hue, deliberately: the caption and
+# the dotted gate are one statement made twice, and being one hue is what
+# teaches the gate's meaning without a legend. That relationship is asserted in
+# scripts/test-muni.py rather than left to the eye, because it is the kind of
+# thing a later tweak to one of the two constants silently breaks.
+C_WALK_TEXT = (150, 133, 98)
 C_POST = (150, 140, 110)                # the last moment you can leave
 C_STOP = (255, 214, 140)                # the stop itself, at the centre
 C_STOP_DIM = (92, 74, 44)
@@ -244,8 +281,6 @@ C_SCHED = (255, 176, 48)                # ...and when it is not
 C_STALE = (255, 96, 72)
 C_URGENT = (255, 246, 226)              # "leave now": the brightest thing here
 C_MISSED = (76, 70, 78)                 # a bus inside the gate: gone
-C_LATE = (214, 78, 66)                  # running behind the timetable
-C_EARLY = (72, 140, 190)                # running ahead of it, which is worse
 
 # How far out the street reaches, in minutes, per side. Fifteen puts the 22's
 # posts -- seven minutes of walking -- roughly halfway out on each side, which
@@ -259,8 +294,17 @@ HORIZON_MIN = 15.0
 # visible, rather than a bus vanishing at the instant it mattered.
 PAST_MIN = -0.5
 
-# Below this, a bus is on time and the lateness mark is clutter.
-LATE_FLOOR_MIN = 0.4
+# Under this many minutes of margin the readout stops being a number and
+# becomes a lit plate: LEAVE NOW, dark type on warm ground, pulsing. Above it
+# and under URGENT_MIN the type goes white-hot but stays type.
+NOW_MIN = 1.0
+URGENT_MIN = 3.0
+
+# The plate's pulse: a full cycle in this many seconds, never dimmer than
+# PULSE_FLOOR of full. It never goes dark -- a highlight that blinks off is a
+# highlight somebody can walk past during the off half.
+PULSE_S = 1.6
+PULSE_FLOOR = 0.62
 
 # Street-type words that carry no information once every name has them.
 SUFFIXES = set(("ST", "STREET", "AVE", "AVENUE", "BLVD", "BOULEVARD",
@@ -482,7 +526,7 @@ def _allocate(n, budget=LANE_BUDGET):
     for i in range(n):                          # taller buses, nearest first
         if used + 2 > budget:
             break
-        if h[i] >= 8 + 2 * LANE_MAX_BUS:
+        if h[i] >= 6 + 2 * LANE_MAX_BUS:
             continue
         h[i] += 2
         used += 2
@@ -501,27 +545,29 @@ def _place(lanes):
     for lane, h in zip(lanes, heights):
         lane.y0 = y
         lane.h = h
-        lane.bus_h = LANE_MAX_BUS if h >= 8 + 2 * LANE_MAX_BUS else LANE_MIN_BUS
+        lane.bus_h = LANE_MAX_BUS if h >= 6 + 2 * LANE_MAX_BUS else LANE_MIN_BUS
         y += h
     return lanes
 
 
 def lane_rows(lane):
-    """(name_y, late_in_y, bus_in_y, road_y, bus_out_y, late_out_y).
+    """(name_y, bus_in_y, road_y, bus_out_y).
+
+    Four bands, not six. The two that went were the lateness rules -- one above
+    the inbound bus band and one below the outbound one -- and nothing is drawn
+    in those rows now; the bus bands grew into them instead.
 
     The block is centred in whatever height the row got, so a row with a spare
     pixel gets air above and below rather than a stripe of it at one end.
     """
     b = lane.bus_h
-    block = 8 + 2 * b
+    block = 6 + 2 * b
     top = lane.y0 + max(0, (lane.h - block) // 2)
     name_y = top
-    late_in = top + GLYPH_H
-    bus_in = late_in + 1
+    bus_in = top + GLYPH_H
     road = bus_in + b
     bus_out = road + 1
-    late_out = bus_out + b
-    return name_y, late_in, bus_in, road, bus_out, late_out
+    return name_y, bus_in, road, bus_out
 
 
 def build(args):
@@ -701,9 +747,19 @@ def _background(lanes, home, horizon, ppm, dropped):
         blit_text(bg, 0, unit_x, "5MIN", C_FAINT)
 
     for lane in lanes:
-        name_y, late_in, bus_in, road, bus_out, late_out = lane_rows(lane)
-        del late_in, late_out
+        name_y, bus_in, road, bus_out = lane_rows(lane)
         b = lane.bus_h
+
+        # The name first, because everything else on this line of type is
+        # positioned relative to it: the two LEAVE readouts sit in reserved
+        # slots either side of it, and the walk captions have to fit in what is
+        # left between those slots and the destination labels at the edges.
+        name = lane.name
+        nx = CX - text_width(name) // 2
+        lane.name_y = name_y
+        lane.slot_left = (nx - MARGIN_GAP - MARGIN_W, nx - MARGIN_GAP)
+        lane.slot_right = (nx + text_width(name) + MARGIN_GAP,
+                           nx + text_width(name) + MARGIN_GAP + MARGIN_W)
 
         for side in (LEFT, RIGHT):
             flow = lane.by_side.get(side)
@@ -737,11 +793,21 @@ def _background(lanes, home, horizon, ppm, dropped):
             if side == LEFT:
                 blit_text(bg, name_y, 1, flow.route, flow.rgb)
                 blit_text(bg, name_y, 2 + route_w, flow.label, C_DIM)
+                edge = 2 + route_w + text_width(flow.label)
             else:
                 x = W - 1 - route_w
                 blit_text(bg, name_y, x, flow.route, flow.rgb)
                 blit_text(bg, name_y, x - 2 - text_width(flow.label),
                           flow.label, C_DIM)
+                edge = x - 2 - text_width(flow.label)
+
+            # The walk, in figures, in the gate's own colour, in the gap
+            # between the destination label and the LEAVE readout. This is the
+            # thing the second round of this panel was missing: the gate says
+            # the walk beautifully and does not say what it is, and a viewer
+            # who has not been told cannot infer it from a width. The caption
+            # and the gate being one hue is what joins them.
+            _walk_caption(bg, lane, flow, name_y, side, edge)
 
         # The stop itself: a bright column through both bus bands, with the
         # name directly above it. This is the thing the two directions are
@@ -749,23 +815,52 @@ def _background(lanes, home, horizon, ppm, dropped):
         bg[bus_in:bus_out + b, CX] = C_STOP_DIM
         bg[bus_in + 1:bus_out + b - 1, CX] = C_STOP
 
-        name = lane.name
-        nx = CX - text_width(name) // 2
         blit_text(bg, name_y, nx, name, C_NAME)
-        # The two margin numbers are drawn every frame, flanking the name on
-        # the side of the direction they belong to. Their slots are reserved
-        # here so the layout does not jump when NOW becomes 12.
-        lane.slot_left = (nx - MARGIN_GAP - MARGIN_W, nx - MARGIN_GAP)
-        lane.slot_right = (nx + text_width(name) + MARGIN_GAP,
-                           nx + text_width(name) + MARGIN_GAP + MARGIN_W)
-        lane.name_y = name_y
     return bg
 
 
-# Wide enough for "00:00", which is what a row prints when nothing on it is
-# catchable inside the horizon. Reserving the widest case is what stops the
-# name shifting sideways when the answer changes.
-MARGIN_W = 5 * GLYPH_PITCH - 1
+def walk_minutes(walk_min):
+    """The walk as a whole number, rounded *up*.
+
+    Never down and never to nearest: a caption reading 6 for a six-and-a-half
+    minute walk tells somebody they have half a minute they do not have, which
+    is precisely the error this panel exists to remove. The gate keeps the
+    fractional truth; the caption is allowed to be conservative.
+    """
+    whole = int(walk_min)
+    if walk_min - whole > 1e-9:
+        whole += 1
+    return max(1, whole)
+
+
+def _walk_caption(bg, lane, flow, y, side, edge):
+    """`7 MIN WALK` for one direction, or the short form, or nothing.
+
+    Three forms in descending order of width, and the widest that fits is the
+    one drawn. The room available is whatever is left between the destination
+    label at the outer edge and the reserved LEAVE slot beside the name, and
+    that varies with the length of the stop's name -- 16TH/WISCONSIN is 55 px
+    of type and DE HARO is 27. Rather than tune a constant against the longest
+    name this tree happens to have today, the fit is measured.
+    """
+    room_lo = edge + 4 if side == LEFT else lane.slot_right[1] + 3
+    room_hi = lane.slot_left[0] - 3 if side == LEFT else edge - 4
+    mins = walk_minutes(flow.walk_min)
+    for text in ("%d MIN WALK" % mins, "%dMIN WALK" % mins, "%dMIN" % mins):
+        w = text_width(text)
+        if room_hi - room_lo >= w:
+            x = room_lo if side == LEFT else room_hi - w
+            blit_text(bg, y, x, text, C_WALK_TEXT)
+            return text
+    return None
+
+
+# Wide enough for LEAVE NOW, which is the widest thing a readout ever says --
+# wider than LEAVE 12 and wider than the 00:00 a row prints when nothing on it
+# is catchable inside the horizon. Reserving the widest case is what stops the
+# name shifting sideways when the answer changes, and it is also the width of
+# the lit plate, so every plate on the panel is the same size whatever it says.
+MARGIN_W = 9 * GLYPH_PITCH - 1
 
 # Two clear glyph widths of air between the name and each number. One looked
 # like a digit belonging to the name -- "8 DE HARO" reads as a street number,
@@ -786,16 +881,17 @@ MARGIN_GAP = 2 * GLYPH_PITCH
 
 BUS_W = 9
 BUS_SHAPE = {
+    # Five rows for the near stops, which is what cutting the lateness rules
+    # paid for. Roof, a lit body, a window band of its own, more body, wheels.
+    5: ((0.00, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00),
+        (1.35, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 0.75),
+        (1.35, 0.42, 0.42, 1.00, 0.42, 0.42, 1.00, 0.42, 0.75),
+        (1.35, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 0.75),
+        (0.55, 0.90, 0.55, 0.55, 0.55, 0.90, 0.55, 0.55, 0.00)),
+    # Four for the far ones: the same bus with one band of body taken out.
     4: ((0.00, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00),
         (1.35, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 0.75),
         (1.35, 0.42, 0.42, 1.00, 0.42, 0.42, 1.00, 0.42, 0.75),
-        (0.55, 0.90, 0.55, 0.55, 0.55, 0.90, 0.55, 0.55, 0.00)),
-    # Three rows for the far stops. The window band and the body have to share
-    # a row, so the windows become dark notches in a lit body rather than their
-    # own stripe; at this size that still reads as a bus and a solid block does
-    # not.
-    3: ((0.00, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00),
-        (1.35, 1.00, 0.42, 1.00, 0.42, 1.00, 0.42, 1.00, 0.75),
         (0.55, 0.90, 0.55, 0.55, 0.55, 0.90, 0.55, 0.55, 0.00)),
 }
 
@@ -803,11 +899,13 @@ BUS_SHAPE = {
 # its own timetable rather than tracking. It reads as "the shape of a bus, not
 # a bus", which is exactly the claim.
 BUS_GHOST = {
-    4: ((0.00, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00),
+    5: ((0.00, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00),
+        (0.90, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.62),
         (0.90, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.62),
         (0.90, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.62),
         (0.55, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00)),
-    3: ((0.00, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00),
+    4: ((0.00, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00),
+        (0.90, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.62),
         (0.90, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.62),
         (0.55, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.62, 0.00)),
 }
@@ -816,7 +914,7 @@ NEXT, LATER, MISSED = 0, 1, 2
 BUS_GAIN = {NEXT: 1.00, LATER: 0.58, MISSED: 1.00}
 
 
-def _bus_sprites(heights=(3, 4)):
+def _bus_sprites(heights=(4, 5)):
     """(h, route, state, mon, side) -> (rgb image, mask), baked once."""
     out = {}
     routes = list(ROUTE_RGB.items()) + [(None, ROUTE_FALLBACK)]
@@ -866,20 +964,21 @@ MAX_BUSES = 6                           # per direction, per row
 
 
 def _draw_lane(out, lane, clock, ppm, sprites):
-    """One row's buses, lateness marks and two numbers, for this instant."""
-    name_y, late_in, bus_in, road, bus_out, late_out = lane_rows(lane)
+    """One row's buses and its two LEAVE readouts, for this instant."""
+    name_y, bus_in, road, bus_out = lane_rows(lane)
+    del name_y, road
     b = lane.bus_h
 
     for side in (LEFT, RIGHT):
         flow = lane.by_side.get(side)
         if flow is None:
-            _margin(out, lane, side, None)
+            _margin(out, lane, bus_in, side, None, clock)
             continue
         if side == LEFT:
-            bus_y, late_y = bus_in, late_in
+            bus_y = bus_in
             xlo, xhi = 0, CX + 1 + int(round(-PAST_MIN * ppm))
         else:
-            bus_y, late_y = bus_out, late_out
+            bus_y = bus_out
             xlo, xhi = CX - int(round(-PAST_MIN * ppm)), W
 
         first_catchable = None
@@ -900,29 +999,16 @@ def _draw_lane(out, lane, clock, ppm, sprites):
 
             x = int(round(CX + side * mins * ppm))
 
-            # Lateness, on the road beside the bus, as a length on the same
-            # axis: from where the timetable put this bus to where it actually
-            # is. A faint dotted rule with a bright cap on the timetable end,
-            # rather than a solid bar -- five minutes early is fifty pixels,
-            # and fifty solid pixels per bus shouted louder than the buses did.
-            # The cap is what you read; the rule only has to connect it to its
-            # bus. Missed buses get none of it: how late a bus you cannot catch
-            # is running is not information.
-            if aim is not None and state != MISSED:
-                slip = (when - aim) / 60.0
-                if abs(slip) >= LATE_FLOOR_MIN:
-                    rgb = C_LATE if slip > 0 else C_EARLY
-                    ax = int(round(CX + side * ((aim - clock) / 60.0) * ppm))
-                    x0, x1 = (x, ax) if ax > x else (ax, x)
-                    x0, x1 = max(0, x0), min(W - 1, x1)
-                    if x1 > x0:
-                        out[late_y, x0:x1:2] = _shade(rgb, 0.45)
-                    if 0 <= ax < W:
-                        # Two rows, reaching from the lateness row towards the
-                        # bus band it belongs to, so a cap is unambiguously
-                        # attached to the direction above or below it.
-                        lo = late_y if side == LEFT else late_y - 1
-                        out[lo:lo + 2, ax] = rgb
+            # `aim` -- what the timetable promised, against `when`, what is
+            # actually going to happen -- is deliberately not drawn. It used to
+            # be a dotted rule back to a bright cap, and it was the second
+            # dotted thing on a panel whose first dotted thing is the walk; a
+            # viewer read the two as one kind of mark and got neither. The
+            # field is still fetched, because the record's shape is not this
+            # module's to change and it costs one integer per visit, and it is
+            # still carried through `live_visits` -- but nothing on screen
+            # depends on it, which is why there is no lateness row any more.
+            del aim
 
             img, mask = sprites.get((b, flow.route, state, mon, side),
                                     sprites[(b, None, state, mon, side)])
@@ -932,47 +1018,80 @@ def _draw_lane(out, lane, clock, ppm, sprites):
             if drawn >= MAX_BUSES:
                 break
 
-        _margin(out, lane, side, _margin_text(flow, clock, first_catchable))
+        _margin(out, lane, bus_in, side,
+                _margin_text(flow, clock, first_catchable), clock)
 
 
-def _margin(out, lane, side, pair):
-    """The one number a direction carries, printed beside the stop's name.
+def _margin(out, lane, bus_in, side, item, clock):
+    """The LEAVE readout a direction carries, printed beside the stop's name.
 
-    It flanks the name on the side that direction comes in from, which is the
-    whole reason it reads without a legend: the number on the left is about the
-    buses on the left. Type over the name row needs a dark plate under it --
-    one slice assignment, and worth it, because these two numbers are the
-    answer the panel exists to give.
+    It flanks the name on the side that direction comes in from, which is what
+    says which buses it is about: the readout on the left is about the buses on
+    the left. Type over the name row needs a dark plate under it -- one slice
+    assignment, and worth it, because these two readouts are the answer the
+    panel exists to give.
+
+    When the answer is "now" the plate inverts: the reserved slot is filled
+    with C_URGENT and the type is punched out of it in the background colour.
+    That is the one filled block on the whole panel and the one thing that
+    pulses, so it is legible as *an alarm* from across a room, before anybody
+    has read a word of it. It pulses between PULSE_FLOOR and full rather than
+    on and off, because a highlight that blinks dark can be walked past.
     """
     x0, x1 = lane.slot_left if side == LEFT else lane.slot_right
     y = lane.name_y
-    out[y - 1:y + GLYPH_H, max(0, x0 - 1):min(W, x1 + 1)] = C_BG
-    if pair is None:
+    ytop = max(LANE_TOP, y - 1)
+    out[ytop:y + GLYPH_H, max(0, x0 - 1):min(W, x1 + 1)] = C_BG
+    if item is None:
         return
-    text, rgb = pair
+    text, rgb, hot = item
     w = text_width(text)
     x = x1 - w if side == LEFT else x0     # right-aligned left, left-aligned right
-    blit_text(out, y, x, text, rgb)
+    if not hot:
+        blit_text(out, y, x, text, rgb)
+        return
+    # A triangle wave off `clock`, not a sine: no numpy, no math import, and a
+    # linear ramp is more visible on a matrix panel than a sinusoid, which
+    # spends most of its cycle near the ends. `clock` is now0 + t, so this is
+    # still a pure function of t.
+    phase = (clock % PULSE_S) / PULSE_S
+    k = PULSE_FLOOR + (1.0 - PULSE_FLOOR) * (2.0 * phase if phase < 0.5
+                                             else 2.0 - 2.0 * phase)
+    ylo = max(LANE_TOP, y - 1)
+    yhi = min(bus_in, y + GLYPH_H + 1)
+    out[ylo:yhi, max(0, x0 - 2):min(W, x1 + 2)] = _shade(C_URGENT, k)
+    blit_text(out, y, x, text, C_BG)
 
 
 def _margin_text(flow, clock, first_catchable):
+    """(text, colour, is-it-the-alarm) for one direction's readout.
+
+    The verb is the point. A bare figure beside a stop name means "minutes
+    until the bus" to everybody who has ever seen a departure board, and this
+    number has never meant that -- it is arrival minus your walk -- so it was
+    being read as the wrong quantity without anybody noticing they were doing
+    it. `LEAVE 4` costs six columns and removes the ambiguity completely.
+    """
     if first_catchable is not None:
         leave = first_catchable - flow.walk_min
-        # Under a minute is NOW rather than "0": a row reading 0 next to
-        # another reading NOW invites the question which of the two is sooner.
-        if leave < 1.0:
-            return "NOW", C_URGENT
+        # Under a minute is NOW rather than "0": a row reading LEAVE 0 next to
+        # one reading LEAVE NOW invites the question which of the two is
+        # sooner. This is also the case that lights the plate.
+        if leave < NOW_MIN:
+            return "LEAVE NOW", C_URGENT, True
         # Route colour, not white: the name beside it is the white, and a
         # number in the route's own hue also says *which* bus it is counting
         # down to on a row where two routes could share a corner. Inside three
-        # minutes it goes white-hot instead, which outranks everything.
-        return "%d" % int(leave), (C_URGENT if leave < 3.0 else flow.rgb)
+        # minutes it goes white-hot instead, one step short of the plate.
+        return ("LEAVE %d" % int(leave),
+                C_URGENT if leave < URGENT_MIN else flow.rgb, False)
     # Nothing catchable on this side. Say when the next one actually is,
-    # rather than leaving the flank blank and ambiguous.
+    # rather than leaving the flank blank and ambiguous. A clock time carries
+    # its own units -- the colon says what it is -- so it needs no verb.
     for when, _aim, _mon in flow.buses:
         if (when - clock) / 60.0 >= flow.walk_min:
-            return time.strftime("%H:%M", time.localtime(when)), C_DIM
-    return "--", C_FAINT
+            return time.strftime("%H:%M", time.localtime(when)), C_DIM, False
+    return "--", C_FAINT, False
 
 
 def _header(out, clock, tag, tag_rgb, age_txt, stale):

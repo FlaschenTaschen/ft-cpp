@@ -32,6 +32,23 @@ none of them look wrong on the wall:
   6. **A scheduled bus can wear a tracked bus's clothes.** `Monitored: false`
      must draw hollow. This is the panel's honesty and it is one array away
      from being lost.
+  7. **A second dotted mark can come back.** The panel used to draw lateness as
+     a dotted rule under each bus, and the walk as a dotted gate on the road;
+     watched on the wall, the two read as one kind of mark and neither
+     survived. Lateness is now not drawn at all, and `test_lateness_is_gone`
+     nails that shut from both ends -- changing `aim` may not change a single
+     pixel, and no row of a bus band may carry a dotted run. A future change
+     that quietly reintroduced one would be a regression that looks fine.
+  8. **The readouts can lose their verb.** A bare figure beside a stop name
+     reads as "minutes until the bus" to anybody who has seen a departure
+     board, and this one has never meant that; it is arrival minus your walk.
+     `LEAVE` is the fix and `test_leave_readout` asserts the whole string, not
+     the number, so dropping the word fails rather than passing quietly.
+  9. **The walk can go back to being implicit.** It is drawn as the gate's
+     width, which is elegant and not self-describing; it is now also written
+     out per direction. `test_walk_is_stated` asserts the figures, that they
+     round *up*, and that the caption is the gate's own hue -- because the two
+     being one colour is the only thing joining them.
 
 Two things about how these run, both learned the hard way in this tree. The
 demo is a **wall-clock** panel, so every check pins `--now`; without that the
@@ -262,10 +279,79 @@ def bus_x(flow, mins, ppm):
 
 def side_band(frame, lane, side):
     """The rows a direction's buses are drawn in, and only those."""
-    _name_y, _li, bus_in, road, bus_out, late_out = muni.lane_rows(lane)
+    _name_y, bus_in, road, bus_out = muni.lane_rows(lane)
     if side == muni.LEFT:
         return frame[bus_in:road]
-    return frame[bus_out:late_out]
+    return frame[bus_out:bus_out + lane.bus_h]
+
+
+def name_band(frame, lane):
+    """The five rows of type carrying the name, the readouts and the walk."""
+    return frame[lane.name_y:lane.name_y + muni.GLYPH_H]
+
+
+def has_text(frame, lane, x, text, thresh=40):
+    """Is exactly `text` drawn at column x on this row's line of type?"""
+    want = muni.text_mask(text)
+    got = name_band(frame, lane)[:, x:x + want.shape[1]].max(axis=2) > thresh
+    return got.shape == want.shape and np.array_equal(got, want)
+
+
+def find_text(frame, lane, text, lo, hi, thresh=40):
+    """The column `text` is drawn at somewhere in [lo, hi), or None.
+
+    The walk caption's position is not a constant: it is placed in whatever
+    room is left between the destination label at the edge and the reserved
+    LEAVE slot beside the name, and that room depends on the length of the
+    stop's name. Asserting a column would be asserting the test against the
+    layout code; asserting that the string is drawn *somewhere in the half*
+    is the claim that actually matters.
+    """
+    for x in range(max(0, lo), min(muni.W, hi)):
+        if has_text(frame, lane, x, text, thresh):
+            return x
+    return None
+
+
+def slot_brightness(frame, lane, side):
+    """Mean pixel value over a readout's reserved slot.
+
+    The "leave now" highlight is inverse video: the slot is filled with
+    C_URGENT and the type is punched out of it in the background colour. Mean
+    brightness separates that from ordinary type cleanly -- a plate measures
+    about 140 and a slot holding LEAVE 5 about 60 -- where counting lit pixels
+    does not, because a lit plate with nine glyphs punched out of it happens to
+    have a similar lit *fraction* to the glyphs alone.
+    """
+    x0, x1 = lane.slot_left if side == muni.LEFT else lane.slot_right
+    return float(name_band(frame, lane)[:, x0:x1].mean())
+
+
+def longest_dotted_run(row, thresh=50):
+    """The longest alternating lit/unlit run on a row, counted in dots.
+
+    A dotted rule in this panel is `row[a:z:2] = colour`, so it shows up as
+    lit-gap-lit-gap. This counts the longest such stretch, which is how
+    `test_lateness_is_gone` can assert "there is exactly one dotted thing on
+    this panel and it is on the road" in pixels rather than by reading the
+    source.
+
+    The threshold sits above the road itself and below the gate drawn on it:
+    C_ROAD is (26, 29, 38) and C_WALK is (86, 76, 56), so at 24 the gaps
+    between the dots read as lit too and the gate is invisible to this. That
+    is not a detail -- at 24 this function returns 0 for every row on the
+    panel and the check passes by finding nothing anywhere.
+    """
+    idx = np.nonzero(row.max(axis=1) > thresh)[0]
+    if not len(idx):
+        return 0
+    best = run = 1
+    for i in range(1, len(idx)):
+        run = run + 1 if idx[i] - idx[i - 1] == 2 else 1
+        best = max(best, run)
+    # A solid run has gaps of one and a lone pixel has no gap at all; both are
+    # 1 here, and only a stretch of every-other-pixel counts as dotted.
+    return best if best > 1 else 0
 
 
 def lit_columns(band, thresh=24):
@@ -307,7 +393,7 @@ def post_column(frame, lane, side):
     argmax on every row, so the centre and its immediate neighbours are cut out
     of the search rather than reasoned about.
     """
-    road = muni.lane_rows(lane)[3]
+    road = muni.lane_rows(lane)[2]
     row = frame[road].astype(int).sum(axis=1)
     if side == muni.LEFT:
         lo, hi = 0, muni.CX - 1
@@ -498,8 +584,19 @@ def test_row_heights():
         for lane in lanes:
             rows = muni.lane_rows(lane)
             check("%s fits inside the panel" % lane.name,
-                  rows[0] >= muni.LANE_TOP and rows[-1] < muni.H,
+                  rows[0] >= muni.LANE_TOP
+                  and rows[-1] + lane.bus_h <= muni.H,
                   "%s in %d..%d" % (rows, lane.y0, lane.y0 + lane.h))
+            # Four bands, not the six the lateness layout had, and they are
+            # contiguous: name, inbound bus, road, outbound bus. Any gap here
+            # would be a row nothing draws in, which is where a second mark
+            # would find room to come back.
+            name_y, bus_in, road, bus_out = rows
+            check("%s has no spare band between name and bus" % lane.name,
+                  bus_in == name_y + muni.GLYPH_H, "%s" % (rows,))
+            check("%s has no spare band around the road" % lane.name,
+                  road == bus_in + lane.bus_h and bus_out == road + 1,
+                  "%s" % (rows,))
 
 
 def test_posts_to_scale():
@@ -566,7 +663,7 @@ def test_directions_converge():
         # A stop with only one direction leaves the other half of its road
         # visibly dark, rather than drawing a street nothing runs on.
         solo = by_name(lanes, "DE HARO")
-        road = muni.lane_rows(solo)[3]
+        road = muni.lane_rows(solo)[2]
         served = solo.flows[0].side
         live_px = int(frame[road, muni.CX - 30 if served == muni.LEFT
                             else muni.CX + 30].sum())
@@ -636,80 +733,226 @@ def test_unmonitored_is_hollow():
               int(band[0, x - 2:x + 3].max()) > 20)
 
 
-def test_lateness_bar():
-    """Lateness is a mark beside the road, on the same axis, signed."""
+def test_lateness_is_gone():
+    """Lateness is not drawn, and the gate is the only dotted mark left.
+
+    This replaces the four checks the old dotted lateness rule had (that a mark
+    was drawn, that it reached back to the aimed time, that late read warm, and
+    that a missed bus carried none). That mark is deliberately gone: it was the
+    second dotted thing on a panel whose first dotted thing is the walk, and on
+    the wall the two read as one kind of mark, so neither said anything. What
+    is asserted instead is the *absence*, from both ends -- because a mark that
+    was removed by deleting a draw call is a mark somebody can reinstate by
+    accident.
+    """
     with tempfile.TemporaryDirectory() as cache:
         synthetic(cache)
-        ppm = ppm_for()
         frame, lanes = rendered(cache)
-        lane = by_name(lanes, "DE HARO")
-        flow = lane.flows[0]
-        late_y = muni.lane_rows(lane)[1 if flow.side == muni.LEFT else 5]
-        row = frame[late_y].astype(int)
-        lit = np.nonzero(row.sum(axis=1) > 24)[0]
-        check("a lateness mark is drawn at all", len(lit) > 0)
-        if len(lit):
-            # The far bus is three minutes late, so its aimed cap sits three
-            # minutes further out along its own side.
-            bus = bus_x(flow, flow.walk_min + 4.0, ppm)
-            aim = bus_x(flow, flow.walk_min + 4.0 - 3.0, ppm)
-            lo, hi = sorted((bus, aim))
-            check("the lateness mark reaches back to the aimed time",
-                  lit.min() <= lo + 2 and lit.max() >= hi - 3,
-                  "lit %d..%d, want ~%d..%d" % (lit.min(), lit.max(), lo, hi))
-            # Late is warm: red channel must dominate blue.
-            px = frame[late_y, aim].astype(int)
-            check("late reads warm", px[0] > px[2], "rgb %s" % px.tolist())
-            # A missed bus gets no mark: how late a bus you cannot catch is
-            # running is not information. The near bus is inside the walk.
-            missed = bus_x(flow, flow.walk_min - 0.5, ppm)
-            near = row[max(0, missed - 3):missed + 4].sum(axis=1)
-            # Against the threshold, not against zero: the background is
-            # (6, 7, 10), so "nothing drawn here" sums to 161 a pixel and an
-            # equality test would fail describing a mark that is not there.
-            check("a missed bus carries no lateness mark",
-                  int(near.max()) <= 24, "max %d" % near.max())
+
+        # From the data end: the fixture's far bus on every flow is three
+        # minutes late. Rewrite every `aim` to match its `exp` -- every bus
+        # exactly on time -- and the panel must be byte-identical. Nothing on
+        # screen may depend on AimedArrivalTime.
+        path = os.path.join(cache, "muni-live.json")
+        with open(path) as fh:
+            rec = json.load(fh)
+        changed = 0
+        for visits in rec["payload"]["stops"].values():
+            for v in visits:
+                if v["aim"] != v["exp"]:
+                    v["aim"] = v["exp"]
+                    changed += 1
+        check("the fixture really did carry late buses", changed >= 6,
+              "%d visits differed" % changed)
+        with open(path, "w") as fh:
+            json.dump(rec, fh)
+        ontime, _lanes = rendered(cache)
+        check("erasing every lateness changes not one pixel",
+              np.array_equal(frame, ontime),
+              "%d pixels differ" % int((frame != ontime).any(axis=2).sum()))
+
+        # From the pixel end: within a row, a dotted run may appear on the road
+        # and nowhere else. The old lateness rule lived on a row of its own
+        # immediately outside each bus band; those rows are now bus, and if
+        # anything ever dots one of them again this fails by name.
+        for lane in lanes:
+            _name_y, bus_in, road, bus_out = muni.lane_rows(lane)
+            check("%s: the road carries the dotted gate" % lane.name,
+                  longest_dotted_run(frame[road]) >= 6,
+                  "%d dots" % longest_dotted_run(frame[road]))
+            for y in range(bus_in, bus_out + lane.bus_h):
+                if y == road:
+                    continue
+                check("%s: row %d carries no dotted rule" % (lane.name, y),
+                      longest_dotted_run(frame[y]) < 6,
+                      "%d dots" % longest_dotted_run(frame[y]))
 
 
-def test_margin_numbers():
-    """The two numbers flanking a name are arrival minus walk, per direction."""
+def test_leave_readout():
+    """The readouts flanking a name say LEAVE, and say arrival minus walk.
+
+    The verb is the assertion. A bare figure was being read as minutes until
+    the bus -- which is what it means on every departure board anybody has
+    seen -- when it has always meant minutes until you have to walk out of the
+    door, so the whole string is checked and not just the digits.
+    """
     with tempfile.TemporaryDirectory() as cache:
         synthetic(cache)
         frame, lanes = rendered(cache)
         lane = by_name(lanes, "CONNECTICUT")
         # Every flow's first catchable bus is 0.5 min past its walk time, so
         # "leave in" is 0.5 min everywhere: under a minute, so NOW.
-        want = muni.text_mask("NOW")
         for side in (muni.LEFT, muni.RIGHT):
             x0, x1 = lane.slot_left if side == muni.LEFT else lane.slot_right
-            x = x1 - want.shape[1] if side == muni.LEFT else x0
-            band = frame[lane.name_y:lane.name_y + muni.GLYPH_H]
-            got = band[:, x:x + want.shape[1]].max(axis=2) > 40
-            check("a half-minute margin prints NOW on the %s"
+            w = muni.text_width("LEAVE NOW")
+            x = x1 - w if side == muni.LEFT else x0
+            # Punched out of the lit plate, so the type is *dark* here and the
+            # sense of the threshold is inverted.
+            got = name_band(frame, lane)[:, x:x + w].max(axis=2) < 100
+            check("a half-minute margin prints LEAVE NOW on the %s"
                   % ("left" if side == muni.LEFT else "right"),
-                  np.array_equal(got, want))
-        # The two numbers sit on opposite sides of the name, which is the only
+                  np.array_equal(got, muni.text_mask("LEAVE NOW")))
+        # The two readouts sit on opposite sides of the name, which is the only
         # thing that says which direction each is about.
-        check("the two margins straddle the name",
+        check("the two readouts straddle the name",
               lane.slot_left[1] <= lane.slot_right[0])
 
         # Drive the clock back six minutes. The inbound 55's first bus was half
         # a minute inside a 3.5-minute walk; six minutes earlier it is nine
-        # minutes out, which is 5.5 minutes of margin, and that prints as 5 --
-        # the panel floors, it does not round, because rounding 5.5 up to 6
-        # would tell somebody they had longer than they do.
+        # minutes out, which is 5.5 minutes of margin, and that prints as
+        # LEAVE 5 -- the panel floors, it does not round, because rounding 5.5
+        # up to 6 would tell somebody they had longer than they do.
         frame, lanes = rendered(cache, now=NOW - 360.0)
         lane = by_name(lanes, "CONNECTICUT")
-        want = muni.text_mask("5")
-        x0, x1 = lane.slot_left
-        band = frame[lane.name_y:lane.name_y + muni.GLYPH_H]
-        got = band[:, x1 - want.shape[1]:x1].max(axis=2) > 40
-        check("margin is floored, not rounded", np.array_equal(got, want))
+        x1 = lane.slot_left[1]
+        check("the readout is floored, not rounded",
+              has_text(frame, lane, x1 - muni.text_width("LEAVE 5"), "LEAVE 5"))
+        check("and it is not the arrival time, which is four minutes later",
+              not has_text(frame, lane,
+                           x1 - muni.text_width("LEAVE 9"), "LEAVE 9"))
 
         # A direction with nothing catchable inside the horizon says when the
-        # next one is rather than going blank, and the slot was sized for it.
-        check("the margin slot is wide enough for a clock time",
+        # next one is rather than going blank. A clock time needs no verb --
+        # the colon carries its units -- and the slot was sized for the longest
+        # thing a readout ever says, which is LEAVE NOW.
+        check("the readout slot is wide enough for a clock time",
               muni.MARGIN_W >= muni.text_width("00:00"))
+        check("the readout slot is exactly LEAVE NOW wide",
+              muni.MARGIN_W == muni.text_width("LEAVE NOW"))
+        check("the slot also holds the widest countdown",
+              muni.MARGIN_W >= muni.text_width("LEAVE 99"))
+
+
+def test_leave_now_is_highlighted():
+    """LEAVE NOW is a lit block, it pulses, and it never goes dark.
+
+    This is the one thing on the panel meant to be legible without being read.
+    Three separate ways it could be lost: the plate not drawn at all, the plate
+    drawn for cases that are not urgent, and the pulse dipping to black so that
+    somebody walking past during the dark half sees nothing.
+    """
+    with tempfile.TemporaryDirectory() as cache:
+        synthetic(cache)
+        frame, lanes = rendered(cache)
+        for lane in lanes:
+            for side in sorted(lane.by_side):
+                check("%s %s lights its slot when the answer is now"
+                      % (lane.name, "L" if side == muni.LEFT else "R"),
+                      slot_brightness(frame, lane, side) > 110.0,
+                      "mean %.0f" % slot_brightness(frame, lane, side))
+
+        # Six minutes earlier nothing is inside a minute, so no plate anywhere.
+        cool, cool_lanes = rendered(cache, now=NOW - 360.0)
+        for lane in cool_lanes:
+            for side in sorted(lane.by_side):
+                check("%s %s does not light its slot when there is time"
+                      % (lane.name, "L" if side == muni.LEFT else "R"),
+                      slot_brightness(cool, lane, side) < 85.0,
+                      "mean %.0f" % slot_brightness(cool, lane, side))
+
+        # The pulse, across a whole cycle: it must vary, and it must never dim
+        # below the floor. Sampled at the frame rate the wall runs at.
+        render = muni.build(opts(cache_dir=cache))
+        lane = render.lanes[0]
+        side = sorted(lane.by_side)[0]
+        x0, x1 = lane.slot_left if side == muni.LEFT else lane.slot_right
+        peaks = []
+        for i in range(int(20 * muni.PULSE_S) + 1):
+            f = render(i / 20.0, i)
+            peaks.append(int(f[lane.name_y, x0:x1, 0].max()))
+        check("the plate pulses", max(peaks) - min(peaks) > 20,
+              "%d..%d" % (min(peaks), max(peaks)))
+        check("the plate never goes dark",
+              min(peaks) >= int(muni.PULSE_FLOOR * muni.C_URGENT[0]) - 2,
+              "min %d" % min(peaks))
+        check("the plate never overdrives", max(peaks) <= muni.C_URGENT[0])
+
+
+def test_walk_is_stated():
+    """The walk is written out per direction, rounded up, in the gate's hue.
+
+    The gate's width has always been the walk and it is still the picture; what
+    it never was is self-describing. These check the caption exists, says the
+    right number, says a *different* number on rows whose walks differ -- which
+    is the panel's actual content -- and shares the gate's colour, since that
+    shared hue is the only thing joining the words to the mark.
+    """
+    check("a whole walk stays whole", muni.walk_minutes(2.0) == 2)
+    check("a part minute rounds up, never down", muni.walk_minutes(6.5) == 7)
+    check("and never to nearest either", muni.walk_minutes(3.2) == 4)
+    check("a walk is never zero minutes", muni.walk_minutes(0.1) == 1)
+
+    with tempfile.TemporaryDirectory() as cache:
+        synthetic(cache)
+        frame, lanes = rendered(cache)
+        seen = {}
+        for lane in lanes:
+            for side, flow in sorted(lane.by_side.items()):
+                mins = muni.walk_minutes(flow.walk_min)
+                text = "%d MIN WALK" % mins
+                lo, hi = (0, lane.slot_left[0]) if side == muni.LEFT \
+                    else (lane.slot_right[1], muni.W)
+                at = find_text(frame, lane, text, lo, hi)
+                tag = "%s %s" % (lane.name, muni.DIR_OF[flow.dir])
+                check("%s says '%s'" % (tag, text), at is not None)
+                seen[tag] = mins
+                if at is not None:
+                    px = frame[lane.name_y:lane.name_y + muni.GLYPH_H,
+                               at:at + muni.text_width(text)]
+                    lit = px.reshape(-1, 3)
+                    lit = lit[lit.max(axis=1) > 40]
+                    got = lit.mean(axis=0)
+                    # Same hue as the dotted gate, brighter. Compared as a
+                    # ratio per channel so that either constant may be
+                    # rescaled but they may not drift apart.
+                    k = got[0] / float(muni.C_WALK[0])
+                    ok = all(abs(got[i] - k * muni.C_WALK[i]) <= 12
+                             for i in range(3))
+                    check("%s's caption is the gate's own hue" % tag, ok,
+                          "%s vs %s x%.2f" % (got.round(1).tolist(),
+                                              list(muni.C_WALK), k))
+                    check("%s's caption is brighter than the gate" % tag,
+                          k > 1.2, "x%.2f" % k)
+        # The whole point: the walks are not equal, so the captions are not
+        # all the same figure either. A panel that said 4 MIN WALK on every
+        # row would pass every check above this one.
+        check("the stated walks are genuinely unequal",
+              len(set(seen.values())) >= 3, "%s" % seen)
+        check("the far stop's stated walk is the longest",
+              seen["16TH/WISCONSIN IB"] == max(seen.values()), "%s" % seen)
+        check("the near stop's stated walk is the shortest",
+              seen["DE HARO IB"] == min(seen.values()), "%s" % seen)
+        # And it agrees with the gate it labels, which is the claim the caption
+        # makes: the figures and the widths are the same measurement.
+        ppm = ppm_for()
+        for lane in lanes:
+            for side, flow in sorted(lane.by_side.items()):
+                gate = abs(post_column(frame, lane, side) - muni.CX)
+                check("%s %s: caption and gate agree"
+                      % (lane.name, muni.DIR_OF[flow.dir]),
+                      abs(gate / ppm - muni.walk_minutes(flow.walk_min)) < 1.0,
+                      "gate %.1f min, caption %d"
+                      % (gate / ppm, muni.walk_minutes(flow.walk_min)))
 
 
 def test_horizon_flag():
@@ -780,7 +1023,7 @@ def test_schedule_fallback():
     # heights are checked, because the near rows and the far rows use different
     # silhouettes and only one of them would have been noticed by eye.
     sprites = muni._bus_sprites()
-    for h in (3, 4):
+    for h in (muni.LANE_MIN_BUS, muni.LANE_MAX_BUS):
         for route in ("19", "22", "55"):
             for side in (muni.LEFT, muni.RIGHT):
                 solid = sprites[(h, route, muni.NEXT, True, side)][0]
@@ -1060,8 +1303,10 @@ def main():
     test_catchable_boundary()
     test_shared_stop_does_not_leak()
     test_unmonitored_is_hollow()
-    test_lateness_bar()
-    test_margin_numbers()
+    test_lateness_is_gone()
+    test_leave_readout()
+    test_leave_now_is_highlighted()
+    test_walk_is_stated()
     test_horizon_flag()
     test_motion()
     test_sizes()
