@@ -63,7 +63,8 @@ SPARSE = {"starfield", "fireworks", "boing", "daliclock", "sierpinski_rain",
           # NOT here: once its towers became filled glass it stopped being a
           # few thin lines and became one of the densest things in the show.
           "wardial", "ansi", "toasters",
-          "dither", "dvd", "wiki", "solarwind", "fine"}
+          "dither", "dvd", "wiki", "solarwind", "fine",
+          "solar", "muni", "crash"}
 
 # The default running order. Names not present in the checkout are dropped
 # with a warning, so effects still being written can already be listed here
