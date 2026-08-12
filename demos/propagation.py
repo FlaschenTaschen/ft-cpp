@@ -351,6 +351,22 @@ def add_arguments(ap):
 # The panel.
 # --------------------------------------------------------------------------
 
+
+def _wind_scalar(wind, key):
+    """One value off the swpc_solarwind record, whichever shape it is in.
+
+    That product used to store `speed` and `bz` as plain numbers. It now
+    stores the whole propagated hour as arrays, with the newest minute in
+    `latest` -- solarwind.py needs the series and this panel needs the
+    number, and one fetch now serves both. A wall that has not refetched
+    since the change still holds a scalar-shaped record, so accept both
+    rather than blanking two tiles until the next timer tick.
+    """
+    v = wind.get(key)
+    if isinstance(v, list):
+        v = (wind.get("latest") or {}).get(key)
+    return v
+
 def build(args):
     W, H = args.width, args.height
     out = np.zeros((H, W, 3), np.uint8)
@@ -533,8 +549,8 @@ def _draw_kp_tile(base, x, y, w, h, kp_src, wind, hamqsl, patches, blink_hz):
     # is what silently drops the last line when the panel is a few rows short,
     # which is precisely the failure that is invisible until somebody notices
     # the wind speed has not been on the wall for a week.
-    bz = wind.get("bz")
-    speed = wind.get("speed")
+    bz = _wind_scalar(wind, "bz")
+    speed = _wind_scalar(wind, "speed")
     if bz is None and hamqsl.usable:
         bz = as_float(hamqsl.get("magneticfield"))
     if speed is None and hamqsl.usable:

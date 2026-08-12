@@ -62,7 +62,8 @@ SPARSE = {"starfield", "fireworks", "boing", "daliclock", "sierpinski_rain",
           # effect is unreadable rather than merely dim. gibson is deliberately
           # NOT here: once its towers became filled glass it stopped being a
           # few thin lines and became one of the densest things in the show.
-          "wardial", "ansi", "toasters"}
+          "wardial", "ansi", "toasters",
+          "dither", "dvd", "wiki", "solarwind", "fine"}
 
 # The default running order. Names not present in the checkout are dropped
 # with a warning, so effects still being written can already be listed here

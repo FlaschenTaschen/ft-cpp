@@ -4966,3 +4966,834 @@ stalls rather than average jitter are what read as visible flicker.
 `fsa.py`, `grid.py`, `ripple.py` and `sierpinski_rain.py` predate the shared
 module and use `flaschen_np.py`, a local numpy client, setting pixels
 individually rather than pushing frames.
+
+### riso
+
+![riso](screenshots/riso.png)
+
+A Risograph duplicator printing, seen along the paper path: feed deck at the
+left, ink drum in the middle, catch tray at the right. A sheet slides out of
+the deck, passes under the drum, and the ink wipes onto it at the nip. The nip
+is a fixed column and the paper is what moves, so the sheet's leading edge —
+its right edge — is inked first and the seam between the new colour and the old
+sweeps backwards across the sheet, from leading edge to trailing edge, while
+the sheet itself slides rightwards. Watch one pass and the new colour appears
+out of the drum's contact column and the printed part grows out to the right of
+it. It sits in the tray long enough to be looked at,
+whips back to the deck, and goes again in the next colour. Between passes the
+drum drops out of frame and comes back a different colour, and a new master
+burns on the thermal head, because on a real Riso every colour needs both.
+
+The one representation choice: the artwork is never an image, it is **N ink
+channels**, one per colour, each a coverage map over the printable area of the
+sheet. Rendering is compositing those channels with a per-pass integer offset
+and a multiply blend, and everything else falls out of it. Misregistration is
+the offset. Overprint colour is the multiply — there is no table anywhere in
+the file saying pink over blue is purple, it just is, because Riso inks are
+semi-transparent and multiplying two of them is what physically happens.
+And the sheet after *k* passes is the *k*-th partial product, so `build()`
+bakes the whole cumulative stack once: a frame halfway through laying the third
+colour is literally `cum[2]` on the near side of the nip and `cum[3]` on the far
+side, the part that has already gone under the drum. Two blits, no arithmetic,
+and the wipe boundary is exact — the screenshot above is one of those frames,
+with `ISO` printed and the `R` still to come.
+
+The inks are the published Riso colours at their real hex values. Not all of
+them work here: multiply is a darkening operator, so the default drawer is
+Fluorescent Pink `FF48B0`, Yellow `FFE800`, Orange `FF6C2F`, Bright Red
+`F15060`, Green `00A95C`, Blue `0078BF` and Medium Blue `3255A4`, and Federal
+Blue `3D5588`, Teal, Purple and Black are left out — two of those over each
+other is a black rectangle at three metres, which is authentic and unwatchable.
+A job takes at most one dark ink and prints lightest first, which is both what
+a print shop does (a light ink cannot cover a dark one) and the only order in
+which the last pass still reads as type rather than mud. That ordering is why
+the wordmark is always the final colour down.
+
+Every channel goes through a coarse angled dot screen before compositing, each
+on its own angle the way a real separation is. Flat coverage stays flat and a
+ramp becomes a visible field of dots, which is what makes the sheet read as
+printed rather than as a drawn rectangle. The threshold field is squeezed into
+(0.02, 0.98) rather than left at (0, 1): coverage of exactly 1.0 has to beat
+every threshold in the grid or solids pick up pinholes at the dot centres.
+
+Three built-in artworks, all generated in code — the Flaschen Taschen wordmark
+over a graded field with a bottle, a three-colour poster, and a two-ink
+landscape whose sun sits deliberately behind a peak so the overlap is
+unmissable. Registration marks in every channel at the corners of the plate are
+the tell: three passes means three sets of ticks a pixel or two apart, exactly
+like the trim edge of a real misregistered print.
+
+What was hard was that same split, twice over, and both times it drew a
+perfectly plausible still. The first version split the sheet at `nip - x` in
+sheet-local coordinates and clipped that at zero, so once the sheet's left edge
+was past the nip the whole thing reverted to the un-inked image: a sheet that
+had just been fully printed went blank on its way to the tray. The fix for that
+was a guard — if the sheet is entirely past the nip, treat it as fully printed
+— and the guard papered over a worse bug underneath, which then shipped. The
+two halves were the wrong way round. The paper travels left to right, so the
+leading edge is the *right* edge and the fresh ink is on the right, but the
+code painted `cum[k+1]` on the left. Every symptom followed: while the sheet was
+still approaching, `nip - x` exceeded the sheet width and clipped, so the sheet
+arrived already printed; as it advanced it visibly *lost* the new colour; and
+then the guard slammed it back to printed in a single frame. The whole thing
+read as a stutter rather than as a wipe, and it was only caught by watching it
+on the emulator. The right quantity is `(x + ws) - nip`, clipped into `0..ws` —
+how much of the sheet has been under the drum — and with the geometry right the
+guard is unnecessary, because a sheet fully past the nip clips to `ws` on its
+own.
+
+The existing test did not catch it because it compared whole-sheet ink totals
+between frames, and a sheet drawn inside out has an entirely reasonable total on
+every frame. `scripts/test-riso.py` now drives the module with a stand-in
+artwork of two full-coverage separations, which makes every column of the sheet
+one of three flat colours and so classifiable by eye and by array, and asserts
+the wipe as geometry: at most two ink states across the sheet's width at any
+moment, the fresher one entirely on the leading side, the seam between them
+pinned to the nip column rather than drifting with the paper, that seam sweeping
+the full width monotonically once per pass, no sheet-local column ever losing
+ink within a job, and no single frame changing how much is printed by more than
+a couple of percent. Reverting the fix fails three of those five. It also still
+asserts the overprint pixels against the literal product of the two inks and the
+paper.
+
+The travel curve turned out to need no retuning. `path_x` runs the sheet as
+three straight segments, and its middle run was already defined as leading-edge-
+at-the-nip to trailing-edge-at-the-nip; measured after the fix, the wipe starts
+at u = 0.253 and finishes at u = 0.718 of the print phase, so it crosses the
+sheet at about 1.8 columns a frame over the middle 47% of the pass, which is
+what the easing was designed for all along. It was the blits that were wrong,
+not the motion.
+
+```console
+$ python3 riso.py --art poster --seed 7
+$ python3 riso.py --misreg 4 --screen 7      # sloppy registration, coarse screen
+$ python3 riso.py --inks pink,federal,black  # authentic, and much too dark
+$ python3 scripts/test-riso.py
+```
+
+### cnc
+
+![cnc](screenshots/cnc.png)
+
+A 3-axis mill cutting a part, seen from straight above: adaptive clearing in
+trochoidal loops, drilling, a finishing raster, a contour pass round the walls,
+and the shop's name engraved into the island the roughing left behind. Then the
+part slides off the pallet and a fresh billet comes in.
+
+This is the deliberate opposite of `printer`, which is additive and side-on.
+
+Everything comes out of one array: **a height Z per panel pixel**, initialised
+to the top of the stock. The endmill is a disc, and cutting is
+
+```python
+Z[disc footprint] = np.minimum(Z, tool_bottom)
+```
+
+which is not a model of milling — a min-composite of the tool swept along the
+path *is* the definition of the machined surface. Nothing in the demo draws the
+part. The part is whatever is left of the field.
+
+Shading is the **gradient of Z**: a shifted difference in each axis, dotted
+with a light direction, on top of a depth term. So the pocket walls, the raised
+boss, the through-holes and the individual tool marks are all consequences of
+the representation rather than things that had to be drawn. Two terms and their
+balance is the whole look: the depth term carries most of the range, because
+telling a 3.2 mm pocket floor from the top of the stock at three metres is the
+one thing that has to work; the gradient term saturates at about a third of a
+millimetre per pixel, so a wall pins bright on one side and dark on the other
+while a few hundredths of surface roughness still reads as a tool mark.
+
+The boss is the clearest payoff. It is never drawn and never decided — it is
+simply the region the inward spiral does not reach, so it appears at exactly
+the top of the stock with a wall the shape of the toolpath. Move the last inset
+and it changes size; nothing else has to know.
+
+The adaptive spiral is one traversal. A rounded rectangle is a plain rectangle
+Minkowski-summed with a disc, and offsetting it inward only shrinks the disc —
+the core rectangle never moves. So walking the core once, carrying an outward
+normal, generates the whole family of offset curves as `core + normal * r`, and
+a spiral is that walk with `r` decreasing as you go. The trochoidal loops ride
+on top of it, a fixed radius rotating about the guide with the phase advanced
+per sample, which is what keeps the tool engagement constant and is why modern
+roughing looks like this.
+
+The arc from chaos to discipline is one line. Roughing cuts each *loop* a few
+hundredths of a millimetre off the others, so the loops stay in the floor as
+scallops after the tool has gone; the finishing raster cuts 0.2 mm lower and
+erases them, because a lower minimum wins. Halfway through the finish, half the
+floor is smooth and half is still a field of loops — that frame is the
+screenshot. The offset has to be per loop and not per sample: white noise along
+the path is invisible, because the field is a minimum over a five-pixel disc
+which takes the deepest of a dozen neighbours and averages it away. Measured, a
+per-sample jitter of 0.075 mm left a floor with a standard deviation of 0.011
+mm, three levels of brightness. Per loop it survives, because a whole loop's
+worth of samples agrees.
+
+`render` is a pure function of `t`, which for a demo that accumulates a height
+field takes some care. The whole toolpath — position, tool-bottom Z, feed rate
+and operation per sample, plus the cumulative time at each — is generated once
+in `build()` from the seed. `render(t)` looks up where the tool is and advances
+a cursor, stamping whatever samples it crossed. Because Z only ever decreases
+and stamping a sample twice is a no-op, replaying the program from zero gives a
+bit-identical field, so a cold `render(t0)` and the same `t0` reached frame by
+frame agree exactly, and 8 fps and 30 fps agree exactly. Chips are ballistic
+from their birth sample rather than integrated, for the same reason.
+
+A frame is two whole-panel operations — the table copy and the stock blit — and
+then only the bounding box the tool actually touched is re-shaded, a couple of
+hundred pixels. Desktop mean is 0.10 ms, p95 0.12, max 0.17 over a full cycle.
+The one hitch worth knowing about is a cold call at a large `t`, which replays
+the whole program in one go: 13 ms on a desktop at the very end of the cycle.
+The scheduler starts segments at `t=0`, where the replay is empty, so this
+never happens in practice.
+
+The cycle is about 66 seconds and wants 20 fps.
+
+```console
+$ python3 cnc.py --speed 1.6 --text 'MADE HERE'
+$ python3 cnc.py --stepover 1.0 --trochoid 3.2      # more laps, bigger loops
+$ python3 scripts/test-cnc.py --dump /tmp/cnc
+```
+
+### plotter
+
+![plotter](screenshots/plotter.png)
+
+A pen plotter drawing. A carriage rides a rail across the top of the panel, an
+arm hangs off it down onto the sheet, and a pen at the end of the arm goes
+down, walks a path, comes up, flies to the start of the next one and goes down
+again. The line art is not revealed — it is *drawn*, at a feed rate, by a
+machine that is visibly in the way of its own work.
+
+A plotter bed is another subject that genuinely is this shape: an X rail
+spanning the full width with a sheet under it. The pen crosses the whole 320
+columns, and the sheet is a 310x52 rectangle with a footer margin the artwork
+never enters, which is where the print gets signed when it comes off.
+
+The representation is **a list of paths, each a polyline in sheet
+coordinates**, and the plot is one *tour* over them: travel to the start of a
+path with the pen up, drop the pen, walk the polyline, lift the pen, travel to
+the next. `build()` flattens that into a single array of moves —
+`(x0, y0, x1, y1, kind, t0, t1)`, kind being ink, travel or a servo dwell —
+carrying cumulative **times** rather than lengths, so a pen-up dwell sits in the
+sequence as a first-class move instead of being special-cased. A frame is then
+a lookup: `searchsorted` the current time into `t1` and everything before that
+index is finished, the move at that index is in progress, and the pen is
+somewhere along it. Everything else — the servo's overshoot, which travel
+moves are still ghosting, whether the sheet is coming in or going out — falls
+out of the same index.
+
+Ink stays on the paper and travel does not, and that contrast is what the demo
+is about. The last few travel moves are drawn as faint dashed lines that decay
+over about a second and a half, so you can always see where the pen just came
+from. It is also how plotter people think about a file: minimising travel is the
+whole optimisation, and every piece with more than a couple of paths gets a
+greedy nearest-endpoint reordering at build time — allowed to reverse a path
+where that is closer — which takes the flow field's travel from 2500 px down to
+500 and turns the ghosts from a cat's cradle into short hops between
+neighbours.
+
+**The interesting problem was that an ink buffer is accumulated state, and
+`render` may not accumulate.** Anti-aliasing is not optional at 64 rows — a 1 px
+diagonal is a staircase — so every stroke is laid into a float coverage buffer
+by evaluating the exact distance to the segment over its bounding tile, and a
+frame that re-rasterised the two thousand segments already on the paper would
+cost a hundred times its budget. The resolution is to define the buffer as a
+pure function of one integer: `ink(i)` is "every ink move with index < i,
+rasterised", and then *memoise* it rather than accumulate it. The cache holds
+`(i, buffer)`. When a frame asks for a larger `i` — the usual case, one to three
+moves — the moves in between are added. When it asks for a smaller one, which is
+what a cold start, a loop wrap or a preview baker's rewind looks like, the
+buffer is restored from the nearest snapshot below it and walked forward;
+snapshots are taken every 128 moves as the cache sweeps past them, so they cost
+memory and no work at all. Because coverage composites with `maximum`, which is
+exact, and the moves are always applied in increasing index order, "restore and
+walk forward" is *bit identical* to "walk forward from zero" — which is why the
+purity assertion in `scripts/test-plotter.py` compares with `array_equal` and
+passes rather than nearly passing. The partially drawn current segment never
+enters the buffer at all; it is stroked into a scratch copy each frame, so the
+tip of the line is not quantised either.
+
+Five pieces, from the plotter-art tradition, all generated in code:
+
+- **hilbert** — order-4 Hilbert blocks chained across the sheet. The standard
+  construction enters at a block's bottom-left cell and leaves at its
+  bottom-right, so eight blocks laid side by side join with one ordinary step
+  between them and the entire sheet is drawn *without the pen ever lifting*. One
+  stroke, no travel, a sheet that gradually fills up rather than being filled
+  in. It is the best of the five on the wall and it is the one in the shot.
+- **spiro** — hypotrochoids, alternating a large pen offset (the dense woven
+  disc) with a small one (an open rosette), because four of the same kind in a
+  row is four green blobs. Integer parameters, so each curve provably closes.
+- **lissa** — a row of Lissajous figures at rising frequency ratios, which is
+  the classic plotter demo sheet and works because the ratio is legible from the
+  lobe count at a glance.
+- **flow** — streamlines of a smooth vector field; the piece with the most pen
+  lifts and therefore the most ghosting.
+- **truchet** — Smith tiles, whose quarter arcs all end at cell-edge midpoints
+  shared with exactly one arc in the neighbouring cell. Walking that graph
+  chains its 138 little arcs into 28 long continuous strokes, which is precisely
+  the optimisation a plotter file gets before it is sent, and it takes the piece
+  from 138 pen lifts to 28.
+
+Each finishes, holds for a beat so the completed print can be seen, is signed
+in the footer margin with its name and pen, and feeds out for a fresh sheet in a
+new colour. The whole cycle is a hundred and eighteen seconds at the default
+feed rate.
+
+The sheet is dark and the ink glows, which is backwards from paper and right
+for the wall — thin bright detail on a dark ground survives being seen at an
+angle from three metres and thin dark detail on a lit ground does not.
+`--paper light` is the honest white-paper version; it is lovely up close and
+much weaker across the room.
+
+Cost is measured in *strokes a frame* rather than pixels, since each stroke is
+a dozen numpy calls on a tile of a few dozen pixels and the panel work is
+otherwise four passes over a 52x310 sheet: 6.5 strokes a frame on average and
+17 in the worst frame, which is 0.35 ms mean and 0.7 ms worst on a desktop. The
+dash count on a ghost is capped rather than its length fixed, because a travel
+move right across the sheet at a fixed 6 px period is thirty strokes on its
+own.
+
+Two bugs worth recording, both of which drew perfectly attractive wrong
+pictures. One Truchet arc was written `linspace(pi, -pi/2)` instead of
+`linspace(pi, 1.5*pi)` — the same angle, but taken the long way round through
+`pi/2`, so a quarter of the arcs bulged out of their cell and off the bottom of
+the sheet. It looked like a nice scaly pattern and survived several screenshots;
+what caught it was asserting that no ink lands in the sheet's margins. And the
+first purity check failed against `round(t*fps)/fps` rather than against `t`,
+which on a demo that moves a pen two pixels a frame compares two different
+moments and reports a cache bug that does not exist.
+
+```console
+$ python3 plotter.py --piece hilbert --pen amber
+$ python3 plotter.py --paper light --speed 240 --line 1.4
+$ python3 plotter.py --piece flow --no-ghost      # what it loses without them
+$ python3 scripts/test-plotter.py
+```
+
+### fine
+
+![fine](screenshots/fine.png)
+
+A dog in a hat sits at a small table with a cup of coffee while the room fills
+with fire. It blinks. Three times a cycle it lifts the cup, drinks, and puts it
+back down. Around it the flame walks from one corner of the room to the whole
+of it, the shelf and the picture blacken, the ceiling fills with smoke, and the
+hat gets a little singed. Then the line lands, once, and holds.
+
+The whole joke is the calm, so the demo's one hard rule is that the dog does
+not react. `scripts/test-fine.py` asserts it in pixels: over nine hundred
+frames the dog's own pixels change at most eight times, and every one of those
+is the room's baked lighting stepping or the hat catching. The eyes are the
+only thing that moves, and they only ever shut.
+
+Everything is drawn in code from a description — the dog, the hat, the table
+and the cup are character grids with a palette, as in `mario.py` and
+`nyancat.py`, and the room is rectangles. Nothing is traced or downloaded.
+
+**The fire is the interesting part.** The classic effect in `fire.py` is
+inherently stateful: each frame takes the heat buffer the previous one left,
+shifts it up a row and cools it. That cannot be a pure function of `t`, and on
+this wall it has to be — the scheduler builds segments ahead on a worker thread
+and starts them at `t=0`, and the preview baker steps at its own rate. Rerunning
+sixty simulation steps from a fixed seed every frame would restore purity and
+cost sixty whole-panel passes, which is not affordable on a Pi.
+
+So the flame here is a field rather than a simulation:
+
+```
+heat(y, x, t) = clip(fuel(x, stage) * turbulence(x, y + scroll(t)) - height(y))
+```
+
+`turbulence` is one noise texture baked in `build()` — a low-resolution random
+field, upsampled, blurred with wrapping rolls, and leaned by a shift that is
+*itself* periodic in the tile height. That last detail is the one that took a
+second attempt: the obvious lean is a linear shear, roll row `y` by `y/6`
+columns, and over a 264 row tile that totals 44 columns, so at the wrap the
+shift snaps back to zero and a 44 pixel step walks up the panel once per loop,
+looking exactly like a torn scanline. A sinusoidal shift wraps for free, and a
+wandering lean is closer to what a draught does to flame than a constant one.
+
+Because the texture wraps top to bottom, scrolling it is a slice of a doubled
+copy at `int(t * scroll) % tile_h` — no modulo arithmetic, no copy, no state.
+`fuel(x, stage)` is a baked per-column profile and is what walks the fire from
+the far corner to the whole room; `height(y)` is distance above the floor line,
+so subtracting it is what gives each column a flame that runs out somewhere.
+Six whole-panel numpy calls, pure in `t`, and it reads as fire because the
+palette carries it.
+
+The room's light is baked the same way. `build()` paints the room twice, clean
+and charred, and renders `--stages` fully lit frames interpolating between them,
+each with its own orange bounce and its own ceiling smoke. A frame picks one by
+index, so the entire background — including the furniture blackening and the
+room going dark around the fire — costs one `np.maximum` against the flame. The
+dog and the cup are lit from that same field sampled at the rows they occupy,
+which is what puts them *in* the light instead of on top of it.
+
+The punchline is the repo's 3x5 font at scale 3, with a one-pixel dark outline
+in every direction — on a panel that is by then entirely orange, white type
+without one is unreadable. Its box is measured from the mask that is actually
+drawn rather than assumed from the scale, and the test asserts every glyph
+pixel including the bottom row is lit, which is the check that would have caught
+the bug that once clipped the base off every capital `E` on this wall.
+
+Timing is the joke, so the line lands at 76% of the cycle: long enough after
+the room has gone that you have had time to notice the dog is not going to do
+anything about it. The last second and a half is a fast collapse back to a
+clean room, because a room slowly un-burning is the one shot in the loop that
+cannot be sold.
+
+0.19 ms mean a frame on a desktop (p95 0.22, max 0.24), about 45 numpy calls
+of which nine touch the whole panel. 46 second cycle at 20 fps.
+
+```console
+$ python3 fine.py --cycle 30 --scroll 26
+$ python3 fine.py --no-text --stages 40      # just the room, smoother light
+$ python3 scripts/test-fine.py
+```
+
+**The line is dialogue, so it is drawn as dialogue.** The first cut set the
+punchline as centred white type across the top of the panel with a one-pixel
+halo around every glyph, and it read as a caption laid over the scene -- the
+wall announcing the joke rather than the dog saying it. It is now a speech
+bubble: dark ink on a light rounded ground, with a tail that points at him.
+That also fixes the legibility problem more honestly than the halo did. By the
+time the line appears the room is entirely orange, and white type on orange
+needed an outline traced around every letter to survive; a light bubble gives
+the type its own ground, so the contrast comes from an object in the scene
+rather than from a per-glyph trick.
+
+The bubble is sized from the measured glyph mask rather than a fixed box, so
+`--text` and `--text-scale` grow it instead of overrunning it. Placement aims
+the *tail's tip* rather than the box, which is what puts the bubble over his
+shoulder; and when the text is large enough that the bubble will not fit above
+his head, it moves alongside him instead, because the one thing it must never
+do is overlap the dog. `bubble_layout()` is module scope so the test checks the
+drawn bubble against the same geometry the demo draws from -- the banner's
+placement formula had been copied into the test, which is the arrangement that
+lets a demo and its test drift apart while both stay green.
+
+### dither
+
+![dither](screenshots/dither.png)
+
+One photograph, quantised five ways, with the boundary sliding across it. An
+LED matrix *is* a dithering device — every picture on this wall is a
+quantisation of something continuous — so this panel is the wall showing its
+own working. A satellite frame is on screen, a wipe travels across it, and on
+either side of the wipe the same image is rendered by a different quantiser:
+continuous tone, then **Floyd–Steinberg**, then **Atkinson**, then **ordered
+Bayer 8x8**, then a hard **threshold**, each named in the strip at the top of
+its own half. The ladder is monotone in how much of the quantisation error a
+method bothers to account for, which is the argument the panel is making.
+Floyd–Steinberg pushes all of it into the pixels it has not visited yet and
+reproduces the picture's mean brightness exactly. Atkinson — out of the 1984
+Macintosh — pushes six eighths and throws a quarter away, which crushes the
+darkest and lightest few percent and in exchange gives that bright, open
+MacPaint look. Bayer does not diffuse at all, and its fixed threshold matrix
+weaves a crosshatch that is the same everywhere. Threshold accounts for
+nothing, and the gradients go to slabs.
+
+The picture comes from `goes-psw`, the same cached GOES-18 GeoColor window
+`goes.py` plays as a time lapse, which `ftdata.py` has already cropped to
+exactly 320x64 — so there is nothing to resample and no second product to
+fetch. Weather from orbit turns out to be close to an ideal dithering subject:
+huge smooth gradients of ocean, haze and valley with hard bright cloud on top
+of them. One frame out of the seventy-odd is picked and held. The wipe is the
+motion here; a time lapse underneath it would be a second idea on a panel that
+is allowed one.
+
+**The one representation choice is that every state of the panel is a whole
+baked frame.** Error diffusion is strictly sequential — each pixel's decision
+depends on the residue left by the one before it — so there is no vectorised
+form and no way to do it per frame; a Python loop over 20480 pixels is tens of
+milliseconds on a laptop and the better part of a second on the wall's Pi.
+So `build()` runs each quantiser once and produces ten finished 320x64 uint8
+panels, dot pattern and captions and ladder ticks and all, and `render(t)`
+copies the left part of one and the right part of another and writes a single
+bright column between them. Three numpy calls a frame, no arithmetic, no
+allocation, and a demo that is trivially a pure function of `t` because there
+is nothing left in it to have state. The performance design and the purity
+requirement turned out to be the same design.
+
+That baking is also why the labels work. Each panel carries its own algorithm's
+name at *both* ends, which looks redundant on a panel showing one algorithm and
+is exactly what makes the wipe read: composited as the left half, a panel's
+right-hand name is hidden under its neighbour's and vice versa, so during a
+crossing the incoming name is at the left and the outgoing name at the right,
+and when the crossing finishes the label simply stays where it is. No
+typesetting per frame, and no pop when a wipe ends. The ladder ticks along the
+bottom are baked the same way, so the marker walks across with the boundary.
+
+**Two things had to be found by looking rather than reasoned about.** The first
+was tone: the obvious pick for "best frame in the window" is the one with the
+most contrast, and the highest-contrast GOES frame is bimodal — black ocean
+under white cloud — which quantises to a silhouette that all four methods
+render identically. What shows a dither off is *midtone*, so both the frame and
+the punch-in window are chosen on how much of them lands in the middle of the
+range, and a gamma of 1.25 pulls a bright daylight frame back off the white
+clip. The second was that Atkinson and Bayer look the same at 1:1 on a subject
+this busy, which is why there is a second act: the panel steps into an 80x16
+detail of itself at 2x and then 4x — integer magnifications of the *dithered
+output*, so what is on screen is the real dot pattern with each dot four LEDs
+across — and runs the wipe again between the two, where Bayer's regular weave
+and Atkinson's clumpy organic dots are unmistakable. It steps into the
+threshold panel first, which at 4x is a blank white slab, which is the joke.
+
+Everything is one warm ink on black. Dithering to a small colour palette on
+half the panel was tempting and is a second idea; what makes these algorithms
+legible from three metres is black-and-white dot texture, and the
+continuous-tone region uses the same ink at 256 levels so the two sides of the
+first wipe differ in exactly one property. The only colour anywhere is the
+one-pixel wipe edge, cold blue, which is furniture.
+
+The three cache states are the usual three, except that the absent one does
+something better than a card: with no cached imagery at all, `build()` draws a
+lit sphere over a graded ground with a linear ramp bar beside it — the classic
+thing you dither to show a dithering algorithm off, generated from arithmetic —
+and says `TEST IMAGE` where the satellite's name goes. Stale imagery plays as
+it is with the age in red, because the subject of this panel is the arithmetic
+and two-day-old cloud dithers exactly as well as this morning's.
+
+```console
+$ python3 dither.py --stats                 # build timings and per-method error
+$ python3 dither.py --source test           # the generated subject
+$ python3 dither.py --wipe 6 --no-zoom      # slow, the ladder only
+$ python3 dither.py --zoom-factor 2 --gamma 1.5
+$ python3 scripts/test-dither.py            # 57 checks incl. all three states
+```
+
+The cycle is 28.8 s at 20 fps. Desktop cost is 0.003 ms a frame mean, p95
+0.003, max 0.009 — it is two memcpys — and `build()` is 32–80 ms, of which the
+two diffusion loops are about 15 ms; on the Pi expect roughly a second of
+build and well under a millisecond a frame.
+
+### dvd
+
+![dvd](screenshots/dvd.png)
+
+The bouncing screensaver logo, and the wait for it to land exactly in a corner.
+Everyone knows the ritual: the logo drifts, changes colour on every bounce, and
+the room waits. That wait is the whole demo, so the panel keeps score — corner
+hits since local midnight, and how long since the last one, in burn-in grey
+along the bottom.
+
+**The wordmark is ours, not the DVD Video mark.** "FT" in a sheared 3px slab
+over an ellipse reading TASCHEN, drawn in the file as a character grid and a
+conic. The joke lives in the silhouette and the behaviour, and it is funnier
+being ours.
+
+**The corner period is chosen, not discovered.** Free travel is `Sx = W - logo
+width` and `Sy = H - logo height`, and ideal billiard reflection makes each
+axis a triangle wave, so the position is closed form: `x(t) = fold(vx·t, Sx)`
+with `fold(u,S) = |((u+S) mod 2S) − S|`. x is against a wall whenever `vx·t` is
+a whole multiple of `Sx`, y whenever `vy·t` is a whole multiple of `Sy`, and a
+corner is both at once. Rather than pick a velocity and go hunting for corners,
+pick the corner period `T` and two **coprime** integers — `q` traverses of the
+long axis and `p` of the short one in that period — and read the velocities
+off: `vx = Sx·q/T`, `vy = Sy·p/T`. Coprimality is what makes the two
+wall-contact sets meet only at multiples of `T`, so a hit is exactly every `T`
+and never a second early. That single choice is the demo.
+
+**What T should be is the real design decision.** `T = 180 s, q = 31, p = 83`
+(both prime, so coprime by inspection) gives 47.7 and 16.1 px/s, a 19-degree
+drift, a bounce off the top or bottom every 2.2 seconds and a full traverse of
+the long axis every 5.8. A rotation slot is 30–45 s, so roughly one slot in
+five contains a hit: rare enough that catching one is an event, common enough
+that standing and watching pays off within three minutes. Twenty seconds would
+kill the joke; twenty minutes would make the panel a dud that nobody ever sees
+pay off. Both `p` and `q` are odd, which makes successive hits alternate
+between diagonally opposite corners. The near misses — closest is 1.1 px — are
+frequent and are the point.
+
+**It is driven by the wall clock**, anchored to an absolute epoch captured in
+`build()` rather than to the segment's `t = 0`. With segment time the panel
+would replay the same three minutes on every appearance: either every slot has
+a hit at the same second or no slot ever does, and both are fatal. Anchored to
+the clock, the logo is where it would be if the screensaver had genuinely been
+running since before you walked up, the counter is real, and walking past twice
+shows two different states. `--epoch` pins it for tests and screenshots.
+`render()` is still a pure function of `t` for any one `build()`.
+
+**Two things went wrong and are worth recording.** The ellipse was 9 rows tall
+first, and at ±2 rows off centre it has already pinched in to less than TASCHEN
+needs, so the ring ate the outer letters and the logo read IASCHEI; the fit is
+now asserted at build with a one-pixel clearance, and it fails loudly rather
+than shaving the type. And the counter first computed midnight against the
+segment's own epoch instead of the trajectory clock, which put nine million
+corners on the panel — plausible-looking, wrong by a constant, and invisible in
+a thumbnail, so the count is now read back off the pixels in the test.
+
+A frame is a copy of black, three small masked blits (two of them dim,
+scanline-combed phosphor ghosts that follow the same closed form and so bend
+round a bounce by themselves) and two short strings: 0.03 ms on a desktop, and
+the only whole-panel arithmetic is the shockwave ring, which runs for 1.6 s in
+every 180.
+
+```console
+$ python3 dvd.py --corner-period 60           # impatient
+$ python3 dvd.py --sweeps 17 --bounces 44     # a different billiard
+$ python3 scripts/test-dvd.py --bench
+```
+
+### wiki
+
+![wiki](screenshots/wiki.png)
+
+Forty seconds of Wikipedia being written, played back at the speed it happened.
+Every change to every Wikimedia wiki — nine hundred of them, three hundred
+languages — goes out on one public event stream in real time, tens of edits a
+second, continuously. This panel is one stroke per edit, arriving right to left,
+rising above the line for bytes added and falling below it for bytes taken away,
+with the titles of the articles crawling underneath in three lanes.
+
+The titles are the point. LA MANO CHE NUTRE LA MORTE. FREIBURG CATHEDRAL BOYS'
+CHOIR. LIST OF PRESERVED BC RAIL ROLLING STOCK. SAN ROQUE, MORGADANS, GONDOMAR.
+2026 UNITED STATES GUBERNATORIAL ELECTIONS. LAKE MILLS, IOWA. They are absurd
+and human and never the same twice, and everything else on the panel is arranged
+so that somebody walking past reads two or three of them and understands,
+without being told, that this is an encyclopedia being written right now by
+people they will never meet.
+
+**It is the only panel here that draws events rather than a state.** Tides, grid
+mix, air quality, aircraft, the routing table — every other data demo on this
+wall is a picture of how things are at a moment. A firehose is not that, and the
+one thing it has that a snapshot does not is *burstiness*, so nothing here is
+averaged into a rate. The horizontal axis is time and a stroke's column is when
+its edit actually happened, to the millisecond. Where four edits land inside a
+tenth of a second the strokes pile into a picket; where the stream draws breath
+there is a gap. A chart of edits-per-second would have been much easier and
+would have thrown the whole subject away.
+
+**One representation choice made everything else fall out: the window is a
+strip.** Lay the forty seconds out along its own time axis at twenty pixels a
+second, draw every stroke and every title into that 790-pixel image once, then
+scroll it at twenty pixels a second. Playback is then exactly 1:1 with reality
+for free, the burstiness is preserved by construction rather than by any code
+that thinks about it, a title can crawl along underneath the stroke it belongs
+to because they are the same object at the same x, and `render()` is two slice
+copies. At twenty frames a second the strip advances exactly one pixel a frame,
+which is the smoothest a crawl can be, and it is why twenty is the default for
+both numbers.
+
+**Three encodings, and only one of them needs a key.**
+
+  * **Up or down** is added or removed. Nothing else uses the vertical axis, so
+    there is nothing to disambiguate at three metres: a panel leaning upwards is
+    an encyclopedia growing, which most minutes it is — a typical window adds
+    about 600 kB and removes about 20 kB. Both directions use the same
+    bytes-per-pixel scale, so a deletion is never made to look bigger than the
+    addition that undid it, and the lower half of the panel being nearly empty
+    is a true statement and not wasted space. When a rare deep one does arrive —
+    a blanking, a revert of a big paste — it punches a long spike downwards and
+    it is the most conspicuous thing on the wall.
+  * **Height** is the size of the edit, square root against a 900-byte full
+    scale. A typo fix is two pixels, a paragraph is six, somebody pasting a
+    filmography hits the top. Square root because the median edit is thirty
+    bytes and the largest in a window is twenty thousand: linear draws the
+    median — which is most of the panel — as nothing at all.
+  * **Colour** is the project: hue from the language, saturation and value from
+    the family. The English, Spanish and Basque Wikipedias are three different
+    colours; `fr.wikipedia` and `fr.wiktionary` are two shades of one violet.
+    Commons and Wikidata have no language and get colours nothing else uses — a
+    dusty gold and a pale steel — and being the two least saturated things on
+    the panel is deliberate, because between them they are usually half the
+    traffic and the language projects are the interesting minority.
+
+Two colour schemes were tried and thrown away first. A hue straight off a hash
+of the wiki name gives forty unrelated colours: confetti, pretty for one second
+and unreadable after that, and it puts `enwiki` and `enwiktionary` in unrelated
+places. A hue by family alone — all Wikipedias blue, all Wiktionaries green —
+reads beautifully and discards the language, which is the more interesting axis.
+
+**Brightness is the bot share, and that is the fact the panel most wants to get
+across.** Somewhere between half and two thirds of all edits are made by
+software: category maintenance, interwiki links, Commons file housekeeping,
+Wikidata bots grinding through a database import. They are drawn at 40% of a
+human edit's brightness, so the panel is a dim churning mass with bright human
+strokes standing out of it, which is the true shape of the thing. The number is
+printed anyway, with a two-segment bar beside it, because "more than half the
+edits to Wikipedia are made by robots" is worth stating outright.
+
+**The titles are Latin-script only, and the panel says so.** The font is
+`defcon.py`'s 3x5 bitmap — A-Z, digits, and a dozen punctuation marks added here
+because article titles are full of apostrophes, commas and parentheses and
+ST. MICHAEL'S ABBEY (ORANGE COUNTY, CALIFORNIA) with those silently dropped is a
+different title. Roughly 44% of main-space titles in any window are Cyrillic,
+CJK, Devanagari, Arabic or Hebrew, and a wall of tofu boxes is a failure rather
+than a compromise. So the two channels split: **colour carries every project,
+including the ones whose script cannot be drawn; type carries only the ones that
+can.** The strokes from `ruwiki` and `zhwikisource` are up there in their own
+colours doing their share of the work, their titles simply never enter the
+crawl, and the key says LATIN TITLES so that nobody concludes the encyclopedia
+is written in English. Accented Latin is folded rather than rejected — NFD, drop
+the combining marks, plus a short table for ß, æ, ø, ł, þ and the rest that do
+not decompose — which is what keeps Spanish, French, Czech, Portuguese and
+Basque in the crawl instead of only English.
+
+**Privacy, which is why this source needed care.** Every message on the stream
+carries `user`: a username for a registered editor, and a bare IP address for an
+anonymous one. It never reaches the cache, because `ftdata.py` never reads it
+into anything — there is no field for it, no hash of it, and no count keyed on
+it. Nor is there any handle that could be turned back into it: the edit
+summaries go (free text written by a person, routinely naming people), and so do
+the revision ids and notify URLs, because a revision id is a one-call lookup
+back to its author and keeping one would be keeping `user` in a costume. Titles
+are kept only from namespace 0, which is both the privacy rule and the quality
+rule in one line: `User:Someone/sandbox` is a person's name in the title field,
+and main-space article titles were the only ones this panel wanted. What is
+stored is the public shape of the encyclopedia and nothing about who wrote it —
+article titles, database names, byte deltas, the bot flag, the millisecond.
+`scripts/test-wiki.py` asserts all of that against the *live* record rather than
+a synthetic one, including a sweep for anything shaped like an IPv4 or IPv6
+address anywhere in the JSON.
+
+**Why it is a recording.** The wall cannot hold a socket open — `ftsched` builds
+segments on a worker thread, and a `build()` blocked on a network read stops the
+render loop getting the interpreter back — so the fetcher opens the stream,
+listens for forty seconds, aggregates, and hangs up. What is on the panel is
+therefore the last window Wikipedia published, and the age is in the top right
+corner like every other data panel here. Forty seconds of firehose is about
+1.7 MB off the wire, because every message carries the full rendered HTML of its
+edit summary whether you want it or not and there is no server-side filter to
+ask for less; that is the largest per-fetch number in `ftdata.py` and is why the
+interval is fifteen minutes and not five. It becomes a 13 kB record: 560 events
+as three parallel integer lists, sixty candidate titles, and a dozen aggregates.
+
+Slightly over half of what arrives is thrown away before any of that. The stream
+is 36 messages a second, but more than half are `categorize` — MediaWiki emitting
+one message per category as a page's categories change, machine bookkeeping about
+an edit that already has its own message — and `log` is account creations, blocks
+and deletions, which is the identity-adjacent part of the stream and nothing this
+panel wants. What is left is `edit` and `new`: about 15 a second, and that is the
+number on the wall.
+
+The `new` ones — an article that did not exist a second ago — get a white pip at
+the tip of their stroke. There are a few dozen a window and they are the single
+most interesting event in the stream.
+
+```console
+$ python3 ftdata.py --once --only wiki-stream     # 40 s of listening
+$ python3 wiki.py --host 127.0.0.1
+$ python3 wiki.py --speed 32 --lanes 2            # faster crawl, fewer titles
+$ python3 wiki.py --full 3000                     # only big edits get tall
+$ FT_DATA_CACHE=/tmp/empty python3 wiki.py        # the no-data card
+$ python3 scripts/test-wiki.py
+```
+
+### solarwind
+
+![solarwind](screenshots/solarwind.png)
+
+The Sun on the left, the Earth's magnetosphere on the right, and the hour of
+solar wind that is in flight between them drawn in the middle — with the
+interplanetary field it is carrying, and what that field is doing to the Earth
+when it arrives. Three small numbers: wind speed, Bz with its sign, Kp.
+Everything else on the panel is a picture.
+
+`propagation.py` already reads these same NOAA numbers and lays them out as an
+instrument panel for a ham choosing a band. This is deliberately not that. The
+numbers cannot say *where* the plasma is, which way the field in it points, or
+that the thing about to make Kp bad is already halfway here — and those are
+exactly the things a 320x64 letterbox is the right shape to show.
+
+**The one representation choice, from which everything else falls out: x is
+distance, and distance is also time.** SWPC publishes
+`products/geospace/propagated-solar-wind-1-hour.json` — one row a minute for
+the last hour, measured at L1, each carrying a `propagated_time_tag` saying
+when that plasma reaches the bow shock. At ordinary wind speeds the trip takes
+about fifty minutes and the file holds sixty, so the file is, near enough, an
+inventory of the plasma currently between the spacecraft and us. Draw the
+oldest row on the right and the newest on the left and the result is not a
+chart with a time axis pretending to be a picture; it is a picture, with the
+plasma in the right places. The stream flows rightward because the plasma does.
+A southward patch of field sits at the x where that patch actually is. And the
+magnetosphere is squeezed by the *rightmost* sample — the one arriving now —
+not by the headline figure at the left, which will not get here for another
+three quarters of an hour.
+
+**Scale, honestly.** The corridor covers one hour of travel, about 0.01 AU. The
+other 99% of the way to the Sun is simply not drawn: the limb at the left edge
+is an emblem of where the wind came from, and at true scale the Sun would be a
+hundred panels further left and the Earth would be one pixel. Inside the
+magnetosphere the scale is real and consistent — 1.55 panel pixels per Earth
+radius — with only the planet itself drawn about four times oversized, because
+otherwise an aurora is half a pixel. So the compression is a true compression
+even though the corridor is not to scale, and that is the trade the panel
+makes.
+
+**The magnetopause is the Shue model, not a doodle.** Shue et al. (1997) fit
+the standoff distance and the flaring of the boundary to two inputs, Bz and the
+dynamic pressure `1.6726e-6 n v²`:
+
+    r0    = (10.22 + 1.29 tanh(0.184 (Bz + 8.14))) · Dp^(-1/6.6)
+    alpha = (0.58 - 0.007 Bz) (1 + 0.024 ln Dp)
+    r(θ)  = r0 (2 / (1 + cos θ))^alpha
+
+A quiet day puts the nose at about 10.9 Earth radii; 22 protons per cc at 800
+km/s with Bz at -18 puts it at 5.6, and the cavity on the panel visibly caves
+in. The bow shock is drawn at 1.3 r0, which is a rule of thumb rather than a
+model, and the magnetosheath between the two is the brightest plasma on the
+panel because that is where shocked plasma piles up. When the nose has come in
+by more than a couple of radii, a dotted ghost of the quiet-day boundary stays
+behind, so that the compression reads in a single frame instead of needing
+somebody to remember yesterday.
+
+**Why the field is a comb and not field lines.** The first version integrated
+honest field lines across the panel, and they were beautiful for eighty columns
+and then left through the floor — which is not a bug, it is what a sustained
+southward Bz *means*. So the field is drawn the way a wind field is drawn on a
+chart: short dashes on a staggered grid, each tilted by the local clock angle.
+A uniform field lines them up into what reads as continuous lines; a rotation
+passing through visibly turns the comb over. Colour is binary and carries the
+message — cool blue for northward, hot magenta for southward — and brightness
+within each band is |Bz|/|B|, so a field that is strongly one way shouts and a
+flat one recedes. The staggering matters: aligned, the dashes read as diagonal
+hatching over the whole panel and fight the stream underneath them.
+
+**The chain the panel exists to teach.** When the field arriving at the nose is
+southward, reconnection knots appear at the subsolar magnetopause and slide
+back along both flanks, the tail's X-line flashes a beat later, and the poles
+light up. When it is northward, none of that happens and the aurora is a dim
+smudge. Southward Bz → coupling → aurora is the one idea here, and it is drawn
+as a cause and an effect rather than written down.
+
+**What it costs.** The whole panel is a uint8 *index* image through a single
+256-entry palette cut into bands — plasma 0..63, north field 64..95, south
+field 96..127, shock, aurora, sun, sparks, cavity, type — so every layer
+composites in integers and colour happens exactly once, in one `np.take`. The
+streaming plasma is a seeded streak texture baked in `build()`, made periodic
+in the panel width and stored twice side by side, so scrolling it is a *slice*:
+no roll, no take, no cost. Everything static is baked into one overlay and
+stamped in with a single `np.copyto(where=)`. That leaves five whole-panel
+numpy calls a frame plus a dozen writes of a handful of pixels for the sparks
+and the poles: 0.06 ms a frame on a desktop, and on the wall's Pi 3 it is the
+cheapest data panel here after `propagation`. Greying out a stale panel is done
+to the palette in `build()`, so `render()` never learns that anything changed.
+
+**Fresh, stale, absent.** The age is in the bottom-right corner always. Past
+the TTL the whole palette desaturates and the age turns amber; past three TTLs
+it greys out hard and the numbers become `--`, because a confident picture of
+an hour of solar wind that is in fact six hours old is worse than no picture.
+With no record at all it draws a no-data card naming the fetcher. And anything
+drawn from `--storm` or an override says `SIM` where the age goes, because a
+synthetic severe storm labelled "0s" is a panel claiming a G4 is happening
+right now.
+
+Data: `swpc_l1_wind` in `ftdata.py` — the propagated L1 wind (6.6 kB of JSON
+trimmed to about 1.9 kB of four parallel arrays) plus the Ovation hemispheric
+power in gigawatts from `text/aurora-nowcast-hemi-power.txt`. TTL an hour,
+fetched every ten minutes. Kp is read from the existing `swpc_kp` product
+rather than fetched again, so this panel and `propagation` can never disagree
+about whether there is a storm.
+
+```console
+$ python3 ftdata.py --once --only swpc_l1_wind    # the fetcher
+$ python3 solarwind.py --host ft.local
+$ python3 solarwind.py --storm                    # a G4, which is rare
+$ python3 solarwind.py --bz -18 --speed 750 --kp 7
+$ FT_DATA_CACHE=/tmp/empty python3 solarwind.py   # the no-data card
+$ python3 scripts/test-solarwind.py               # 51 checks, incl. the Shue fit
+```
+

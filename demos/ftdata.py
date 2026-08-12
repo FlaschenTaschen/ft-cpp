@@ -711,28 +711,205 @@ WIND_SPEED_URL = "https://services.swpc.noaa.gov/products/summary/solar-wind-spe
 WIND_MAG_URL = "https://services.swpc.noaa.gov/products/summary/solar-wind-mag-field.json"
 
 
-@product("swpc_solarwind", ttl=3600,
-         description="solar wind speed and IMF Bt/Bz at L1")
-def _swpc_solarwind():
-    """Sixty bytes each, which is the whole reason these are the endpoints.
+# --------------------------------------------------------------------------
+# An hour of solar wind, measured at L1 and propagated to the bow shock, plus
+# the aurora oval's hemispheric power. solarwind.py draws this as a picture;
+# propagation.py reads the latest speed and Bz off it for its readout.
+#
+# **This product used to be two.** `swpc_solarwind` fetched the latest scalar
+# speed and Bz off SWPC's summary endpoints for propagation's instrument
+# panel, and a second product fetched this propagated series for solarwind's
+# picture -- two requests to the same agency for overlapping data. They are
+# one product now, because the series already contains the scalars: its last
+# row is the most recent minute at L1, which is exactly what "latest" means on
+# the readout. One fetch, one cache entry, and the two panels can no longer
+# disagree with each other about what the wind is doing.
+#
+# The consequence for consumers is that `speed` and `bz` here are *arrays*,
+# not numbers; the scalars live in `latest`. propagation.py reads them through
+# a helper that accepts either shape, so a wall still holding an old
+# scalar-shaped record keeps drawing until the next fetch replaces it.
+# --------------------------------------------------------------------------
 
-    The `/products/solar-wind/mag-1-day.json` path that every older script
-    uses is gone -- it 404s now -- and the day-long series it served would
-    have been trimmed to these two numbers anyway. Bz is the one worth the
-    space: southward Bz is what opens the magnetosphere, so a negative number
-    here is the reason tomorrow's K will be bad, hours before K knows it.
+L1_WIND_URL = ("https://services.swpc.noaa.gov/products/geospace/"
+               "propagated-solar-wind-1-hour.json")
+AURORA_POWER_URL = ("https://services.swpc.noaa.gov/text/"
+                    "aurora-nowcast-hemi-power.txt")
+
+# One column of a 320 px panel is worth about three minutes of this; sixty
+# samples is one a minute, which is finer than anything downstream can show and
+# still only about a kilobyte and a half of JSON.
+L1_WIND_SAMPLES = 60
+
+
+def _l1_num(value, places):
+    """A rounded float, or None for null, empty, '(n/a)' and NaN alike."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    f = round(f, places)
+    return int(f) if places <= 0 else f
+
+
+def _aurora_hemispheric_power():
+    """The last row of the Ovation hemispheric power table, in gigawatts.
+
+    Fixed-width text with a comment header, five-minute cadence, one file a
+    day -- so shortly after 00:00 UTC the file has a header and one row in it,
+    and the last data line is the only line worth having. It is read by taking
+    the last line that parses rather than by counting from the end, because the
+    file sometimes ends in a blank line and sometimes does not.
     """
-    payload = {"speed": None, "bt": None, "bz": None, "t": None}
-    rows = get_json(WIND_SPEED_URL)
-    if rows:
-        payload["speed"] = rows[0].get("proton_speed")
-        payload["t"] = rows[0].get("time_tag")
-    rows = get_json(WIND_MAG_URL)
-    if rows:
-        payload["bt"] = rows[0].get("bt")
-        payload["bz"] = rows[0].get("bz_gsm")
-        payload["t"] = rows[0].get("time_tag") or payload["t"]
-    return payload, WIND_SPEED_URL
+    text = get(AURORA_POWER_URL).decode("ascii", "replace")
+    out = {"north_gw": None, "south_gw": None, "t": None}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        north, south = _l1_num(parts[2], 0), _l1_num(parts[3], 0)
+        if north is None or south is None:
+            continue
+        out = {"north_gw": north, "south_gw": south, "t": parts[0]}
+    return out
+
+
+@product("swpc_solarwind", ttl=3600, interval=600,
+         description="an hour of propagated L1 solar wind, plus aurora power")
+def _swpc_solarwind():
+    """Sixty minutes of wind in flight, as four parallel arrays.
+
+    The file is a header row followed by data rows, which is SWPC's usual
+    `/products/` shape and the reason for the column-name lookup: the column
+    order has moved before and reading `row[6]` for bz would fail silently and
+    draw a beautiful wrong picture rather than raise.
+
+    Parallel arrays rather than a list of records, because at sixty samples the
+    repeated keys are two thirds of the file. Speed to the nearest km/s,
+    density and field to a tenth: that is finer than a 320 px panel can
+    resolve, and the float64 reprs would triple the record for nothing.
+
+    Arrays are oldest first, which is the order the file is in and also the
+    order of *distance from the Sun*: the oldest sample is the one nearest the
+    Earth. Anything drawing this wants it that way round; anything printing
+    'now' wants the last element, which is what `latest` is for.
+    """
+    rows = get_json(L1_WIND_URL)
+    if not rows or not isinstance(rows[0], list):
+        raise ValueError("propagated solar wind: no header row")
+    col = {}
+    for i, name in enumerate(rows[0]):
+        col[str(name)] = i
+    for key in ("time_tag", "speed", "density", "bz", "bt",
+                "propagated_time_tag"):
+        if key not in col:
+            raise ValueError("propagated solar wind: no %r column" % key)
+    data = [r for r in rows[1:] if isinstance(r, list) and len(r) >= len(col)]
+    if not data:
+        raise ValueError("propagated solar wind: no data rows")
+
+    # Thin from the newest end, so the most recent minute is always kept: it is
+    # the one the panel prints as the current wind speed.
+    step = max(1, -(-len(data) // L1_WIND_SAMPLES))
+    keep = list(reversed(data[::-step]))[-L1_WIND_SAMPLES:]
+
+    def column(key, places):
+        return [_l1_num(r[col[key]], places) for r in keep]
+
+    speed = column("speed", 0)
+    density = column("density", 1)
+    bz = column("bz", 1)
+    bt = column("bt", 1)
+
+    latest = {"t": None, "speed": None, "density": None, "bz": None,
+              "bt": None, "arrival": None}
+    for i in range(len(keep) - 1, -1, -1):
+        if speed[i] is not None and bz[i] is not None:
+            latest = {"t": keep[i][col["time_tag"]],
+                      "speed": speed[i], "density": density[i],
+                      "bz": bz[i], "bt": bt[i],
+                      "arrival": keep[i][col["propagated_time_tag"]]}
+            break
+
+    try:
+        aurora = _aurora_hemispheric_power()
+    except Exception:                                        # noqa: BLE001
+        # The oval's power is a garnish -- it sets how brightly the poles glow
+        # and nothing else. A panel with a stream, a field and a magnetopause
+        # is still the panel; one that failed to draw because a text file was
+        # briefly a 500 is not.
+        aurora = {"north_gw": None, "south_gw": None, "t": None}
+
+    return {
+        "speed": speed, "density": density, "bz": bz, "bt": bt,
+        "t_first": keep[0][col["time_tag"]],
+        "t_last": keep[-1][col["time_tag"]],
+        "arrival_first": keep[0][col["propagated_time_tag"]],
+        "arrival_last": keep[-1][col["propagated_time_tag"]],
+        "samples": len(keep), "minutes_per_sample": step,
+        "latest": latest, "aurora": aurora,
+        "units": {"speed": "km/s", "density": "protons/cm^3",
+                  "bz": "nT GSM", "bt": "nT", "aurora": "GW",
+                  "t": "UTC, measured at L1",
+                  "arrival": "UTC, propagated to the bow shock"},
+    }, L1_WIND_URL
+
+
+# --------------------------------------------------------------------------
+# The global routing table, churning, as San Francisco hears it. bgp.py draws
+# it as a per-second chart of the last quarter hour with a ticker of the actual
+# prefixes underneath.
+#
+# **Why RouteViews at SFMIX and not the obvious live feed.** RIPE's RIS Live
+# streams the whole default-free zone over plain HTTP as newline-delimited
+# JSON, and it was the first thing tried here. It works, and it is the wrong
+# tool for this panel for two reasons. Unfiltered it delivered 78 MB in 25
+# seconds -- that is not going anywhere near a Pi on shop wifi -- and even
+# filtered to one collector it can only ever be *sampled*: the fetcher opens
+# the socket, reads for twenty seconds, and closes it, so the other hundred and
+# sixty seconds of every three minutes are simply not observed. A burst that
+# lasted a minute would be missed entirely, and a chart that silently omits the
+# interesting parts is a worse chart than a coarser one that does not.
+#
+# The RouteViews archive has the opposite shape. Every collector writes a
+# complete MRT dump of every update it saw in each fifteen-minute window and
+# publishes it about a minute after the window closes, bzip2'd. One 1.2 MB file
+# gets **the entire window**, 75,000 messages, with per-second resolution and
+# nothing sampled away. It is a quarter of an hour behind, and that is a trade
+# worth making: this panel is about rate and texture, not about the last
+# second, and the age is on the screen anyway.
+#
+# And the collector is `route-views.sfmix` -- RouteViews' vantage point inside
+# the San Francisco Metropolitan Internet Exchange, which is a couple of miles
+# from the wall and is where the makerspace's own ISP hands off its traffic.
+# The routes this panel draws are the ones the room's packets are actually
+# steered by, which is not a claim any of the other collectors could make.
+# Eight networks peer with it -- Cloudflare and Amazon among them -- so the
+# feed is a genuinely local view of a global table rather than a global average
+# of one.
+#
+# **MRT is parsed here, by hand, and that needs justifying.** The usual answer
+# is libbgpstream or mrtparse, and neither is going on a Pi for this: the first
+# is a C library with a build, the second pulls in a dependency tree to do
+# something this file already does for PDFs. The wire format is RFC 6396 and
+# RFC 4271 and the part of it a churn counter needs is small -- walk the record
+# frames, find the BGP UPDATEs, count the prefixes in the withdrawn block, the
+# NLRI block and the two multiprotocol attributes, and read the AS_PATH. What
+# is deliberately *not* implemented is everything else: communities, MED,
+# aggregators, the legacy two-byte-ASN subtypes nobody has emitted this decade.
+# An attribute this does not understand is skipped by its own length field,
+# which is why an unknown one cannot desynchronise the parse.
+#
+# **Where the cost is.** 12.5 MB of MRT and 75,000 records is 0.5 s of pure
+# Python on a desktop, so call it ten on the wall, once every fifteen minutes,
+# in the fetcher process and never in a demo. Both ends are capped anyway --
+# see BGP_MAX_BZ2, BGP_MAX_MRT and BGP_MAX_RECORDS -- and a capped parse says
+# so in the record rather than quietly reporting a low rate.
 
 
 # --------------------------------------------------------------------------
@@ -1956,6 +2133,324 @@ for _pair in os.environ.get("FT_WX_SITES", "").split(";"):
             print("ftdata: bad FT_WX_SITES entry %r" % _pair, file=sys.stderr)
 for _lat, _lon in _wx_sites:
     register_wx_site(_lat, _lon)
+
+
+# --------------------------------------------------------------------------
+# The Wikipedia edit firehose. wiki.py draws this.
+#
+# Wikimedia publishes every change to every one of its nine hundred-odd wikis
+# on one keyless public SSE stream, worldwide, in real time. It is the only
+# source in this file that is a stream of *events* rather than a snapshot of a
+# state, and that difference is the whole product: a snapshot can be fetched,
+# but a firehose can only be sampled. So this fetcher opens the socket, listens
+# for forty seconds, aggregates what went past, and hangs up. It is a periodic
+# process like everything else here, not a daemon -- ftsched builds segments on
+# a worker thread and a fetcher holding a socket open forever would be a second
+# long-lived thing on the Pi for no benefit, since the panel replays a window
+# rather than tracking a live cursor.
+#
+# **What forty seconds of it looks like**, measured rather than assumed:
+# roughly 1500 messages, 36 a second, from about 40 distinct wikis, 61% of them
+# flagged as bot edits. Slightly over half are `categorize` -- MediaWiki
+# emitting one message per category as a page's categories change, which is
+# machine bookkeeping about an edit that already has its own message -- so those
+# are dropped, along with `log` (account creation, blocks, deletions: the
+# identity-adjacent half of the stream and nothing this panel wants). What is
+# kept is `edit` and `new`: an actual revision of an actual page. That is about
+# 15 a second, and it is the number the panel puts on the wall.
+#
+# The traffic is the real cost. Forty seconds is about 1.7 MB off the wire,
+# because every message carries the full rendered HTML of the edit summary
+# whether you want it or not and there is no server-side filter to ask for
+# less. At a fifteen-minute interval that is ~7 MB an hour on shop wifi, which
+# is the largest number in this file and is why the interval is not shorter.
+# The record it becomes is about 12 kB.
+#
+# **PRIVACY -- what is thrown away, in this function, before anything is
+# stored.** Every message carries `user`, which is a username for a registered
+# editor and a bare IP address for an anonymous one. It is never read into any
+# structure here: there is no field for it in the payload, no hash of it, no
+# count keyed on it. Nor is there any handle that could be turned back into it:
+#
+#   * `user`                 -- dropped outright. Identity, and for anonymous
+#                               editors a home or workplace IP address.
+#   * `comment`/`parsedcomment` -- dropped. Edit summaries are free text written
+#                               by a person and routinely name people.
+#   * `revision.old/new`, `id`, `meta.id`, `notify_url` -- dropped. A revision
+#                               id is a one-call lookup back to its author, so
+#                               keeping one would be keeping `user` in a costume.
+#   * titles outside namespace 0 -- dropped. `User:Someone/sandbox` and its Talk
+#                               page are a person's name in the title field, and
+#                               main-space article titles are the only ones this
+#                               panel wanted anyway.
+#
+# What is kept is the public shape of the encyclopedia and nothing about who
+# wrote it: article titles, the wiki's own database name, the byte length before
+# and after as a single delta, the bot flag, whether the page was new, and the
+# millisecond the edit happened. None of it is reversible to a person by any
+# means this record provides.
+#
+# **The titles need a Latin alphabet and most of the stream does not have one.**
+# The demo draws in a 3x5 bitmap font -- A-Z, digits and a handful of
+# punctuation -- and about 44% of main-space titles in any given window are
+# Cyrillic, CJK, Devanagari, Arabic or Hebrew. A panel of tofu boxes is a
+# failure, so the split is: **colour carries every project including the ones
+# whose script cannot be drawn, and type carries only the ones that can.** The
+# counts, the rate, the bot share and the coloured strokes are the whole
+# firehose; the ticker is the subset this font can spell, and the panel says so.
+# Accented Latin is folded rather than rejected (NFD, drop the combining marks,
+# plus a short table for the letters that do not decompose -- ss, ae, o, th),
+# which is what keeps es, fr, de, pt, pl and no in the ticker instead of only
+# en. `n_titles_seen` records how many main-space titles went past so the demo
+# could say what fraction survived if it ever wanted to.
+#
+# **The events are stored columnar and in relative time.** Three parallel lists
+# -- millisecond offset from the window start, byte delta, project index -- plus
+# a flags int, rather than a dict per edit; at 600 events that is worth about
+# half the bytes. Relative rather than absolute time is deliberate on both
+# counts: it is four digits instead of thirteen, and it is what lets the demo
+# replay the window at its true internal pacing without also publishing the
+# exact wall-clock second any particular article was edited.
+# --------------------------------------------------------------------------
+
+WIKI_STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange"
+
+# Seconds of firehose per fetch. Long enough that a burst is inside the window
+# and short enough that the panel is not a two-minute loop of the same titles.
+WIKI_WINDOW = float(os.environ.get("FT_WIKI_WINDOW", "40"))
+
+# Backstops, so a stream that suddenly runs hot cannot fill memory or the cache.
+# Neither has ever fired; both are cheaper than finding out.
+WIKI_MAX_BYTES = 24 << 20
+WIKI_MAX_EVENTS = 1400
+
+# Title reservoir. The demo lays these out along a scrolling strip and fits
+# fifteen or so; sixty candidates is enough slack for it to choose ones that do
+# not collide, and 44 characters is a wide panel's worth of 3x5 type.
+WIKI_MAX_TITLES = 60
+WIKI_TITLE_CHARS = 44
+
+# Two hours to live, a quarter of an hour between fetches. Wikipedia at four in
+# the afternoon looks like Wikipedia at five -- the rate and the bot share barely
+# move -- so a stale record is still a true picture of the encyclopedia and the
+# TTL is generous. What goes stale is the *titles*, which are the delight, and
+# that is what the interval is for.
+WIKI_TTL = 7200
+WIKI_INTERVAL = 900
+
+# Wikimedia asks for a User-Agent that identifies the client and reaches a
+# human; their policy is explicit about it and they will block a generic one.
+WIKI_UA = ("flaschen-taschen-wiki/1 (+https://github.com/hzeller/flaschen-taschen; %s)"
+           % os.environ.get("FT_CONTACT", "jof@thejof.com"))
+
+# Exactly the glyphs wiki.py can draw. Kept here rather than imported from the
+# demo because the fetcher must not import a demo module, and duplicated with
+# that stated: if the demo's font grows, this string grows with it.
+WIKI_CHARSET = frozenset(" -.,:;/'\"!?()&+*=%_0123456789"
+                         "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+# The Latin letters that NFD will not take apart, because their diacritic is
+# welded on rather than combining. Without these, half of Scandinavian, Polish,
+# Icelandic and German goes in the bin for the sake of one letter.
+WIKI_FOLD = {
+    u"ß": "ss", u"æ": "ae", u"Æ": "AE", u"ø": "o",
+    u"Ø": "O", u"đ": "d", u"Đ": "D", u"ł": "l",
+    u"Ł": "L", u"þ": "th", u"Þ": "TH", u"ð": "d",
+    u"Ð": "D", u"œ": "oe", u"Œ": "OE", u"å": "a",
+    u"Å": "A", u"–": "-", u"—": "-", u"‘": "'",
+    u"’": "'", u"“": '"', u"”": '"', u" ": " ",
+}
+
+
+def _wiki_latin(title):
+    """A title in wiki.py's font, or None if it cannot be spelled in it.
+
+    Fold first, reject second. "Zaragoza" and "Malmo" and "Strasse" all survive
+    a NFD-and-drop-the-marks pass; a Cyrillic or CJK title survives nothing and
+    is meant not to, because the alternative is a row of empty boxes claiming to
+    be an article name.
+    """
+    import unicodedata
+    s = u"".join(WIKI_FOLD.get(ch, ch) for ch in title)
+    s = unicodedata.normalize("NFD", s)
+    s = u"".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.replace("_", " ").strip().upper()
+    if not s or not all(ch in WIKI_CHARSET for ch in s):
+        return None
+    if len(s) > WIKI_TITLE_CHARS:
+        # Say it was cut rather than stopping mid-word, which reads as though
+        # the article really is called "ST. MICHAEL'S ABBEY (ORANGE COUNTY".
+        s = s[:WIKI_TITLE_CHARS - 3].rstrip() + "..."
+    return s
+
+
+def _wiki_dt(meta):
+    """`meta.dt` as an epoch float. Milliseconds, which is the point.
+
+    `timestamp` on the message is whole seconds, and whole seconds cannot show
+    that eleven of the last fifteen edits arrived inside 200 ms of each other --
+    which is the burstiness the panel is drawing. This parses the ISO string by
+    hand rather than reaching for a dependency: the format is fixed by the
+    schema and it is always UTC with a Z on the end.
+    """
+    import calendar
+    s = str((meta or {}).get("dt") or "")
+    if len(s) < 20 or s[-1] != "Z":
+        return None
+    try:
+        base = calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S"))
+        frac = float(s[19:-1]) if len(s) > 20 else 0.0
+        return base + frac
+    except (ValueError, OverflowError):
+        return None
+
+
+@product("wiki-stream", ttl=WIKI_TTL, interval=WIKI_INTERVAL,
+         description="a %ds window of the Wikimedia recentchange firehose"
+                     % int(WIKI_WINDOW))
+def _wiki_stream():
+    """Listen to the firehose for a bounded window, aggregate, and hang up.
+
+    The SSE framing is done by hand -- `data:` lines accumulated until a blank
+    line closes the event -- because the whole of what a client library would
+    add here is reconnection, and reconnecting is precisely what this must not
+    do. One connection, one window, then close.
+
+    The window is bounded three ways and each bound has a different failure in
+    mind: elapsed time is the normal exit, a byte count catches a stream that
+    starts shouting, and an event count catches the same thing one layer up. The
+    socket also has its own read timeout, because a firehose that has gone quiet
+    looks exactly like a firehose that has gone away.
+    """
+    import urllib.request
+
+    req = urllib.request.Request(
+        WIKI_STREAM_URL,
+        headers={"User-Agent": WIKI_UA, "Accept": "text/event-stream"})
+
+    t_start = time.time()
+    n_all = n_kept = n_bot = n_new = 0
+    n_titles_seen = 0
+    add_bytes = del_bytes = 0
+    per_wiki = {}
+    events = []                       # (t, delta, wiki, bot, new)
+    titles = []                       # (t, wiki, delta, latin)
+    t_first = t_last = None
+    read = 0
+    data = []
+
+    def take(doc):
+        """One recentchange message. Nothing about `user` is read, ever."""
+        nonlocal n_all, n_kept, n_bot, n_new, n_titles_seen
+        nonlocal add_bytes, del_bytes, t_first, t_last
+        n_all += 1
+        kind = doc.get("type")
+        if kind not in ("edit", "new"):
+            return                    # categorize is bookkeeping; log is people
+        length = doc.get("length")
+        if not isinstance(length, dict):
+            return
+        new_len = length.get("new")
+        if not isinstance(new_len, (int, float)) or isinstance(new_len, bool):
+            return
+        old_len = length.get("old")
+        if not isinstance(old_len, (int, float)) or isinstance(old_len, bool):
+            old_len = 0               # a new page has no old length, by design
+        delta = int(max(-999999, min(999999, int(new_len) - int(old_len))))
+
+        when = _wiki_dt(doc.get("meta")) or time.time()
+        if t_first is None:
+            t_first = when
+        t_last = when
+
+        wiki = str(doc.get("wiki") or doc.get("server_name") or "?")[:32]
+        is_bot = bool(doc.get("bot"))
+        is_new = kind == "new"
+        per_wiki[wiki] = per_wiki.get(wiki, 0) + 1
+        n_kept += 1
+        n_bot += 1 if is_bot else 0
+        n_new += 1 if is_new else 0
+        if delta >= 0:
+            add_bytes += delta
+        else:
+            del_bytes -= delta
+        if len(events) < WIKI_MAX_EVENTS:
+            events.append((when, delta, wiki, is_bot, is_new))
+
+        # Titles: main namespace only, which is both the privacy rule and the
+        # quality one. Wikidata's Q-numbers and Wiktionary's single words are
+        # main-space too but are not what anybody means by an article title, so
+        # the bare-identifier shapes go as well.
+        if doc.get("namespace") != 0:
+            return
+        raw = str(doc.get("title") or "")
+        if not raw or (raw[0] in "QPL" and raw[1:].isdigit()):
+            return
+        n_titles_seen += 1
+        latin = _wiki_latin(raw)
+        if latin and len(latin) >= 3:
+            titles.append((when, wiki, delta, latin))
+
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        for raw in resp:
+            read += len(raw)
+            line = raw.decode("utf-8", "replace").rstrip("\r\n")
+            if line.startswith("data:"):
+                data.append(line[5:].lstrip())
+                continue
+            if line:
+                continue              # event:, id:, and the :ok keepalive
+            if data:
+                try:
+                    take(json.loads("".join(data)))
+                except (ValueError, TypeError, KeyError):
+                    pass
+                data = []
+            if (time.time() - t_start >= WIKI_WINDOW
+                    or read >= WIKI_MAX_BYTES or n_kept >= WIKI_MAX_EVENTS):
+                break
+
+    if n_kept < 8 or t_first is None or t_last is None or t_last <= t_first:
+        raise ValueError("only %d usable events in %.0fs of stream"
+                         % (n_kept, time.time() - t_start))
+
+    secs = t_last - t_first
+    # Project index. The wikis are ordered by how much they contributed, so the
+    # low indices are the ones the legend names and the demo can slice off the
+    # front of the list without sorting it again.
+    order = sorted(per_wiki, key=lambda k: (-per_wiki[k], k))
+    idx = {name: i for i, name in enumerate(order)}
+
+    # Titles thinned to a reservoir spread across the window rather than the
+    # first sixty, which would be the first eight seconds of it.
+    if len(titles) > WIKI_MAX_TITLES:
+        step = len(titles) / float(WIKI_MAX_TITLES)
+        titles = [titles[int(i * step)] for i in range(WIKI_MAX_TITLES)]
+
+    payload = {
+        "secs": round(secs, 2),
+        "n": n_kept, "n_all": n_all,
+        "per_s": round(n_kept / secs, 2),
+        "all_per_s": round(n_all / max(1e-6, time.time() - t_start), 2),
+        "bot_pct": round(100.0 * n_bot / n_kept, 1),
+        "n_new": n_new,
+        "add_bytes": add_bytes, "del_bytes": del_bytes,
+        "n_projects": len(per_wiki),
+        "projects": [[name, per_wiki[name]] for name in order[:12]],
+        "pnames": order,
+        # Columnar, relative, and integer everywhere an integer will say it.
+        "ms": [int(round((e[0] - t_first) * 1000.0)) for e in events],
+        "d": [e[1] for e in events],
+        "pi": [idx[e[2]] for e in events],
+        "f": [(1 if e[3] else 0) | (2 if e[4] else 0) for e in events],
+        "titles": [[int(round((e[0] - t_first) * 1000.0)), idx[e[1]], e[2],
+                    e[3]] for e in titles],
+        "n_titles_seen": n_titles_seen,
+        "title_note": "namespace 0, Latin-script only",
+        "bytes_read": read,
+        "source": "Wikimedia EventStreams (mediawiki.recentchange)",
+    }
+    return payload, WIKI_STREAM_URL
 
 
 # --------------------------------------------------------------------------
@@ -4769,55 +5264,47 @@ def _sats():
 
 
 # --------------------------------------------------------------------------
-# The global routing table, churning, as San Francisco hears it. bgp.py draws
-# it as a per-second chart of the last quarter hour with a ticker of the actual
-# prefixes underneath.
+# An hour of solar wind in flight between L1 and the Earth. solarwind.py draws
+# it as a picture rather than a readout: the stream across the panel, the
+# interplanetary field carried in it, and the magnetosphere it runs into.
 #
-# **Why RouteViews at SFMIX and not the obvious live feed.** RIPE's RIS Live
-# streams the whole default-free zone over plain HTTP as newline-delimited
-# JSON, and it was the first thing tried here. It works, and it is the wrong
-# tool for this panel for two reasons. Unfiltered it delivered 78 MB in 25
-# seconds -- that is not going anywhere near a Pi on shop wifi -- and even
-# filtered to one collector it can only ever be *sampled*: the fetcher opens
-# the socket, reads for twenty seconds, and closes it, so the other hundred and
-# sixty seconds of every three minutes are simply not observed. A burst that
-# lasted a minute would be missed entirely, and a chart that silently omits the
-# interesting parts is a worse chart than a coarser one that does not.
+# **Why the geospace file and not the plasma/mag pair.** The obvious endpoints
+# are `/products/solar-wind/plasma-*.json` and `mag-*.json`, and every tutorial
+# on the internet still names them. They 404. So does the whole
+# `/products/solar-wind/` directory -- the same disappearance that made
+# swpc_solarwind above fall back to the two sixty-byte summary files. What is
+# still served, and is far better than either, is
+# `/products/geospace/propagated-solar-wind-1-hour.json`: one 6.6 kB table,
+# one row a minute for the last hour, with speed, density, temperature, the
+# full field vector in GSM, |B|, and -- the part that matters here -- a
+# `propagated_time_tag` saying when each sample will actually reach the bow
+# shock. It is the input to SWPC's own geospace model, so it is the tidiest
+# and least gap-ridden solar wind series they publish.
 #
-# The RouteViews archive has the opposite shape. Every collector writes a
-# complete MRT dump of every update it saw in each fifteen-minute window and
-# publishes it about a minute after the window closes, bzip2'd. One 1.2 MB file
-# gets **the entire window**, 75,000 messages, with per-second resolution and
-# nothing sampled away. It is a quarter of an hour behind, and that is a trade
-# worth making: this panel is about rate and texture, not about the last
-# second, and the age is on the screen anyway.
+# **The window is the transit time, which is a gift.** A sample measured at L1
+# reaches the Earth roughly forty-five to fifty minutes later at typical wind
+# speeds, and the file holds sixty minutes. So the file is, almost exactly, the
+# plasma currently in flight: its oldest row is arriving at the magnetosphere
+# about now and its newest row has just been measured a million and a half
+# kilometres upstream. A panel that lays the rows out left to right is
+# therefore not a chart with a time axis pretending to be a picture -- it is a
+# picture, of where the plasma is. That coincidence is the whole reason
+# solarwind.py exists in the shape it does, and it is why the arrival stamps
+# are kept in the record rather than trimmed away: the demo prints how far
+# ahead the leading edge is.
 #
-# And the collector is `route-views.sfmix` -- RouteViews' vantage point inside
-# the San Francisco Metropolitan Internet Exchange, which is a couple of miles
-# from the wall and is where the makerspace's own ISP hands off its traffic.
-# The routes this panel draws are the ones the room's packets are actually
-# steered by, which is not a claim any of the other collectors could make.
-# Eight networks peer with it -- Cloudflare and Amazon among them -- so the
-# feed is a genuinely local view of a global table rather than a global average
-# of one.
+# The rows carry nulls when an instrument drops out, and they are stored as
+# nulls rather than filled here. The gap is real information -- three minutes
+# of missing density during a shock arrival is exactly when it happens -- and
+# the demo can draw a hole more honestly than the fetcher can invent a value.
 #
-# **MRT is parsed here, by hand, and that needs justifying.** The usual answer
-# is libbgpstream or mrtparse, and neither is going on a Pi for this: the first
-# is a C library with a build, the second pulls in a dependency tree to do
-# something this file already does for PDFs. The wire format is RFC 6396 and
-# RFC 4271 and the part of it a churn counter needs is small -- walk the record
-# frames, find the BGP UPDATEs, count the prefixes in the withdrawn block, the
-# NLRI block and the two multiprotocol attributes, and read the AS_PATH. What
-# is deliberately *not* implemented is everything else: communities, MED,
-# aggregators, the legacy two-byte-ASN subtypes nobody has emitted this decade.
-# An attribute this does not understand is skipped by its own length field,
-# which is why an unknown one cannot desynchronise the parse.
-#
-# **Where the cost is.** 12.5 MB of MRT and 75,000 records is 0.5 s of pure
-# Python on a desktop, so call it ten on the wall, once every fifteen minutes,
-# in the fetcher process and never in a demo. Both ends are capped anyway --
-# see BGP_MAX_BZ2, BGP_MAX_MRT and BGP_MAX_RECORDS -- and a capped parse says
-# so in the record rather than quietly reporting a low rate.
+# The aurora power rides along because it is 14 kB of text and the alternative
+# is not. `ovation_aurora_latest.json` is the gridded oval, and it is 900 kB of
+# JSON, every fetch, to be reduced to two numbers by the time it reaches a
+# panel where the Earth is five pixels across. `aurora-nowcast-hemi-power.txt`
+# is the same model's hemispheric integral, in gigawatts, at five-minute
+# cadence, and two numbers is all this panel can draw. Ten quiet gigawatts, a
+# hundred in a storm.
 # --------------------------------------------------------------------------
 
 BGP_ARCHIVE = "https://archive.routeviews.org"
