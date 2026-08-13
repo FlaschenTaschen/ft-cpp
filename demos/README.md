@@ -2916,15 +2916,37 @@ drawn as a statement rather than as an alarm. In every one of those cases the
 map is still drawn underneath, because the coastline is not data and does not
 go stale — a blanked panel reads as a crash.
 
-**The feed is `api.airplanes.live`, and the obvious first choice does not
-work.** All three keyless aggregators publish the same readsb-descended JSON
-and all three were tried against this exact query: `api.adsb.lol` answers 200
-OK in a second with `{"ac": [], "total": 0}`, which is not an error and would
-have given a permanently, honestly empty sky; `opendata.adsb.fi` and
-`api.airplanes.live` both answer in about 250 ms with sixty-odd aircraft.
-airplanes.live is what ships, adsb.fi is a one-line swap, and the User-Agent
-carries a real contact address because this is a volunteer-run receiver network
-being asked for something 1440 times a day. **Half of what comes back is on the
+**The feed is `opendata.adsb.fi`, with the OpenSky Network behind it.** adsb.fi
+is keyless and answers this query with 109 aircraft in 400 ms. The other
+readsb-descended aggregators were tried and are not usable: `api.adsb.lol`
+answers 200 OK with `{"ac": [], "total": 0}`, which is not an error and would
+have given a permanently, honestly empty sky — re-checked and still empty over
+the Bay — and `api.adsb.one` returns 403 from Cloudflare before reaching the
+application at all.
+
+One source was removed rather than rejected. **airplanes.live asked us to
+stop**: on 2026-08-12 it began answering every endpoint with `403 {"error":
+"please contact us at ..."}`, and the only correct response to a volunteer-run
+project asking you to stop is to stop. Its URL is gone from `ftdata.py`,
+nothing falls back to it, and nothing probes it to see whether the block has
+lifted. Please don't put it back.
+
+The fallback is deliberately *not* another mirror of the same lineage — adsb.fi,
+adsb.lol and adsb.one all serve the same shape from an overlapping volunteer
+feeder network, so whatever takes one out is likely to take its siblings with
+it. **OpenSky** is a different project with its own receivers, which is what a
+fallback is for, at the cost of sharing nothing with adsb.fi: it answers a
+bounding box rather than a radius, reports metres and metres per second, has no
+distance field, and returns positional arrays rather than objects.
+`_adsb_from_opensky` converts all of that into the shape adsb.fi returns, so
+there is still exactly one parser and only one thing that can be wrong with it.
+It is asked *only* when adsb.fi has actually failed, because anonymous OpenSky
+is metered per day and a request a minute would spend the budget before lunch.
+While it is in use the panel says `opensky` rather than `adsb.fi`, and aircraft
+type and category go missing, because state vectors do not carry them and a
+guess is worse than a gap. The User-Agent carries a real contact address either
+way, because these are volunteer-run receiver networks being asked for
+something 1440 times a day. **Half of what comes back is on the
 ground** — 47 of 76 on a Sunday morning, reported as the *string* `"ground"` in
 `alt_baro` — and none of it can be dead-reckoned, so the fetcher drops it and
 stores the count instead. The panel says "29 airborne, 47 on the ground" and
