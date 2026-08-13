@@ -2694,7 +2694,7 @@ def _wiki_stream():
 # minutes later; none of that belongs on the flash card the Pi boots from.
 # --------------------------------------------------------------------------
 
-ADSB_URL = "https://opendata.adsb.fi/api/v2/lat/%.4f/lon/%.4f/dist/%d"
+ADSB_URL = "https://opendata.adsb.fi/api/v3/lat/%.4f/lon/%.4f/dist/%d"
 
 # The fallback, asked only when the line above has failed. A bounding box in
 # degrees rather than a radius, because that is the only spatial filter the
@@ -2717,8 +2717,18 @@ ADSB_RADIUS_NM = 50
 # construction the furthest away and the least likely to be on the map at all.
 ADSB_MAX = 120
 
-ADSB_TTL = 300
-ADSB_INTERVAL = 60
+# The loop is an hour long in three-minute steps, so the cadence is the
+# poll: one fetch becomes one frame. Their README allows one request a second;
+# this asks for one every three minutes, which is 20 an hour against the 3600
+# they permit -- about half a percent of it. The old 60 s interval existed
+# because the panel drew a live "now" and dead-reckoned to it; a time-lapse
+# does not extrapolate at all, so the slower poll costs nothing and the wall
+# stops leaning on somebody else's servers to redraw a picture nobody is
+# watching for 66 minutes out of every 67.
+ADSB_FRAMES = 20                 # frames kept: 20 x 3 min = one hour
+ADSB_FRAME_SEC = 180             # minimum spacing between kept frames
+ADSB_TTL = 1200
+ADSB_INTERVAL = 180
 
 # A truthful User-Agent, with an address that reaches whoever is fetching.
 # Deliberately not ftdata.get()'s generic one: this is a volunteer-run feed
@@ -2744,6 +2754,36 @@ def _adsb_nm(lat, lon):
     h = (math.sin(dlat * 0.5) ** 2
          + math.cos(rlat0) * math.cos(rlat) * math.sin(dlon * 0.5) ** 2)
     return 2.0 * 3440.065 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def _adsb_ring(frames, frame, now, frame_sec=None, keep=None):
+    """Append `frame` to `frames` and return the trimmed history.
+
+    Pulled out of the fetcher so it can be tested against a synthetic clock:
+    proving that an hour accumulates correctly must not mean either waiting an
+    hour or asking adsb.fi for twenty snapshots in twenty seconds, which is
+    the behaviour their README warns earns an IP restriction.
+
+    Two rules. A frame arriving sooner than half the cadence *replaces* the
+    newest one rather than joining it, so a manual --once or a retry cannot
+    bunch several frames into one minute and make the loop stutter through a
+    third of its span. And anything older than the nominal span is dropped as
+    well as anything past the count, so a wall that was off overnight comes
+    back with one frame rather than twenty frames of yesterday pretending to
+    be the last hour.
+    """
+    frame_sec = ADSB_FRAME_SEC if frame_sec is None else frame_sec
+    keep = ADSB_FRAMES if keep is None else keep
+    out = [f for f in (frames or [])
+           if isinstance(f, dict) and _adsb_num(f.get("t")) is not None]
+    if out and frame_sec > 0 and now - _adsb_num(out[-1]["t"]) < frame_sec * 0.5:
+        out = out[:-1]
+    out.append(frame)
+    if frame_sec > 0:
+        span = keep * frame_sec * 1.5
+        newest = _adsb_num(out[-1]["t"])
+        out = [f for f in out if newest - _adsb_num(f["t"]) <= span]
+    return out[-keep:]
 
 
 def _adsb_from_opensky(doc):
@@ -2801,8 +2841,9 @@ def _adsb_from_opensky(doc):
 
 
 @product("adsb-bay", ttl=ADSB_TTL, interval=ADSB_INTERVAL, volatile=True,
-         description="airborne ADS-B within %d nm of the wall, from adsb.fi "
-                     "(OpenSky as fallback)" % ADSB_RADIUS_NM)
+         description="an hour of airborne ADS-B within %d nm of the wall, "
+                     "in %d-minute frames, from adsb.fi (OpenSky as "
+                     "fallback)" % (ADSB_RADIUS_NM, ADSB_FRAME_SEC // 60))
 def _adsb_bay():
     """The airborne traffic around the wall, trimmed to what a panel can draw.
 
@@ -2916,6 +2957,42 @@ def _adsb_bay():
         "source": source,
     }
     payload.update({c: [r[c] for r in kept] for c in cols})
+
+    # ---- the hour behind this snapshot ------------------------------------
+    # Each fetch appends one frame and the oldest falls off, so the record
+    # carries its own time-lapse and the demo needs no state of its own. Only
+    # the four columns a frame needs are kept -- identity, position, altitude
+    # -- because callsign, type and category do not change between frames and
+    # are already at the top level for the newest one.
+    #
+    # A frame is appended only if the newest kept frame is at least
+    # ADSB_FRAME_SEC old. That decouples the loop's cadence from the poll
+    # interval: a manual --once, a retry after a failure, or a future change
+    # to ADSB_INTERVAL cannot bunch three frames into one minute and make the
+    # loop stutter through a third of its span.
+    prev = load("adsb-bay")
+    was = (prev[0].get("frames") if prev is not None else None) or []
+    # `t` is rounded into the frame and compared against in the same rounded
+    # form, so a frame is never a few hundredths older than itself.
+    ft = round(t, 1)
+    frames = _adsb_ring(was, {"t": ft,
+                              "hex": [r["hex"] for r in kept],
+                              "lat": [r["lat"] for r in kept],
+                              "lon": [r["lon"] for r in kept],
+                              "alt": [r["alt"] for r in kept],
+                              "trk": [r["trk"] for r in kept]}, ft)
+    payload["frames"] = frames
+    payload["frame_sec"] = ADSB_FRAME_SEC
+    payload["n_frames"] = len(frames)
+    payload["span_s"] = (round(ft - _adsb_num(frames[0]["t"]), 1)
+                         if frames else 0.0)
+    # adsb.fi asks to be cited with a link to their home page, and this is the
+    # honest place for it: it travels with the data rather than sitting in a
+    # README nobody reads next to a panel nobody can click.
+    payload["attribution"] = ("Data from adsb.fi -- https://adsb.fi"
+                              if source == "adsb.fi" else
+                              "Data from the OpenSky Network -- "
+                              "https://opensky-network.org")
     return payload, url
 
 

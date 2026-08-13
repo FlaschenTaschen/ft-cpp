@@ -86,6 +86,7 @@ import numpy as np
 import defcon
 import demoscene as ds
 import ftdata
+import ftsite
 
 f32 = np.float32
 
@@ -98,7 +99,9 @@ PRODUCT = "adsb-bay"
 EXTENT = (37.47, 37.93, -122.94, -121.86)
 
 # The wall. Distances on the panel are from here, and it is drawn on the map.
-HOME = (37.7627, -122.3966)
+# demos/site.json, so this and ftdata's ADSB_LAT/ADSB_LON -- the centre of the
+# query that produced the aircraft -- are by construction the same point.
+HOME = ftsite.latlon()
 HOME_LABEL = "HERE"
 
 KNOT_MS = 0.5144                        # knots to metres per second
@@ -384,6 +387,12 @@ def add_arguments(ap):
     ap.add_argument("--labels", type=int, default=2,
                     help="how many aircraft to name: the nearest, then the "
                          "lowest")
+    ap.add_argument("--loop-seconds", type=float, default=9.0,
+                    help="seconds for one pass across the hour")
+    ap.add_argument("--hold", type=float, default=2.5,
+                    help="seconds to hold on the finished picture")
+    ap.add_argument("--samples", type=int, default=16,
+                    help="trail points sampled per three-minute segment")
     ap.add_argument("--trail", type=float, default=1.0,
                     help="comet length multiplier; 0 draws bare heads")
     ap.add_argument("--at", default="now",
@@ -568,339 +577,226 @@ def draw_nodata(dst, lay, lines):
 # --------------------------------------------------------------------------
 
 def build(args):
+    """An hour of Bay Area traffic, replayed as a Doppler-style loop.
+
+    The panel used to draw a live "now" and dead-reckon each aircraft forward
+    from its own last fix. That is why it polled once a minute: three minutes
+    of extrapolation is 25 nm at 500 kn, on a map that only reaches 32.
+
+    This draws the hour the fetcher has actually kept instead -- twenty frames,
+    three minutes apart -- and the change of subject is what lets the wall ask
+    adsb.fi for a twentieth as much. It also removes the guessing entirely:
+    every position between two frames is an *interpolation* between two
+    measured fixes, bounded by real data on both sides, where the old panel
+    extrapolated past the newest one and had nothing to bound it.
+
+    What accumulates is the point. Each pass lays down the tracks as they
+    happened, so the arrival streams into SFO and Oakland draw themselves as
+    bundles of parallel threads, the holding patterns show up as loops, and
+    the whole hour is on the panel by the end of the pass.
+    """
     w, h = args.width, args.height
     lay = Layout(w, h)
     extent = parse_extent(args.extent)
     cache = args.cache_dir
     now_of = clock(parse_when(args.at), args.rate)
-    ttl = ftdata.ttl_for(PRODUCT) or 300.0
+    ttl = ftdata.ttl_for(PRODUCT) or 1200.0
 
     sea_full, bbox = load_sea()
     sea_map = crop_sea(sea_full, bbox, extent, w, lay.map_rows)
-    wm, hm = extent_metres(extent)
-
-    # Metres per second to pixels per second, on each axis separately. This is
-    # the one place the three-fold stretch is applied, and applying it to the
-    # velocity as well as to the position is what keeps a mark pointing along
-    # the track it is actually flying across this map.
-    px_per_ms_x = w / wm
-    px_per_ms_y = lay.map_rows / hm
-
     table = alt_table()
-    trail = max(0.0, float(args.trail))
-    nlab = max(0, int(args.labels))
+
+    loop_s = max(2.0, float(args.loop_seconds))
+    hold_s = max(0.0, float(args.hold))
+    samples = max(2, int(args.samples))
+    reload_s = max(1.0, float(args.reload))
 
     static = np.zeros((h, w, 3), np.uint8)
+    draw_map(static, lay, sea_map, extent)
     frame = np.zeros((h, w, 3), np.uint8)
-    # The map half of the frame, flattened. Every aircraft is drawn through
-    # this view as a flat scatter, which is what turns a hundred and twenty
-    # marks into four numpy calls instead of a hundred and twenty.
-    mv = frame[:lay.map_rows].reshape(-1, 3)
-    # Shape (2, 1) so it broadcasts against both a (2, N) set of positions and
-    # a (K, 2, N) set of streak samples; the row/column axis is the second from
-    # the end in each.
-    bounds = np.array([[lay.map_rows - 1.0], [w - 1.0]], f32)
 
-    # `now` lives in here rather than being closed over so that a test can
-    # replace it with a clock it drives itself. These panels are stateful --
-    # the ease and the reload both depend on what happened last frame -- so a
-    # test has to render a *sequence*, and a sequence it cannot time is a
-    # sequence it cannot make an assertion about.
-    cell = {"rec": None, "age": None, "fetch_age": None, "err": None,
-            "state": "absent", "loaded": -1e18, "sig": None, "arr": None,
-            "labels": [], "ease_off": None, "ease_at": 0.0,
-            "status_key": None, "now": now_of}
+    def lay_out(payload):
+        """Frames -> screen-space tracks, once per record.
 
-    def bake(rec):
-        """Everything about a record that does not change between frames.
-
-        Positions at the record's own timestamp, velocity in pixels a second,
-        the comet's unit vector and length, and four finished uint8 colour
-        arrays -- one a streak sample. The frame loop then never touches an
-        altitude, a bearing or a palette again.
+        Everything the loop needs is built here: an (nframes, naircraft) grid
+        of positions with gaps where an aircraft was not heard, and a flat bag
+        of sampled trail points each carrying the fractional frame index it
+        belongs to. The render loop is then a comparison and a fancy index --
+        no trigonometry, no per-aircraft Python.
         """
-        n = rec["n"]
-        if n == 0:
+        frames = payload.get("frames") or []
+        frames = [f for f in frames if isinstance(f, dict) and f.get("lat")]
+        if not frames:
             return None
-        row, col = cell_of(extent, (lay.map_rows, w), rec["lat"], rec["lon"])
-        trk = np.radians(rec["trk"])
-        ms = rec["gs"] * KNOT_MS
-        vel = np.empty((2, n), f32)
-        vel[0] = -(ms * np.cos(trk)) * px_per_ms_y      # north is up the screen
-        vel[1] = (ms * np.sin(trk)) * px_per_ms_x
-        ref = np.empty((2, n), f32)
-        ref[0] = row
-        ref[1] = col
-        # Each aircraft's fix is its own age old, so each is carried forward to
-        # the record's timestamp here. After this the render loop has one
-        # scalar dt for the whole array rather than a vector.
-        ref += vel * rec["pa"].astype(f32)
-
-        speed = np.hypot(vel[0], vel[1])
-        unit = vel / np.maximum(speed, 1e-6)
-        # The comet is longer for something quick, which is most of what tells
-        # a jet from a Cessna at this size, but it is clamped at both ends: a
-        # helicopter still needs a direction and an airliner must not become a
-        # streak long enough to be mistaken for a track history.
-        length = np.clip(2.0 + rec["gs"].astype(f32) / 90.0, 2.4, 7.0) * trail
-        step = unit * (length / max(1, len(TRAIL_FADE) - 1))
-
-        base = table[alt_index(rec["alt"])]
-        cols = [(base.astype(f32) * k).astype(np.uint8) for k in TRAIL_FADE]
-
-        k = len(TRAIL_FADE)
-        return {
-            "n": n, "vel": vel, "ref": ref, "step": step, "cols": cols,
-            "index": {hx: i for i, hx in enumerate(rec["hex"]) if hx},
-            "offsets": -np.arange(k, dtype=f32).reshape(k, 1, 1),
-            "pos": np.empty((2, n), f32),
-            "streak": np.empty((k, 2, n), f32),
-            "clipped": np.empty((k, 2, n), f32),
-            "flat": np.empty((k, n), np.int32),
-        }
-
-    def positions(arr, dt, ease, out):
-        """Every aircraft's position at `dt` seconds past the record, eased."""
-        np.multiply(arr["vel"], f32(dt), out=out)
-        np.add(out, arr["ref"], out=out)
-        if ease is not None:
-            np.add(out, ease, out=out)
-        return out
-
-    def pick_labels(rec, arr):
-        """The nearest, then the lowest -- of the ones that are on the map.
-
-        Chosen when the record lands rather than every frame: which aircraft is
-        nearest changes once a minute, and re-deciding it thirty times a second
-        would also make the labels flicker between two aircraft a tenth of a
-        mile apart.
-
-        Restricted to the crop, which is not fussiness. The query reaches fifty
-        nautical miles and the map reaches about thirty-two, so the lowest
-        aircraft in range is quite often something on short final at San Jose
-        or Napa, off the panel entirely -- and a name that has nowhere to be
-        drawn is one label rather than two, every time.
-        """
-        if arr is None or not nlab:
-            return []
-        row, col = arr["ref"][0], arr["ref"][1]
-        on = ((row >= 0) & (row < lay.map_rows) & (col >= 0) & (col < w))
-        idx = np.flatnonzero(on)
-        if not len(idx):
-            return []
-        out = [int(idx[np.argmin(rec["dst"][idx])])]
-        if nlab > 1:
-            low = int(idx[np.argmin(rec["alt"][idx])])
-            if low not in out:
-                out.append(low)
-        return out[:nlab]
-
-    def label_text(rec, i):
-        parts = [rec["call"][i] or rec["hex"][i].upper() or "?"]
-        if rec["type"][i]:
-            parts.append(rec["type"][i])
-        parts.append("%dFT" % int(round(rec["alt"][i] / 25.0) * 25))
-        return " ".join(parts)
-
-    def reload_data(now):
-        rec, fetch_age, err = read_traffic(cache)
-        sig = None if rec is None else (rec["t"], rec["n"])
-        if sig is not None and sig == cell["sig"]:
-            # The same file, read again. Keep the baked arrays -- rebuilding
-            # them would restart the ease from a correction of zero and throw
-            # away the label choice for nothing.
-            cell["loaded"] = now
-            return
-
-        old, old_arr = cell["rec"], cell["arr"]
-        arr = bake(rec) if rec is not None else None
-        # The correction, eased. Where an aircraft was about to be drawn, minus
-        # where the new fix says it is: add that difference back in and decay it
-        # to zero, and a minute-old extrapolation that was three pixels out
-        # slides three pixels over a second instead of jumping.
-        ease = None
-        if (arr is not None and old_arr is not None and args.ease > 0
-                and old is not None):
-            was = positions(old_arr, now - old["t"], None,
-                            np.empty((2, old_arr["n"]), f32))
-            now_pos = positions(arr, now - rec["t"], None,
-                                np.empty((2, arr["n"]), f32))
-            ease = np.zeros((2, arr["n"]), f32)
-            for hx, i in arr["index"].items():
-                j = old_arr["index"].get(hx)
-                if j is not None:
-                    ease[0, i] = was[0, j] - now_pos[0, i]
-                    ease[1, i] = was[1, j] - now_pos[1, i]
-            # A correction of tens of pixels is not a correction, it is an
-            # aircraft that was lost and re-acquired somewhere else. Sliding it
-            # across the panel would draw a streak through places it never was.
-            too_far = np.hypot(ease[0], ease[1]) > 24.0
-            ease[:, too_far] = 0.0
-            if not ease.any():
-                ease = None
-
-        cell.update({"rec": rec, "fetch_age": fetch_age, "err": err,
-                     "sig": sig, "arr": arr, "loaded": now,
-                     "labels": pick_labels(rec, arr) if rec is not None else [],
-                     "ease_off": ease, "ease_at": now, "status_key": None})
-
-    def rebuild_status(rec, age, state, drawing):
-        draw_status(static, lay, table, rec, age, state, drawing)
-
-    def draw_ring(i, pos, colour, boxes):
-        """The circle round a named aircraft. Returns its centre, or None.
-
-        The ring is not decoration. Two labels on a map of forty aircraft are
-        useless unless it is obvious which two they are, and a line drawn from
-        the text to the mark would cross half the Bay. It is blitted as one
-        clipped mask rather than as twenty pixel writes, because twenty numpy
-        calls a label is two milliseconds a frame on the wall's Pi.
-
-        Every ring is drawn before any text, and each ring's own rectangle goes
-        into `boxes` -- so a label can neither be painted over a ring nor have
-        its plate rub one out. Getting that order wrong put a black plate
-        through the second aircraft's circle and left it pointing at nothing.
-        """
-        r, c = float(pos[0, i]), float(pos[1, i])
-        if not (0 <= r < lay.map_rows and 0 <= c < lay.w):
+        # One column per aircraft seen anywhere in the hour.
+        order, index = [], {}
+        for f in frames:
+            for hx in f["hex"]:
+                if hx and hx not in index:
+                    index[hx] = len(order)
+                    order.append(hx)
+        nf, na = len(frames), len(order)
+        if not na:
             return None
-        ri, ci = int(round(r)), int(round(c))
-        y0, x0 = ri - RING_R, ci - RING_R
-        yy0, xx0 = max(0, y0), max(0, x0)
-        yy1 = min(lay.map_rows, y0 + RING.shape[0])
-        xx1 = min(lay.w, x0 + RING.shape[1])
-        if yy1 > yy0 and xx1 > xx0:
-            sub = RING[yy0 - y0:yy1 - y0, xx0 - x0:xx1 - x0]
-            frame[yy0:yy1, xx0:xx1][sub] = colour
-        boxes.append((xx0, yy0, xx1, yy1))
-        return ri, ci
-
-    def draw_label(rec, i, at, colour, boxes):
-        """The callsign, type and altitude, beside the ring it belongs to."""
-        if at is None:
-            return
-        ri, ci = at
-        text = label_text(rec, i)
-        tw = text_width(text)
-        # Right of the mark by default, flipped left near the edge, and never
-        # allowed off the panel: a clipped callsign is a different callsign.
-        # Then, if that lands on a label already drawn, the other side and then
-        # a row above or below are tried -- and if none of them is clear the
-        # text is dropped and the ring left to speak for it. Two callsigns
-        # printed over each other are worse than one callsign and a circle.
-        y = max(0, min(lay.map_rows - 6, ri - 2))
-        tries = []
-        for dy in (0, -8, 8):
-            for x in (ci + 6, ci - 6 - tw):
-                tries.append((max(0, min(lay.map_rows - 6, y + dy)),
-                              max(1, min(x, lay.w - tw - 1))))
-        for ly, lx in tries:
-            box = (lx - 2, ly - 1, lx + tw + 2, ly + 6)
-            if any(box[0] < b[2] and b[0] < box[2]
-                   and box[1] < b[3] and b[1] < box[3] for b in boxes):
+        rows = np.full((nf, na), np.nan, f32)
+        cols = np.full((nf, na), np.nan, f32)
+        alts = np.zeros((nf, na), np.int32)
+        for k, f in enumerate(frames):
+            idx = np.array([index[hx] for hx in f["hex"] if hx], np.int32)
+            if not len(idx):
                 continue
-            boxes.append(box)
-            fill(frame, box[1], box[0], box[3], box[2], (0, 0, 0))
-            blit_text(frame, ly, lx, text, colour)
+            keep = [j for j, hx in enumerate(f["hex"]) if hx]
+            la = np.asarray([f["lat"][j] for j in keep], np.float64)
+            lo = np.asarray([f["lon"][j] for j in keep], np.float64)
+            r, c = cell_of(extent, (lay.map_rows, w), la, lo)
+            rows[k, idx] = r
+            cols[k, idx] = c
+            alts[k, idx] = np.asarray([f["alt"][j] for j in keep], np.int32)
+
+        # Trail points. A segment exists only where an aircraft was heard in
+        # both of two consecutive frames; anything else is a gap and stays a
+        # gap, because joining across a missing frame invents a straight line
+        # through wherever it actually went.
+        pr, pc, pt, pa = [], [], [], []
+        for k in range(nf - 1):
+            ok = ~np.isnan(rows[k]) & ~np.isnan(rows[k + 1])
+            if not ok.any():
+                continue
+            r0, c0 = rows[k][ok], cols[k][ok]
+            r1, c1 = rows[k + 1][ok], cols[k + 1][ok]
+            a0 = alts[k][ok]
+            for sidx in range(samples):
+                u = f32(sidx) / samples
+                pr.append(r0 + (r1 - r0) * u)
+                pc.append(c0 + (c1 - c0) * u)
+                pt.append(np.full(r0.shape, k + u, f32))
+                pa.append(a0)
+        if pr:
+            pr = np.concatenate(pr)
+            pc = np.concatenate(pc)
+            pt = np.concatenate(pt)
+            pa = np.concatenate(pa)
+            ri = np.rint(pr).astype(np.int32)
+            ci = np.rint(pc).astype(np.int32)
+            on = ((ri >= 0) & (ri < lay.map_rows) & (ci >= 0) & (ci < w))
+            ri, ci, pt, pa = ri[on], ci[on], pt[on], pa[on]
+            flat = ri * w + ci
+            rgb = table[alt_index(pa.astype(np.float64))].astype(f32)
+        else:
+            flat = np.zeros(0, np.int32)
+            pt = np.zeros(0, f32)
+            rgb = np.zeros((0, 3), f32)
+
+        span = float(frames[-1]["t"]) - float(frames[0]["t"])
+        return {"nf": nf, "na": na, "rows": rows, "cols": cols, "alts": alts,
+                "flat": flat, "ptime": pt, "prgb": rgb,
+                "t0": float(frames[0]["t"]), "t1": float(frames[-1]["t"]),
+                "span": span, "times": [float(f["t"]) for f in frames],
+                "n_last": int(np.count_nonzero(~np.isnan(rows[-1])))}
+
+    cell = {"rec": None, "art": None, "err": None, "at": -1e9, "age": None}
+
+    def refresh(now):
+        if now - cell["at"] < reload_s:
             return
+        cell["at"] = now
+        rec, age, err = read_traffic(cache)
+        cell["age"] = age
+        if rec is None:
+            cell["err"] = err
+            return
+        got = ftdata.load(PRODUCT, cache)
+        payload = got[0] if got else {}
+        art = lay_out(payload)
+        cell["rec"] = rec
+        cell["art"] = art
+        cell["err"] = None if art else "ads-b record carries no frames yet"
+
+    def status(dst, art, rec, age, phase_t):
+        y = lay.status_y + 1
+        dst[lay.status_y:lay.status_y + 1, :] = (14, 18, 24)
+        x = 2
+        stale = age is not None and age > ttl
+        # The clock is the frame's own time, not the wall's: the whole point is
+        # that this is the past being replayed, and a live clock over a
+        # forty-minute-old picture is the one lie this panel could tell.
+        lt = time.localtime(phase_t)
+        x += blit_text(dst, y, x, time.strftime("%H:%M", lt),
+                       C_WARN if stale else C_LABEL) + 5
+        mins = int(round(art["span"] / 60.0)) if art else 0
+        x += blit_text(dst, y, x, "%d MIN" % mins, C_TEXT) + 5
+        x += blit_text(dst, y, x, "%d AC" % art["n_last"], C_TEXT) + 5
+        if art and art["nf"] < 4:
+            # Honest about a loop that is not an hour yet: a wall restarted ten
+            # minutes ago has three frames, and calling that "the last hour"
+            # would be the same lie in a different place.
+            x += blit_text(dst, y, x, "FILLING", C_WARN) + 5
+        src = (rec.get("source") or "").upper() if rec else ""
+        if src:
+            # adsb.fi ask to be cited. This is the citation.
+            w_src = text_width(src)
+            if x + w_src < lay.w - 2:
+                blit_text(dst, y, lay.w - w_src - 2, src, C_DIM)
 
     def render(t, i=0):
-        now = cell["now"]()
-        if args.reload and now - cell["loaded"] >= args.reload:
-            reload_data(now)
-
-        rec, arr = cell["rec"], cell["arr"]
-        # The age that matters is the age of the *fixes*, measured against the
-        # demo's own clock -- not how long ago the socket was read. Two reasons.
-        # ftdata rewrites `fetched_at` even when a fetch changes nothing, so the
-        # fetch age can understate the data age; and --at and --rate move the
-        # demo's present moment, so an age taken from the wall clock would let
-        # --rate 20 extrapolate twenty minutes while still calling the record
-        # fresh. This is the same number the dead reckoning is driven by, which
-        # is the point: the panel goes stale exactly when the extrapolation it
-        # is drawing stops being defensible.
-        age = None if rec is None else max(0.0, now - rec["t"])
-        state = ("absent" if rec is None else
-                 "fresh" if age <= ttl else "stale")
-        cell["age"], cell["state"] = age, state
-        drawing = arr is not None and state == "fresh"
-        key = (state, drawing, None if age is None else int(age),
-               None if rec is None else (rec["n"], rec["n_air"],
-                                         rec["n_ground"], rec["capped"]))
-        if key != cell["status_key"]:
-            rebuild_status(rec, cell["age"], state, drawing)
-            cell["status_key"] = key
-
+        now = now_of()
+        refresh(now)
+        art, rec = cell["art"], cell["rec"]
         np.copyto(frame, static)
+        if art is None:
+            draw_nodata(frame, lay, [("NO ADS-B", C_WARN),
+                                     (cell["err"] or "no data", C_DIM)])
+            return frame
 
-        if rec is None:
-            return draw_nodata(frame, lay, [
-                ("NO ADS-B DATA", C_WARN),
-                ("RUN  PYTHON3 FTDATA.PY --LOOP 60 --DUE --FAST", C_TEXT),
-                ((cell["err"] or "").upper()[:52], C_DIM)])
-        if state == "stale":
-            # Extrapolating a five-minute-old fix at 500 knots puts an aircraft
-            # forty miles from where it is. There is no honest picture to draw,
-            # so none is drawn.
-            return draw_nodata(frame, lay, [
-                ("ADS-B DATA STALE", C_WARN),
-                ("LAST FIX %s AGO -- IS THE FETCHER RUNNING"
-                 % ftdata.describe_age(cell["age"]).upper(), C_TEXT)])
-        if arr is None:
-            return draw_nodata(frame, lay, [
-                ("NO AIRCRAFT AIRBORNE WITHIN %d NM" % rec["radius_nm"], C_DIM)])
+        nf = art["nf"]
+        # One pass across the hour, then a hold on the finished picture.
+        cycle = loop_s + hold_s
+        p = (t % cycle) / loop_s
+        if p >= 1.0:
+            p = 1.0
+        fpos = p * max(1e-6, nf - 1)
 
-        dt = age                    # the clamped one: never extrapolate backwards
-        ease = cell["ease_off"]
-        if ease is not None:
-            k = 1.0 - (now - cell["ease_at"]) / max(1e-6, args.ease)
-            if k <= 0.0:
-                cell["ease_off"] = ease = None
-            else:
-                # Smoothstep, so the correction starts and finishes still. A
-                # linear ease stops dead at the end, which is a small visible
-                # kink at exactly the moment the eye is following the mark.
-                ease = ease * f32(k * k * (3.0 - 2.0 * k))
+        mv = frame[:lay.map_rows].reshape(-1, 3)
+        if len(art["flat"]):
+            shown = art["ptime"] <= fpos
+            if shown.any():
+                fl = art["flat"][shown]
+                age_f = fpos - art["ptime"][shown]
+                # Older track dims but never vanishes: the hour is the subject,
+                # so what has already been drawn has to stay legible.
+                # Shallow, with a high floor. A steeper fade looked more
+                # like a radar sweep but undid the point: by the end of the
+                # pass most of the hour had dimmed out of sight, and the hour
+                # is the subject. Old track recedes; it does not leave.
+                k = np.clip(1.0 - age_f / max(1.0, nf * 2.0), 0.55, 1.0)
+                mv[fl] = (art["prgb"][shown] * k[:, None]).astype(np.uint8)
 
-        pos = positions(arr, dt, ease, arr["pos"])
-        streak, clipped = arr["streak"], arr["clipped"]
-        if trail > 0:
-            np.multiply(arr["step"], arr["offsets"], out=streak)
-            np.add(streak, pos, out=streak)
+        # The heads: where each aircraft is at this instant of the replay,
+        # interpolated between the two frames it sits between.
+        k0 = min(nf - 2, int(fpos)) if nf > 1 else 0
+        u = fpos - k0 if nf > 1 else 0.0
+        r0, c0 = art["rows"][k0], art["cols"][k0]
+        if nf > 1:
+            r1, c1 = art["rows"][k0 + 1], art["cols"][k0 + 1]
+            both = ~np.isnan(r0) & ~np.isnan(r1)
+            rr = np.where(both, r0 + (r1 - r0) * u, r0)
+            cc = np.where(both, c0 + (c1 - c0) * u, c0)
         else:
-            np.copyto(streak, pos)
-        np.clip(streak, 0.0, bounds, out=clipped)
-        # Anything the clip moved was off the map, and is not drawn. Testing it
-        # this way rather than with four comparisons is one call for every
-        # sample of every aircraft at once.
-        on = np.all(clipped == streak, axis=1)
-        np.copyto(arr["flat"], clipped[:, 0], casting="unsafe")
-        np.multiply(arr["flat"], w, out=arr["flat"])
-        np.add(arr["flat"], clipped[:, 1].astype(np.int32), out=arr["flat"])
+            rr, cc = r0, c0
+        live = ~np.isnan(rr)
+        if live.any():
+            ri = np.rint(rr[live]).astype(np.int32)
+            ci = np.rint(cc[live]).astype(np.int32)
+            on = (ri >= 0) & (ri < lay.map_rows) & (ci >= 0) & (ci < w)
+            if on.any():
+                head = table[alt_index(art["alts"][k0][live][on]
+                                       .astype(np.float64))]
+                mv[ri[on] * w + ci[on]] = np.minimum(
+                    255, head.astype(np.int32) + 70).astype(np.uint8)
 
-        # Tail first so the head paints over it, and the head last so an
-        # aircraft is never a tail with something else's head on it.
-        cols = arr["cols"]
-        for k in range(len(cols) - 1, -1, -1):
-            m = on[k]
-            mv[arr["flat"][k][m]] = cols[k][m]
-
-        boxes, rings = list(map_boxes), []
-        for j, idx in enumerate(cell["labels"]):
-            colour = C_LABEL if j == 0 else C_TEXT
-            rings.append((idx, draw_ring(idx, pos, colour, boxes), colour))
-        for idx, at, colour in rings:
-            draw_label(rec, idx, at, colour, boxes)
+        status(frame, art, rec, cell["age"], art["times"][min(nf - 1, int(round(fpos)))])
         return frame
 
-    map_boxes = draw_map(static, lay, sea_map, extent)
-    reload_data(now_of())
-    render.state = cell               # the tests reach in here; nothing else
-    render.layout = lay
-    render.extent = extent
-    render.sea_map = sea_map
-    render.clock = now_of
-    render.ttl = ttl
     return render
 
 
