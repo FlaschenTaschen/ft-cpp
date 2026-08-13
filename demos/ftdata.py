@@ -2213,6 +2213,230 @@ for _lat, _lon in _wx_sites:
 # exact wall-clock second any particular article was edited.
 # --------------------------------------------------------------------------
 
+SEQUOIA_CAL_URL = "https://sequoia.garden/api/calendar.json"
+
+# Six hours: see above, this is a dead-fetcher detector and not a shelf life.
+SEQUOIA_CAL_TTL = 21600
+
+# Hourly. 2.7 kB on the wire against our own solar-powered server, which is why
+# this is not five minutes: `solar-garden` in this same file explains what a
+# request costs that machine.
+SEQUOIA_CAL_INTERVAL = 3600
+
+# How far past its end an event stays on the record. The feed appears to publish
+# only future events, so in practice this keeps whatever is running *right now*
+# -- the single most valuable state the panel has -- plus anything that finished
+# earlier today, so the panel can draw this evening honestly rather than
+# claiming an empty one.
+SEQUOIA_CAL_KEEP_PAST = 86400
+
+# Enough for a season at this cadence, and a hard stop if the feed ever grows a
+# recurrence expander and starts returning a thousand.
+SEQUOIA_CAL_MAX = 40
+
+# Longer than any title observed (the longest was 28 characters once its
+# parenthetical was removed) and short enough that a pathological one cannot
+# blow the record up. The panel draws the nearest title at double size and 28
+# characters is 223 of its 320 columns, so this cap is also the panel's.
+SEQUOIA_CAL_TITLE_MAX = 44
+
+# An all-day entry has no useful clock time. It is given this much length so it
+# is a visible block rather than a zero-height nothing, and the record flags it
+# so the panel can draw it as the different kind of thing it is.
+SEQUOIA_CAL_ALLDAY_S = 43200
+
+def _sequoia_cal_epoch(s):
+    """A feed timestamp as epoch seconds, taking the wall clock and not the offset.
+
+    See the long note above for why the trailing `-08:00` is discarded rather
+    than honoured. zoneinfo first so that a fetcher running anywhere resolves
+    this the way the makerspace experiences it, with `mktime` behind it for a
+    Python that has no tzdata -- which on the Pi this ships to is set to Pacific
+    anyway, so the fallback agrees.
+
+    Parsed by slicing rather than by regex, and not only because `re` is
+    imported further down this file than this section sits: the slice *is* the
+    documentation of which eight characters of `2026-08-13T19:00:00-08:00` are
+    believed and which nine are thrown away. Anything that does not have digits
+    where ISO 8601 puts them is None, which the caller treats as an unusable
+    entry rather than as a broken feed.
+    """
+    s = str(s or "")
+    if len(s) < 16 or s[4] != "-" or s[7] != "-" or s[13] != ":":
+        return None
+    try:
+        year, mon, day = int(s[0:4]), int(s[5:7]), int(s[8:10])
+        hour, minute = int(s[11:13]), int(s[14:16])
+        sec = int(s[17:19]) if len(s) >= 19 and s[16] == ":" else 0
+    except ValueError:
+        return None
+    try:
+        import datetime
+        from zoneinfo import ZoneInfo
+        return float(datetime.datetime(
+            year, mon, day, hour, minute, sec,
+            tzinfo=ZoneInfo("America/Los_Angeles")).timestamp())
+    except Exception:                                        # noqa: BLE001
+        # tm_isdst=-1: let the C library decide, which is right on any machine
+        # whose zone is the makerspace's and no worse than guessing anywhere
+        # else.
+        return float(time.mktime((year, mon, day, hour, minute, sec, 0, 0, -1)))
+
+
+def _sequoia_cal_title(s):
+    """The title as the wall should carry it. Editorial, not typographic.
+
+    Case is folded up here rather than in the demo because upper case is what
+    the record is *for*: every panel that draws it draws capitals, and storing
+    both forms would be storing a string nobody reads.
+    """
+    s = str(s or "")
+    # Parentheticals, dropped by scan rather than by regex; see the note in
+    # _sequoia_cal_epoch. An unclosed "(" takes the rest of the title with it,
+    # which is the right answer: whatever follows it was never going to be
+    # readable prose.
+    while "(" in s:
+        head, _, rest = s.partition("(")
+        s = head + rest.partition(")")[2]
+    s = " ".join(s.replace("&", "/").split()).upper()
+    if len(s) <= SEQUOIA_CAL_TITLE_MAX:
+        return s
+    cut = s[:SEQUOIA_CAL_TITLE_MAX]
+    # On a word boundary if there is one in the last third, so the cap reads as
+    # a shorter name rather than as a truncation.
+    sp = cut.rfind(" ")
+    if sp >= SEQUOIA_CAL_TITLE_MAX * 2 // 3:
+        cut = cut[:sp]
+    return cut.rstrip()
+
+
+@product("sequoia-calendar", ttl=SEQUOIA_CAL_TTL,
+         interval=SEQUOIA_CAL_INTERVAL,
+         description="upcoming classes and socials at the makerspace")
+def _sequoia_calendar():
+    """The makerspace's own public calendar, trimmed to what a panel draws.
+
+    An empty array is returned as an empty record rather than raised as an
+    error. A quiet month is a real state of a small workshop's calendar and the
+    panel draws it as one; raising here would instead leave last week's record
+    in place -- see `fetch()` -- and the wall would keep advertising a social
+    that already happened, which is the one genuinely bad outcome available.
+    """
+    raw = get_json(SEQUOIA_CAL_URL, timeout=20)
+    if not isinstance(raw, list):
+        raise ValueError("sequoia calendar is not a JSON array")
+
+    now = time.time()
+    events, skipped = [], 0
+    for item in raw:
+        if not isinstance(item, dict):
+            skipped += 1
+            continue
+        start = _sequoia_cal_epoch(item.get("start"))
+        if start is None:
+            skipped += 1
+            continue
+        all_day = bool(item.get("allDay"))
+        end = _sequoia_cal_epoch(item.get("end"))
+        if end is None or end <= start:
+            end = start + (SEQUOIA_CAL_ALLDAY_S if all_day else 3600.0)
+        title = _sequoia_cal_title(item.get("title"))
+        if not title:
+            skipped += 1
+            continue
+        if end < now - SEQUOIA_CAL_KEEP_PAST:
+            continue
+        events.append({
+            "t": int(round(start)),
+            # A duration rather than an end: it is three or four digits instead
+            # of ten, and it is what the panel measures a block's height with.
+            "d": int(round(min(end - start, 86400.0))),
+            "a": 1 if all_day else 0,
+            "n": title,
+        })
+
+    events.sort(key=lambda e: (e["t"], e["n"]))
+    # Bookwhen can list the same session twice around a reschedule.
+    uniq, seen = [], set()
+    for e in events:
+        key = (e["t"], e["n"])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(e)
+
+    return {
+        "site": ftsite.NAME.upper(),
+        "n": len(uniq[:SEQUOIA_CAL_MAX]),
+        "n_feed": len(raw),
+        "skipped": skipped,
+        "tz": "America/Los_Angeles",
+        "tz_note": "feed stamps a fixed -08:00 year round; wall-clock taken as local",
+        "ev": uniq[:SEQUOIA_CAL_MAX],
+    }, SEQUOIA_CAL_URL
+
+
+# --------------------------------------------------------------------------
+# Aircraft over the Bay. adsb.py draws these.
+#
+# **Which feed, and why not the obvious ones.** Three keyless aggregators
+# publish the same shape of JSON, all descended from readsb's `aircraft.json`,
+# and they were all tried against this exact query before one was picked:
+#
+#   api.adsb.lol/v2/point/...        200 OK, `{"ac": [], "total": 0}`. It
+#                                    answers, it answers quickly, and it answers
+#                                    with nothing. An empty list is not an
+#                                    error, so a demo built on this would have
+#                                    drawn an honest, permanently empty sky.
+#   opendata.adsb.fi/api/v2/...      works; 63 aircraft, 240 ms.
+#   api.airplanes.live/v2/point/...  worked; 65 aircraft, 250 ms.
+#
+# airplanes.live was what shipped until 2026-08-12, when it began answering
+# every endpoint with `403 {"error": "please contact us at
+# contact@airplanes.live"}` -- the same 403 for the project User-Agent, a bare
+# curl one and a browser one, while airplanes.live itself still served 200 from
+# the same host. Their guide documents one request a second and this asked once
+# a minute, sixty times under, so this was not the rate. It reads as a block on
+# the wall's address, and an address is not something a fetcher can argue with.
+#
+# So adsb.fi is what ships, which is what the second source was written to be.
+# The response shapes differ in two places and no more: adsb.fi calls the list
+# `aircraft` where airplanes.live called it `ac`, which the parser below has
+# always accepted both of, and adsb.fi reports `now` in seconds where readsb
+# reports milliseconds, which the timestamp line now accepts both of. Neither
+# wants a key. Both ask for civility rather than credentials.
+#
+# **Ground traffic is dropped, and counted.** Half of what comes back is parked
+# or taxiing -- 36 of 70 on a Sunday morning -- reported as the *string*
+# "ground" in `alt_baro` rather than a number. None of it can be dead-reckoned,
+# because a pushback tug does not hold a groundspeed and a track, and a heap of
+# static dots on the SFO apron is the brightest thing on the panel for the worst
+# possible reason. So the record keeps the airborne ones and stores the ground
+# count as a number, which is the honest version of throwing them away: the
+# panel can say "34 airborne, 36 on the ground" and mean it.
+#
+# **The payload is columnar**, one list per field rather than one dict per
+# aircraft, and that is worth about 40% of the bytes at this size -- 120
+# aircraft do not need the string "alt" repeated 120 times. It also happens to
+# be exactly what the demo wants, since every one of these columns becomes a
+# numpy array in build() and nothing has to be transposed on a 600 MHz Pi.
+#
+# **Every aircraft carries its own position age.** `seen_pos` is how long ago
+# that aircraft's position was last heard, and it is not the same as the age of
+# the fetch: a jet over the Gate updates twice a second and something in the
+# hills behind Livermore may not have been heard for half a minute. The demo
+# dead-reckons from `t - pa` per aircraft rather than from one timestamp for the
+# whole record, which costs one float a plane and is the difference between a
+# picture that is a minute old and one that is a minute old *and knows it*.
+#
+# One minute is the interval and five is the TTL, and the gap between them is
+# deliberate: at 500 knots a minute of extrapolation is 8 nm, which the dead
+# reckoning covers, and five minutes is 40 nm, which nothing covers. Past the
+# TTL the demo stops drawing aircraft rather than drawing fiction. The record is
+# `volatile` because it is rewritten 1440 times a day and is worthless two
+# minutes later; none of that belongs on the flash card the Pi boots from.
+# --------------------------------------------------------------------------
+
 WIKI_STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange"
 
 # Seconds of firehose per fetch. Long enough that a burst is inside the window
@@ -2505,7 +2729,7 @@ def _wiki_stream():
 # minutes later; none of that belongs on the flash card the Pi boots from.
 # --------------------------------------------------------------------------
 
-ADSB_URL = "https://api.airplanes.live/v2/point/%.4f/%.4f/%d"
+ADSB_URL = "https://opendata.adsb.fi/api/v2/lat/%.4f/lon/%.4f/dist/%d"
 
 # The wall's own address, in Dogpatch. Everything on the panel is measured from
 # here; it lives in demos/site.json now, which is the one place to change it.
@@ -2541,7 +2765,7 @@ def _adsb_num(x):
 
 @product("adsb-bay", ttl=ADSB_TTL, interval=ADSB_INTERVAL, volatile=True,
          description="airborne ADS-B within %d nm of the wall, from "
-                     "airplanes.live" % ADSB_RADIUS_NM)
+                     "adsb.fi" % ADSB_RADIUS_NM)
 def _adsb_bay():
     """The airborne traffic around the wall, trimmed to what a panel can draw.
 
@@ -2573,11 +2797,20 @@ def _adsb_bay():
     if not isinstance(seen, list):
         raise ValueError("no aircraft list in the response from %s" % url)
 
-    # readsb reports `now` in milliseconds since the epoch. Falling back to the
-    # local clock rather than failing: the positions are still good, and a demo
-    # that dead-reckons from a clock a second out is not measurably wrong.
-    served = _adsb_num(doc.get("now"))
-    t = served / 1000.0 if served and served > 1e11 else time.time()
+    # readsb reports `now` in milliseconds since the epoch and adsb.fi reports
+    # it in seconds, and the magnitude is what tells them apart: a seconds
+    # count does not reach 1e11 until the year 5138, so anything past it is
+    # milliseconds and anything past 1e9 is a plausible seconds count. Falling
+    # back to the local clock rather than failing on either shape: the
+    # positions are still good, and a demo that dead-reckons from a clock a
+    # second out is not measurably wrong.
+    served = _adsb_num(doc.get("now")) or 0.0
+    if served > 1e11:
+        t = served / 1000.0
+    elif served > 1e9:
+        t = served
+    else:
+        t = time.time()
 
     ground = 0
     rows = []
@@ -2616,12 +2849,91 @@ def _adsb_bay():
         "n_seen": len(seen), "capped": len(rows) > len(kept),
         "units": {"alt": "ft baro", "gs": "kn", "trk": "deg true",
                   "dst": "nm", "pa": "s since position last heard"},
-        "source": "airplanes.live",
+        "source": "adsb.fi",
     }
     payload.update({c: [r[c] for r in kept] for c in cols})
     return payload, url
 
 
+# --------------------------------------------------------------------------
+# The 19, 22 and 55 at our own front door, as a timetable. muni.py draws these.
+#
+# **This is the schedule, not a prediction, and that is not a design choice.**
+# Muni has no real-time feed this wall may honestly use. 511.org's SIRI and
+# GTFS-RT endpoints are the documented public source of Muni vehicle positions
+# and both answer 401 without a free-but-registered key -- a key nobody had
+# when this was written. The legacy NextBus feed at retro.umoiq.com is still
+# keyless but its agency list is down to eighteen agencies and SF Muni is not
+# among them; gtfs.sfmta.com does not answer at all; api.sfmta.com does not
+# resolve; sfmta.com's own /status/gtfs-rt/*.pb are 404 Drupal pages; and
+# Swiftly's api.goswift.ly wants credentials. The BART block further down this
+# file reaches the same conclusion from the other end -- it exists because BART
+# publishes GTFS-RT for free and Muni does not.
+#
+# There is one more door, and it is deliberately left shut. SFMTA's own route
+# pages embed a live Umo IQ vehicle API -- `webservices.umoiq.com/api/pub/v1`,
+# under the *unlisted* agency id `sfmta-cis` -- and it does answer 200 with a
+# thousand buses and their GPS times. It answers because the page ships a
+# `key=` query parameter in the clear, and that key is SFMTA's: issued to
+# SFMTA, metered against SFMTA, and rotatable by either party the moment
+# somebody notices a light display in Potrero Hill polling it. Lifting a
+# credential out of somebody else's front end is not the same thing as a
+# keyless feed, and a panel that dies the week the token rotates is not one
+# anybody wants to own. The clean route to live Muni predictions is a 511.org
+# token -- free, a minute to request, rate-limited to sixty calls an hour. If
+# one ever lands in this tree, this product grows a sibling and `muni.py`
+# grows a live mode. Until then the panel shows what the timetable says, it
+# says "SCHEDULE" on the wall in as many words, and nobody is invited to
+# believe a drawn bus is a tracked one.
+#
+# **Where the schedule comes from.** San Francisco's open data portal carries
+# SFMTA's static GTFS as a Socrata blob asset, dataset `dni7-qpv3`, and it is
+# genuinely keyless: 10.4 MB of zip, HTTP 200, no token, no click-through
+# despite the licence text inside the archive. It is the same file SFMTA hands
+# Google. The portal's metadata endpoint is 2 KB and carries `blobFilename`,
+# which is the published schedule's own name -- `SFMTA_GTFS_20260723_20260828v5
+# .zip`, service period baked into it. That name is used as a version: the
+# daily fetch pulls the metadata, and only downloads the archive when the name
+# has changed. On the days it has not -- which is most days, since SFMTA signs
+# up a new schedule roughly quarterly -- the fetch costs two kilobytes and the
+# previous payload is re-stored under a fresh timestamp. That is honest: the
+# payload really is still the currently published schedule, and the record's
+# age really is how long ago we last confirmed it.
+#
+# **The reduction is severe and it has to be.** `stop_times.txt` alone is 97 MB
+# uncompressed and about three million rows -- a hundred times the whole rest
+# of this cache put together. What the panel needs out of it is six stops: the
+# nearest stop for each of routes 19, 22 and 55 in each of its two directions,
+# and the departure times at those six. That is about 1900 integers. So the
+# archive is never unpacked to disk and `stop_times.txt` is streamed through a
+# csv reader straight out of the zip, keeping only rows whose stop_id is one of
+# the few dozen within 800 m of the installation. The pass takes half a minute
+# and happens on the days the schedule changes, which is a handful a year.
+#
+# **The stops are found, not hardcoded.** The makerspace wiki names the 19, 22
+# and 55 as its buses and those three route ids are hardcoded here, with the
+# wiki as the citation -- but *which* stop each one uses is derived, by taking
+# every stop within 800 m, asking `stop_times` which route and direction
+# actually serves it, and keeping the nearest per (route, direction). Today
+# that resolves to De Haro & 18th and Rhode Island & 18th for the 19, both
+# Connecticut & 18th platforms for the 55, and the two 16th & Wisconsin
+# platforms for the 22 -- 140 m, 187 m and 413 m away respectively, which is
+# the whole point of the panel, because that spread is a spread in walking
+# time. A stop moving in a future sign-up fixes itself.
+#
+# **Calendars, because GTFS service ids are a trap here.** SFMTA's
+# `calendar.txt` declares the obvious weekday/Saturday/Sunday triple, and then
+# `calendar_dates.txt` removes service 1 on every single weekday of the period
+# and adds `M11` or `M21` in its place. Nothing in `trips.txt` references
+# service 1 at all. A fetcher that read only calendar.txt would produce a
+# perfectly well-formed record with no weekday service in it. So the calendar
+# is resolved here, date by date across the feed's whole period, into a plain
+# map of "20260812" -> the service ids running that day, and the demo does no
+# GTFS reasoning whatsoever -- it looks today up in a dict.
+#
+# Times are kept as minutes after midnight and are allowed past 1440, which is
+# how GTFS spells "this is still Tuesday's service": the 22 runs to 30:09, and
+# a naive modulo would file its 06:09 owl trips under the wrong day.
 # --------------------------------------------------------------------------
 
 MUNI_PRODUCT = "muni-18th"

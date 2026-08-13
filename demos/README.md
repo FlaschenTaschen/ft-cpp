@@ -6360,3 +6360,911 @@ $ python3 crash.py --shuffle --seed 7         # a different exhibition
 $ python3 crash.py --hold 4 --gap 0.2         # the whole gallery in a slot
 ```
 
+### tonight
+
+![tonight](screenshots/tonight.png)
+
+The makerspace's own class and social calendar, drawn as the thing it actually
+is: **a field of evenings, with the lights on in the ones that are booked.**
+It answers the question somebody walking past the wall has about the programme,
+which is not "what is the programme". It is **is something on, and is it soon.**
+
+x is days, one cell per calendar day, today at the left edge. y is *time of
+day*, over a narrow window — typically 17:00 to 22:00. The ground behind it is
+the real sky: computed solar elevation for this latitude and this date, so the
+top of the field is late-afternoon blue, the bottom is night, and a band of
+dusk runs across it and climbs a couple of rows from left to right as the
+season turns. An event is a lit rectangle at its true hour, its true length,
+with a bright edge on the row where it starts. A busy week is a row of lit
+windows. A quiet one is a dark building.
+
+That is the one representation choice and everything else falls out of it. In
+particular: **nothing about this panel is a list.** The shape of the next three
+weeks — which nights, how long, how far apart — is the content, and it is a
+shape a list cannot show.
+
+**Three weeks, not one, and the data forced that.** This started as a
+seven-day timeline, which is the obvious answer and is wrong here. The endpoint
+returns fourteen upcoming events, and on the day this was written they ran from
+the 13th of August to the 3rd of November — **eighty-three days**. One or two
+evenings a week is what a volunteer-run makerspace actually schedules, so a
+next-seven-days panel is empty five days in seven, and an empty panel is
+indistinguishable from a broken one. Three weeks reliably holds three to five
+events *and* holds them as three repeats of the same seven-day pattern, so the
+weekly rhythm — these socials are Monday, Tuesday and Thursday evenings — reads
+as a shape rather than having to be inferred. Monday boundaries get a brighter
+rule than the other day boundaries, which is what makes the three repeats
+visible. When even three weeks holds nothing the span grows a week at a time
+until it reaches the next event, up to nine weeks, and the header says `2 IN 6
+WEEKS` so the axis can never quietly change scale.
+
+**The vertical window is measured off the record, not chosen.** Every start in
+the feed is 18:00 or 19:00 and every end is 20:00 to 21:00, because these are
+things people come to after work. So the field spends its 39 rows on the hours
+that carry events, clamped so that a calendar of nothing but 7 pm socials
+cannot collapse to a six-hour window with one block in the middle of it. At the
+usual 17:00–22:00 a two-hour social is a fifteen-row block; on a flat 24-hour
+axis it would be a five-row smear. A morning class appearing in the record
+widens the window on its own and the two hour labels at the right-hand edge say
+what it became. They sit at the right on purpose: that is the far future, the
+least valuable columns on the panel, and it is where an event is least likely
+to be drawn over them — a block always wins against its own axis.
+
+**Today's cell is the one that is half spent.** Above the current time of day
+its sky is darkened, and the boundary is a bright line with a pip travelling
+along it. "The evening has not started" and "you have missed most of it" are
+the same picture at two different times, and the gap between that line and the
+next lit block *is* the wait. Outside the window — most of the working day —
+the line clamps to an edge and goes plain grey, because a bright line pinned to
+the top row would be claiming the present moment is five o'clock.
+
+**Urgency is brightness, in one hue, with no legend.** Grey is finished, amber
+is on the calendar, gold is starting within the hour, green is running now.
+There is deliberately no colour per *kind* of event: that would need a legend
+there is no room for, and worse, it would say that which social it is matters
+more than whether it is tonight. The one state worth shouting — something
+starting inside the hour — puts `IN 40 MIN` across the panel at double height,
+pulsing, with its block pulsing in step so the words and the rectangle they are
+about are visibly the same thing.
+
+**The thing that had to be fixed twice was that brightness ramp.** The urgent
+colour started as a near-white cream and the body of every block was drawn at a
+single 42 % of its colour. 42 % of a cream is a warm grey, so the *most urgent*
+block on the panel came out duller than the ordinary amber ones and read as an
+event that had already finished — exactly backwards, and it looked completely
+plausible. Two changes: the urgent colour moved back into the lamp's own hue
+and got more saturated rather than whiter, and the body fraction became a
+per-state number so "now" is nearly solid and "on the calendar" stays an
+outline with a wash in it. `test-tonight.py` asserts the ordering in pixels
+rather than trusting the constants.
+
+**The timezone, which is the single most likely way to put every event on this
+wall an hour late.** `sequoia.garden/api/calendar.json` stamps its starts like
+`2026-08-13T19:00:00-08:00`. -08:00 is Pacific *Standard* Time; California in
+August is on -07:00. Honour the offset and the whole panel slides one row down,
+which looks exactly as reasonable as the right answer.
+
+The feed settles the argument itself. "Member Applicant Orientation" recurs six
+times between August and November and every listing is stamped 19:00. If the
+*instant* were authoritative, that one recurring orientation would be at 8 pm
+all summer and would silently move to 7 pm on the 3rd of November — two days
+after the clocks change — for no reason anybody organised. If the *wall-clock
+fields* are authoritative it is at 7 pm every time, which is what a recurring
+evening event is. So the fetcher parses the local fields and throws the offset
+away. Note that the two readings **agree** for anything in November: a fixed
+-08:00 is correct once standard time starts, so the bug is invisible for four
+months of the year and an hour wide for the other eight. The test asserts the
+August and November cases together, because either one alone passes under both
+readings.
+
+**Titles are edited in the fetcher, and only the font work happens in the
+demo.** "Upmending (upcycling + mending) Social" loses its parenthetical gloss
+before it is ever stored — that gloss is for somebody reading a web page, and
+on a wall read at three metres it is noise in front of the word that matters.
+`&` becomes `/` (the same substitution `ftdata._muni_short` makes, so the tree
+has one separator and not two), whitespace collapses, case folds up, and the
+result is capped on a word boundary at 44 characters. That leaves the longest
+real title at 28 characters, which is 111 of the panel's 320 columns at single
+height — so the nearest event's name is printed **in full**, never abbreviated,
+which was the thing this panel most wanted and least expected to get. What the
+demo does is drop the characters its 3x5 font has no glyph for: no apostrophe,
+no exclamation mark, so "Let's make BioYarn!" draws as `LETS MAKE BIOYARN`.
+
+**A quiet week is a state, not an error.** An empty calendar draws the three
+weeks of empty evenings with `NOTHING ON` and `THE CALENDAR IS CLEAR` across
+them, which is a picture. Stale data prints `STALE 9H` beside the count in
+amber and otherwise draws normally — a calendar fetched this morning is still
+true tonight, and hiding it would be the dishonest move. No record at all
+draws a card saying nobody has asked yet and what to run.
+
+**Where the data comes from.** One product, `sequoia-calendar`, keyless and
+2.7 kB on the wire, cached hourly with a six-hour TTL. Neither number is about
+the data going off: the countdown on the wall is computed from the clock
+against cached absolute timestamps, so "in 40 minutes" stays right to the
+minute between fetches, and the TTL is really a dead-fetcher detector. Dropping
+`url` and the rest of the trimming takes the record to about 1.3 kB. This is
+the one panel on the wall with no privacy question to answer — the feed carries
+a title, two times and an all-day flag, and nothing that names a person.
+
+This is a wall-clock panel, like `muni`: `build()` takes the present moment
+once from `time.time()` and every frame after that is a pure function of `t`.
+`--now` pins it. `--pretend` moves the clock to a moment relative to a real
+event so the urgent states can be reviewed on an afternoon when nothing is
+happening; nothing but the clock is fabricated, every block and every sunset
+under it is the true one, and the panel stamps SIM anyway.
+
+It measures 0.026 ms mean and 0.036 ms p95 per frame on a desktop — one
+full-frame copy and a handful of short writes, with no per-frame cost that
+scales with the number of events, since all of the placement happens in
+`build()`.
+
+```console
+$ python3 ftdata.py --once --only sequoia-calendar
+$ python3 tonight.py --host 127.0.0.1
+$ python3 tonight.py --pretend soon        # forty minutes to go
+$ python3 tonight.py --pretend now         # it has started
+$ python3 tonight.py --pretend quiet       # a month with nothing near
+$ python3 tonight.py --span 42 --24h       # six weeks, 24 hour clock
+$ FT_DATA_CACHE=/tmp/empty python3 tonight.py
+$ python3 scripts/test-tonight.py --live
+$ python3 scripts/test-tonight.py --at '2026-08-13 18:20' \
+                                  --shot-live screenshots/tonight.png
+```
+
+### teletext
+
+![teletext](screenshots/teletext.png)
+
+A Ceefax page cycle: 40x8 character cells, seven colours and black, pictures
+built out of the 2x3 block mosaic alphabet, and real numbers with their real
+ages on them.
+
+Teletext is this wall's direct ancestor -- a character display with no
+half-tones and no blending, eight colours because they are the corners of the
+RGB cube, carrying weather and tides and share prices to the whole of Britain
+from 1974 to 2012. It is worth having on the rotation because it looks like
+nothing else here, and it looks like nothing else because it could not look
+like anything else.
+
+**The grid is not a style choice, it is arithmetic.** 320 px is exactly 40
+columns of 8 px, which is the real teletext column count. 64 px is exactly 8
+rows of 8 px, where the real page had 25 -- so this is a page *cropped* to a
+strip, not a page squeezed. The alternative was seven 9 px rows, which fits
+neither the double-height stretch nor the 3-way mosaic split cleanly, and gains
+nothing. Eight rows go: header, a double-height headline over two, four rows of
+body, and the four coloured Fastext links along the bottom. Everything the
+missing seventeen rows would have held is on another page, which is what page
+numbers are for.
+
+**One representation choice makes everything else fall out.** A page is never
+pixels. It is three `(8, 40)` integer arrays -- glyph index, foreground colour,
+background colour, one per cell -- and there is exactly one function in the file
+that turns those into pixels, by expanding them through a bank of 8x8 bitmaps.
+Text and mosaic graphics are the same operation with different indices. The
+"colour clash" that gives teletext its look is then not simulated but
+structural: one integer per cell means one colour per cell, so a green tree
+against a blue sky really does have to choose, and the pictures are composed
+around that the way the BBC's artists composed around it.
+
+The mosaic alphabet is built rather than typed: 64 codes, and code *k* lights
+the sub-blocks whose bits are set, in reading order. The sub-rows are 3, 3 and
+2 px tall because 8 does not divide by three -- the real SAA5050 cell was 6x10
+split 3/3/4 and had the same problem from the other side. A block is 4x3 px, so
+the whole panel is an 80x24 mosaic canvas, and every picture here is composed in
+that space: 18x28 blocks for the weather symbol, 9x80 for the tide curve, 18x80
+for the ident. Drawing *in blocks* rather than in pixels is the difference
+between a teletext picture and pixel art, and it is most of why the ident reads
+as 1979.
+
+The font is a 5x7 bitmap written out as literals in the file. That is
+deliberate: at five pixels wide a real typeface is mush, a demo module must not
+depend on Pillow, and this way the glyph size is known rather than assumed --
+the test asserts that every glyph fits its five columns and that double height
+really is the same glyph with its scan lines doubled and split over two rows.
+
+**The pages.** Page order and the arriving-page noise come from `--seed`; the
+only clock-driven thing on the panel is the ticking header clock.
+
+* **100** index, and the freshness board: every product this demo reads, with
+  its real age, green fresh / yellow stale / red long gone. The subtitle
+  reveals a character at a time.
+* **101** station ident -- a sequoia grove, pure mosaic, no data at all. Sky
+  and ground are background colour blocks on cell boundaries so that no cell
+  has to hold two colours; the trunks stand in the row below the canopy for
+  the same reason.
+* **102** weather: met.no's modelled temperature as the double-height headline
+  with its symbol drawn in blocks beside it, wind, cloud and humidity, and the
+  measured NWS station reading underneath with *its* own separate age.
+  (`wx-model-*`, TTL 2 h; `wx-obs-SFOC1`, TTL 90 min.)
+* **103** sea: NOAA's predicted tide curve for station 9414290 filled from the
+  bottom across a twelve-hour window, the next high or low as the headline, and
+  NDBC buoy 46026's swell height, period and direction on one line.
+  (TTL 48 h and 1 h.)
+* **104** power: sequoia.garden's battery -- state of charge as the headline,
+  a day of terminal voltage as a mosaic trace, and the current draw and load.
+  (TTL 30 min.) `solar.py` draws this day at length; this is the summary of it.
+
+**Nothing is invented.** A product that is absent gets `NO DATA` and a reason,
+never a plausible number; a stale one is drawn with its age beside it in yellow
+or red. The case that took the most care is the tide: predictions are fetched
+for a fixed span, so if the fetcher misses for a couple of days the curve
+simply stops covering the present. The page then slides its window back to the
+end of what was actually predicted, draws that, and says `TIDE ENDED /
+PREDICTION RAN OUT` instead of naming a next high water. Real teletext pages
+were visibly stale all the time and dated themselves for exactly this reason,
+so the honest state is also the period-correct one.
+
+**Motion is period-correct.** Pages do not crossfade, they flip: the header's
+page number rolls like a set searching, and the new page arrives over about half
+a second as mosaic garbage that resolves top rows first, which is what a page
+looked like arriving a packet at a time. Everything is baked in `build()` --
+the five finished pages and the three noise frames each -- so a frame is a
+memcpy, one row-cut for the subtitle reveal and six 8x8 blits for the clock
+digits. It measures 0.004 ms mean on a desktop and there is no term in it that
+grows with anything.
+
+The clock is the one wall-clock element and it reads `time.time()` inside
+`render`; `--at` pins it, which is how the purity check and the fresh/stale/
+absent tests are run.
+
+```console
+$ python3 teletext.py --host 127.0.0.1
+$ python3 teletext.py --page 101              # just the ident, held
+$ python3 teletext.py --hold 4 --load 0.3     # a brisker rotation
+$ python3 teletext.py --at 1786500000         # pin the clock, for a still
+$ python3 scripts/test-teletext.py            # reads the page back off the pixels
+```
+
+### hackfilm
+
+![hackfilm](screenshots/hackfilm.png)
+
+The makerspace's own projects, on a strip of film that pulls down one frame at
+a time. Seven cells, each a small generative homage to something a member of
+Sequoia Fabrica built and then wrote up on the wiki, captioned with its name and
+its grove: the Maslow's four belts converging on its sled; three Weevil Eye
+boards on the bench at three stages of a soldering class; the flatbed knitting
+machine with a jacquard coming off it; the six Glow Lights themes as a swatch
+card; a spoon over its bullseye template; a two-colour riso print with the pink
+plate two pixels out; and this wall, drawn on itself, next to Polaris.
+
+Every other panel here is about somewhere else — the grid, the bay, the sky, the
+encyclopedia. This one is about the room the wall is bolted to.
+
+**Where the content came from.** `wiki.sequoiafabrica.org`, read as rendered
+HTML (there is no API — `/api.php` and `/w/api.php` both 404 — and a plain fetch
+403s unless you send a browser User-Agent). The pages used, one per frame, and
+they are recorded in the fourth field of `FRAMES` in the source so the next
+person to extend this knows where to read:
+
+| frame | grove | wiki page |
+|---|---|---|
+| MASLOW CNC | Digital Fabrication | `Maslow CNC` |
+| WEEVIL EYE | Electronics | `Electronics/WeevilEye` |
+| KNITTING MACHINE | Textiles | `Textiles/Industrial Knitting Machine` |
+| GLOW LIGHTS | Electronics | `GlowProject`, `Electronics/RaspberryPiWorkstations` |
+| SPOONMAKING | Woodworking | `Spoonmaking & Engraving` |
+| RISO EZ220 | Printmaking | `Riso EZ220U`, `Printmaking` |
+| FLASCHEN TASCHEN | Electronics | `FlaschenTaschen` |
+
+`Groves` and `Groves Table` are where the grove names and the colour code come
+from. Note that Printmaking is not itself a grove on that table — it is a wiki
+page, and the riso lives under it; `#grove-fine-arts` exists but the table says
+"No information yet." The caption says PRINTMAKING because that is what the wiki
+actually says, and putting FINE ARTS there would have been a guess.
+
+**Seven, and not more, is the honest number.** The wiki has 125 pages and most
+of them are governance, policy and tool operating instructions. Of the pages
+that sound like projects, several are one sentence long — `Electronics/
+GlowBoxen` is "A shelf lighting project at Sequoia Fabrica", `Electronics/
+Outatime` is "Back to the Future" — and there is no way to draw those without
+inventing what they look like. They are deliberately absent. Three of the seven
+frames are Electronics because Electronics is the grove that writes things down;
+they are interleaved so no two adjacent cells share a grove, which the test
+asserts. No individual is named anywhere, although the wiki names members in
+places: projects and groves reach the wall, people do not.
+
+Everything is drawn in code from the words on the page, the way `fine` draws its
+dog and `crash` draws its Sad Mac — rectangles, ellipses, lines and character
+grids over a palette. Nothing is traced and nothing is downloaded. Details come
+from the pages rather than from imagination: the needle bed is drawn at 7 gauge
+because the machine page says 7 gauge, the Weevil Eye has a photoresistor
+between its two LED eyes because the class handout lists exactly those parts,
+the Maslow's frame is bigger than the sheet because the page describes a
+machine that cuts a full sheet of plywood without breaking it down, and neither
+riso plate is a solid because the page's hard rule is to keep fills under about
+75% or the drum jams.
+
+**The one representation choice: the whole strip is a single baked image, and
+`render()` is one slice of it.** Seven cells of 160 columns are drawn once in
+`build()` into a 64 × 1120 image — film base, sprocket perforations, edge print
+and all — then the array is padded on the right with a copy of its own first 320
+columns, and on the top and bottom with two rows of base. After that a frame is
+
+```
+np.copyto(out, pad[wy : wy+64, x0 : x0+320])
+```
+
+one numpy call, the same cost whatever is in the picture. That is the entire
+reason the panel can afford seven detailed illustrations on a Pi 3: it never
+draws any of them. It measures 0.003 ms mean on a desktop, and the thing that
+actually matters is that the cost does not scale with the artwork, so a future
+frame eight is free at run time.
+
+The pan falls out of the same choice. `x0` comes from an ease-out-back curve:
+fast off the mark, about nine percent past the mark, then back — a claw yanking
+the film down and the frame rocking into the gate, rather than a carousel
+gliding. `wy` is a one pixel vertical weave read out of a seeded array at
+20 Hz, at full amplitude while the film moves and decaying over the third of a
+second after it lands. Both are pure functions of `t`; the weave is an index
+into a baked array rather than a call to the RNG, which is the trap here — the
+version that calls the RNG once a frame looks identical on a desktop and drifts
+against the preview baker on the wall.
+
+The panel is exactly two cells wide, which is not a coincidence: it means the
+held frame sits centred with half of each neighbour showing at the edges, and
+that is what makes it read as a strip of film rather than as a slideshow.
+Sixteen millimetre, so the perforations are down one edge only — two bright rows
+of holes on a 64 row panel would fight the picture — and the other edge carries
+the edge print, `SEQUOIA FABRICA` and the frame number.
+
+Cycle: seven frames at 5 s in the gate and 0.85 s of pull-down, so 41 seconds,
+at 20 fps. `scripts/test-hackfilm.py` checks the things a screenshot cannot: that
+`render` is pure, that every hold parks its cell *exactly* centred on every lap
+(a settle that does not settle creeps a pixel a cycle and is unreadable after a
+minute), that the wrap has no seam, that every pixel of every caption is drawn
+at full colour including the bottom row of every glyph, and that no frame claims
+a grove that does not exist.
+
+```console
+$ python3 hackfilm.py --host ft.local
+$ python3 hackfilm.py --hold 3 --advance 0.5      # a brisker projector
+$ python3 hackfilm.py --weave 0 --seed 7          # locked gate, different grain
+```
+
+### dominoes
+
+![dominoes](screenshots/dominoes.png)
+
+A domino run toppling all the way across, and then a hand standing it back up.
+A finger comes in from the left and tips the first tile; the wave crosses the
+panel — quick where the spacing is tight, lazy where it is wide; a branch
+peels off onto a second run at the back and races the trunk; the two rejoin;
+one tile very nearly does not go over; and when it is all lying down, two
+hands sweep in from the right and put every tile back on its feet, which is
+the half of the video everybody secretly likes best.
+
+A 320x64 panel *is* a domino run — it is the one subject that wants a 5:1
+letterbox more than a time axis does — and there is nothing to read. It is
+here to be watched from across the room, not understood.
+
+**A tile is a rigid rectangle rotating about its bottom edge, and the whole run
+is that one tile with a different start time.** `build()` lays out the pivots,
+wires up which tile knocks which, and solves for the exact second each one
+begins to fall; `render(t)` is then a table lookup per tile — `t` minus its own
+start, through one shared fall curve, clamped. Nothing is stepped per frame, so
+the run costs the same however long it is, and `render` is pure by construction
+rather than by care.
+
+The fall curve is the real one: a thin rod pivoting about its end obeys
+`theta'' = (3g/2L) sin(theta)`, integrated once at build time into a
+time→angle table. That is where the *mass* comes from. A domino barely moves
+for the first third of its fall and then goes over all at once, and a marquee
+or a sine wave does not do that — the specific way the angular velocity is
+still building when the tile hits its neighbour is the whole difference between
+this and a coloured pixel running along a line. It is also what makes the
+spacing matter: a tile catches the next one when its top corner has swung out
+as far as the gap, `sin(theta_c) = gap / height`, so a tight gap is caught
+early in the slow part of the arc and a wide one late in the fast part. Vary
+the gap along the run — this one does, in zones of three to six tiles — and the
+ripple speeds up and slows down for nothing.
+
+The hard part was not the falling tile, it was what happens when it lands. A
+domino does not drop to the floor; it lands on the *back* of the next one and
+stops there, and a finished run is a stack of parallel leaning slabs, not a row
+of flat dashes. Rather than solve a constrained chain, each tile carries a
+ceiling on its angle that opens as its neighbour gets out of the way:
+
+    limit(k) = rest(k) + (contact(k) - rest(k)) * (1 - progress(k+1))
+
+with `rest = acos(thickness / pitch)`, which is where parallel slabs of that
+thickness at that spacing actually settle. The neighbour's *unconstrained*
+angle is used, so it is one pass and not a fixed point. Three things that would
+each have needed code fall out of that single line: a tile visibly decelerates
+the instant it makes contact, a finished run leans as a stack, and — the good
+one — the tile in front of the stalled tile hangs there at seventy-odd degrees,
+held up by the thing that will not go, until it goes, and then follows it down.
+
+The stall itself is not a special case either. It is one gap set to 0.96 of the
+tile height, which is caught right at the end of the arc, so the run genuinely
+nearly dies there; the predecessor lies almost flat and just touches the next
+tile at its foot. A short teeter on top of that turns a physics fact into a
+beat of comedy. `--no-stall` removes it and the run is noticeably worse for it.
+
+The branch is drawn as depth: three floors a tile height apart, so the back run
+sits high on the panel in dimmed colours and the connector tiles read as a step
+up and a step down. The back run is spaced tighter, so it travels faster,
+usually wins the race, and comes down onto the trunk *ahead* of the front wave
+— which then arrives to find the tiles already gone. Which of the two gets
+there first depends on the seed, and that is the point: it is a race.
+
+The colours are for the branch, not for decoration. Six saturated hues in
+blocks of three to six tiles make the zones legible and give the eye something
+to track along a 300 px line of identical objects. There are no pips: a run is
+seen down its length, so what faces you is the tile's narrow edge and the pips
+are on the two faces you cannot see — and four pixels of edge has nowhere to
+put a pip even if it were facing you. What the tiles get instead is a dark
+outline and a bright end cap, and the end caps are what make a finished run
+read as a stack of slabs rather than as a row of hyphens.
+
+Cost is the number of tiles, not the number of pixels. The frame is a `uint8`
+code buffer — 0 empty, otherwise `1 + colour*3 + face` — composited tile by
+tile and turned into pixels by one masked palette lookup over the lit pixels
+only. Every tile standing still, upright or at rest, uses a patch baked in
+`build()`; only the three to nine actually in flight are rasterised, as one
+`(n, h, w)` stack. About eighty numpy calls a frame at 45 tiles, and `--pitch`
+is the knob if that is ever too many. 0.24 ms mean / 0.34 p95 on a desktop.
+
+One bug worth recording, because it cost nothing to make and would have cost
+a lot on the Pi: the fall curve was built with two samples at time zero, and
+`np.interp` at a repeated x does not return the value you think it does. It
+answered 0.02 rad for tau = 0, which is a fifth of a pixel and completely
+invisible — and marked every tile in the run as "in flight" from the first
+frame, so every frame rasterised all 45 of them instead of three.
+
+A cycle is about twelve seconds at 20 fps and it is a full story: tip, run,
+branch, race, stall, collapse, hold, reset. It does not carry a number and
+does not belong in the SPARSE set.
+
+```console
+$ python3 dominoes.py --host 127.0.0.1
+$ python3 dominoes.py --seed 12 --pitch 1.3     # fewer tiles, lazy and wide
+$ python3 dominoes.py --kick 1.6 --fall 0.28    # brisk, four tiles in the air
+$ python3 dominoes.py --no-branch --no-stall    # just the wave
+```
+
+### marble
+
+![marble](screenshots/marble.png)
+
+A marble run, seen from the side. A ball rolls off a screw lift at the top
+left, down a steep ramp, round a loop-the-loop, along a long shallow one, off a
+ski jump, into a Newton's cradle, over a see-saw that tips under it, down a
+funnel it spirals three times round, and back to the screw. Fourteen seconds a
+lap, three balls on the run at once, and no numbers anywhere.
+
+A marble run is the most watchable thing on the internet and nobody can quite
+explain why, but a 320x64 panel is a marble run seen from the side — which is
+how they are built and how they are filmed — and a room full of machines is
+the right room for one.
+
+The representation that made it tractable: **the whole run is solved once in
+`build()` into a single table of `(t, x, y, z, spin)` covering one lap**, and
+`render` is a `bisect` into that table plus a lerp. The table is built by
+walking the track part by part and carrying the ball's speed forward,
+
+    v² ← v² + 2 g dh − k v² ds
+
+which is `v² = 2gh` written incrementally, plus rolling resistance. Time is
+then `ds / v`, accumulated. Nothing is integrated per frame, so the panel is a
+pure function of `t` by construction, which is what the scheduler and the
+preview baker both need — and it costs nothing, because the expensive part
+happened once.
+
+The reason to do it that way rather than with eased tweens is that a marble
+moving at a constant speed round a curve destroys the whole effect, and it
+destroys it in a way you notice without being able to name. Doing the
+kinematics properly also makes things *true* rather than merely drawn. The
+loop-the-loop is the clearest case: it only works if `v² ≥ g r` at the top, the
+ramp above it is what pays for that, and `build()` comes out with a 31% margin
+in `v²`. Turn the rolling resistance up from 0.0022 to 0.0034 and the ball no
+longer makes it round — which is exactly the failure a real marble run has, and
+is asserted by the test script rather than left to the eye.
+
+The two beats worth the trouble:
+
+**The Newton's cradle** is the best single moment available at this size. Four
+steel balls sit in a groove against a stop. The marble rolls in, stops dead,
+and a *different* ball leaves the far end at the speed the first one arrived
+with; the queue then nudges along one place, because the arriving marble is the
+new fourth ball. Conserving the count is what makes it survive being watched
+twice — a version where the same ball reappears reads as a glitch the second
+time. In the table this is the one permitted discontinuity in position, and the
+test asserts that it is exactly one, exactly the length of the queue, and
+exactly at the cradle.
+
+**The see-saw** is not on a timer. Its height profile is `y(u) = y_pivot −
+u·s(u)` where `u` is the marble's signed distance from the pivot and `s` flips
+sign as `u` crosses zero — so the tip is *inside the potential*. The ball
+climbs the entry half and visibly slows (57 → 45 px/s), crosses the pivot, its
+weight carries the far end over, and the lever dropping is what pays for the
+speed it leaves with (48 → 111 px/s). Whether a mechanism moves because the
+marble moved it or because a timer coincided with the marble is visible even
+when you cannot articulate it, and this is the cheapest way to be on the right
+side of that.
+
+The screw lift is the exception and is meant to be: it is the motor, and it is
+the reset. Its rotation is geared to the rise, and `build()` picks the ride time
+so the screw's period divides the lap exactly *and* divides it by the number of
+marbles — otherwise the second ball arrives at the bottom between two threads
+and rides up through the metal. That falls out as `ride = N·t_gravity /
+(m − N)` for an integer `m` divisible by the marble count.
+
+The track is a fixed hand-drawn layout and `--seed` only chooses which marble
+colours turn up and in what order. A generated track loses at this size: 64
+rows with a 12-row loop and a 9-row funnel in it leaves no slack for a
+generator to find, and every mechanism has to be given enough width to be
+legible on its own. The one thing that *is* derived rather than placed is where
+the ski jump lands — the launch velocity is whatever the ball actually had at
+the lip, so the landing rail starts wherever the parabola says.
+
+Two smaller things that mattered more than expected. The rail is offset a
+marble radius along the track normal so the ball rides on top of it rather than
+through it, and on the loop that normal is the outward radial one, so at the
+top the track is correctly *above* the ball, holding it in. And the funnel is
+the only part drawn in three dimensions: height on a cone depends only on
+radius, so the physics uses that and the depth axis shows up on screen as a
+squashed ellipse, with the back half of every line drawn darker. Without that
+depth cue the spiral reads as a zigzag.
+
+Cost is flat and small. Every moving part is pre-rendered in `build()` as a
+stack of patches indexed by phase — sixteen screw rotations, thirteen see-saw
+tilts, twelve cradle settle states — so a frame is one background copy, three
+patch copies and one `np.maximum` per marble sprite: about twenty numpy calls
+whatever is happening on screen, and nothing that scales with anything. The
+sprites are baked per colour, brightness, rotation and subpixel offset, which
+buys smooth positioning, a visible roll and the funnel's depth shading for one
+blit each; the two dim ghosts behind each ball are the same bank at lower
+brightness and are what keep a 90 px/s ball from strobing at 20 fps. The path
+lookup is plain Python floats off `bisect`, which is cheaper than the numpy
+call that would replace it.
+
+```console
+$ python3 marble.py --host 127.0.0.1
+$ python3 marble.py --marbles 1            # follow one all the way round
+$ python3 marble.py --gravity 130          # slow and calm; 260 is frantic
+$ python3 scripts/test-marble.py --bench
+```
+
+### fish
+
+An aquarium. That is the whole of it: there is no number, no label, no legend
+and nothing to work out. Seventy-seven of the panels on this wall are built to
+be understood, and in a loud workshop the thing that is actually worth having
+next to them is a tank of fish.
+
+![fish](screenshots/fish.png)
+
+**The representation that made everything else fall out: a fish is two curves
+per column, not a sprite.** Take one coordinate `u` running 0 at the tail tip to
+1 at the nose. Give it a centre line `yc(u)` and a half-height `hb(u)`, and the
+fish is the filled region between `yc - 0.88*hb` and `yc + 1.12*hb`, with a
+half-pixel ramp at the edge for antialiasing. Every feature is then a term in
+one of those two functions:
+
+- **Swimming** is a travelling sine added to `yc`, amplitude growing towards the
+  tail as `(1-u)^1.9`, phase running head to tail. The body *flexes*; a rigid
+  sprite sliding sideways reads as a sticker and this does not.
+- **The body** is `hb = amp * u'^0.55 * (1-u')^0.30`, normalised. Those two
+  exponents are the entire silhouette — both under one, so the head is blunt and
+  the peduncle is thin, and the peak lands about two thirds forward, where a
+  fish is actually deepest. The first version used `sin(pi*s^k)^0.62` and drew a
+  flat-topped lozenge: a fish with no shoulder reads as a leaf however good the
+  tail is.
+- **Dorsal, anal and pectoral fins** are three more bumps added to those limits
+  over narrow ranges of `u`, drawn 30% transparent so the water shows through.
+  The pectoral costs three pixels and is a surprising amount of the "fish".
+- **The caudal fin** is a separate flare left of `u = 0.3` with a wedge cut out
+  of the middle. The fork is what makes a five-pixel tail read as a tail.
+- **Shading** is one scalar — height above the centre line over `hb` — through a
+  dark-back-to-pale-belly ramp, plus a couple of bars. And one dark pixel with
+  one bright pixel over its shoulder, for the eye, which is the most
+  load-bearing pixel in the file: without it a small fish is a coloured dash.
+
+Because the wave is *in the geometry*, a tail-beat frame is free at run time.
+`build()` rasterises six beat phases and `render()` picks one.
+
+**A fish that turns is a fish that gets narrower.** Its path is
+`cx + ax*sin(th + 0.28*sin 2th)`, so the velocity is `cos`-shaped: it
+decelerates into the edge, hangs, and comes back. To read that as a *turn*
+rather than as an instant reversal, each fish is also baked at a range of
+horizontal squashes, from full profile one way through a head-on sliver to full
+profile the other, and the frame picks one straight out of `dx/dt`. It is the
+cheapest possible three-quarter view.
+
+How many squashes is not a taste decision, it is solved: the turn is quantised
+to that table, so one step is one visible jump in the fish's *width*, and the
+count comes from holding that jump to two pixels. Sizing it by size class
+instead had it backwards — the biggest fish got the fewest levels, so a 37 px
+fish crossed the panel in five steps and changed width sixteen pixels at a
+time, which reads as a snap rather than a turn, on the most watched fish in the
+tank. The levels are also spaced uniformly in width rather than in velocity,
+with the foreshortening curve moved into the lookup: spaced the other way the
+widest jump lands exactly where the turn is fastest. Both are asserted off the
+rendered silhouettes. It costs 14.5 MB of baked sprites against 3.6 MB, and
+nothing per frame — the frame is still one indexed blit. The phase warp, rather than an added
+third harmonic, is deliberate: `sin(th + a sin 2th)` has derivative
+`cos(...)*(1 + 2a cos 2th)`, and with `a < 0.5` the second factor never changes
+sign, so the fish turns exactly twice a period. The harmonic version gave four
+and six zero crossings for some phases — a fish flickering round mid-crossing
+for no reason.
+
+**Depth is sort order and nothing else.** Every fish carries a `z` in 0..1 drawn
+from a power law, which sets its length, its speed, how far its colour is hazed
+towards the water, and where it lands in the back-to-front blit. An even spread
+of sizes has no foreground; the whole effect is one big slow fish crossing the
+panel while a cloud of tiny ones flickers around it.
+
+Three populations, because they want completely different cost models. Ten
+sprite fish are blitted, and each is about six numpy calls. Forty-odd tiny far
+ones — the shoal — are three pixels each and are drawn as three *vectorised
+scatters*, so forty of them cost the same fifteen calls as four would; they
+travel as two or three loose clouds sharing a frequency and a phase, because
+scattering them uniformly looks exactly like dust on the panel. And the
+furniture: weed baked at twenty-four sway phases and blitted as one strip,
+bubbles rising in irregular strings from two vents, a crab on the sand that
+mostly does nothing, light shafts and a caustic ripple.
+
+**There is one fish that is a jerk**, and it is the only story on the panel. It
+is mid-depth, saturated red, faster than anything its size, and every fifty
+seconds or so it latches onto a specific neighbour and harries it for twenty
+seconds before losing interest. It is a chase with no state at all: its
+position is its own patrol blended towards *the victim's own closed form
+evaluated at t minus half a second*, with a slow oscillator squashed to 0..1 as
+the blend weight. The lag is what makes it look like a pursuit rather than like
+two fish glued together. And every four minutes something large and slow — a
+dark grey thing about a quarter of the panel long — crosses and is gone.
+
+**Purity.** A shoal is naturally an update loop, and an update loop would
+desync the moment the scheduler built a segment ahead on its worker thread. So
+every path here is closed form: a base drift plus a couple of sinusoids whose
+frequencies and phases are drawn once in `build()` from `--seed`. The
+frequencies are mutually irrational, so **the tank has no cycle** — the only
+periodic event in it is the visitor. `render(t)` is exact at any `t`, which the
+test script asserts by comparing a cold call against the same `t` reached by
+driving frame by frame from zero.
+
+**Cost.** Measured over 6000 frames on the desktop: **mean 0.35 ms, p95 0.44,
+p99 0.51, worst 0.94**, with `build()` at 95 ms. That is about ninety numpy
+calls and five whole-frame passes; the dither offset is folded into the baked
+background rather than added as its own pass, which removes one walk of the
+frame for nothing (the cost is that opaque sprites overwrite the offset, so the
+fish are undithered — fine, since the banding it kills is in the big smooth
+water gradient). **`--fish` is the knob**, because that is the only term that
+scales: each sprite fish is roughly six calls, and the shoal, the weed and the
+bubbles are flat. `--fish 5 --no-shoal` measures 0.27 ms.
+
+What was hard was the peduncle. The body wave displaces the centre line, and the
+tail joins the body through a two-pixel stalk — measured *vertically* along a
+45-degree path, two pixels is less than one, and the tail visibly came off the
+fish at the extremes of the beat. Inflating the half-thickness by `sec(slope)`
+is the correction a stroked path needs and it fixed it, but only after a second
+floor in absolute pixels: 0.16 of a small fish's depth is under half a pixel and
+antialiases away to nothing. Neither failure is visible in a screenshot at the
+wrong phase, so `scripts/test-fish.py` flood fills every baked sprite and
+requires exactly one connected component.
+
+```console
+$ python3 fish.py --host 127.0.0.1
+$ python3 fish.py --fish 14 --shoal 60      # busier tank
+$ python3 fish.py --fish 5 --no-shoal       # the cheap tank
+$ python3 fish.py --visitor 60              # see the big one sooner
+$ python3 fish.py --seed 22                 # a different tank entirely
+$ python3 scripts/test-fish.py --bench
+```
+
+### pong
+
+![pong](screenshots/pong.png)
+
+Pong, on a panel that is exactly the right shape for it. Black ground, a dashed
+net, two blocky paddles, a square ball, and the score in slab numerals across
+the top. No gradients, no glow, no particles.
+
+**The score is why it is here.** It is not this rally's score and it is not the
+score since the panel came up: it is every point these two machines have played
+since 00:00 UTC on 1 August 2026, and it climbs whether or not anybody is in
+the room — about 10,900 points a day. Walk past twice in a month and the
+numbers have moved by tens of thousands; the grey line along the bottom says
+which of them is winning the long game and by how much. That is the reason to
+look at this panel a second time rather than once.
+
+**Horizontal speed is the clock; everything vertical is theatre.** That single
+split is the demo. A demo cannot write files and `render()` must be a pure
+function of `t`, so the match cannot be simulated forward and remembered — it
+has to be *computable* at any instant. It is, because the ball's horizontal
+speed never depends on anything that happens vertically: it starts at `v0`, is
+multiplied by `--rally-gain` on every return, and is capped. A rally with `R`
+returns therefore lasts
+
+    serve pause + (half a court)/v0 + Σ court/vk + (court + run-off)/vR + celebration
+
+which is closed form in `(R, v0)`. The angles, the wall bounces, the paddles
+flailing about — all of it changes what you watch and changes that number by
+exactly nothing.
+
+**So the score is a lookup, not a count.** The parameters of rally `j` — `R`,
+`v0`, and who loses — come from one `RandomState` seeded in `build()` for `j`
+in `[0, M)`, with `M = 4096` by default; rally `n` uses slot `n mod M`. The
+book of rallies therefore repeats every `M` of them, which is about nine hours,
+and nobody stands in front of an LED wall for nine hours. In exchange, the
+cumulative time and the cumulative score are two `cumsum`s of length `M`, and
+at any absolute time `u` since the epoch:
+
+    block = u // S                    S = the book's total duration
+    j     = searchsorted(cum_dur, u mod S)
+    left  = block·K + cumL[j]         right = block·(M−K) + cumR[j]
+
+Two integer divisions and a `searchsorted`. No history, no file, no continuity
+across restarts: reboot the Pi, redeploy the demo, change the rotation, and the
+number is still right, because it was never being counted. `--epoch N` pins the
+clock for tests and screenshots, exactly as `dvd --epoch` does.
+
+`K` — the number of rallies in a book that LEFT wins — is **exact, not
+sampled**. The book's outcomes are a shuffle of a multiset with exactly `K`
+wins in it. A sampled edge of 0.66% over 4096 rallies has a standard error of
+half a percent, so for some seeds the long game would have come out the other
+way round and the panel would have quietly contradicted its own README.
+
+**Two players, both bad, badly in different ways.** A competent Pong AI
+produces an infinite rally and nothing ever happens.
+
+* **LEFT lunges.** Reaction 0.10 s and 108 px/s, far the faster paddle — but it
+  commits. For the first 55% of the ball's flight it chases a straight-line
+  extrapolation that *ignores the top and bottom walls*, so on any shot that
+  bounces it charges confidently to the wrong end of the court and has 45% of
+  the flight to sprint back. Between shots it pre-positions where it guesses
+  the return will go. It is never still, and it travels about 20 px/s.
+* **RIGHT plods.** Reaction 0.42 s and 64 px/s. It aims at the truth with a
+  small steady bias and never overshoots, and between shots it slides back to
+  the middle and waits — it is parked dead centre 63% of the time. It loses
+  points by arriving late, never by going the wrong way.
+
+Steady beats flashy by a whisker. `--edge` is the fraction of points LEFT wins
+and defaults to 0.4934, so RIGHT gains 54 points every 4096 — about 150 a day,
+a lead you can watch grow over a month and never a blowout. At one day the
+score reads `5377 / 5499`; at one year, `1956538 / 2008840`, still 1.3% apart.
+
+**The angle comes from where it hit**, as the 1972 machine does: a hit near the
+tip leaves steeply, a hit on the middle leaves flat. It is one line and it is
+most of what makes the play legible — the correlation between hit offset and
+outgoing angle is 0.98 over the whole book. It is bent only when it has to be.
+The outgoing angle is picked from a grid of 96 candidates as the one closest to
+what the hit offset asks for **among those the receiving paddle can actually
+reach in time**, so the rally cannot end on a shot neither player was ever
+going to make. When the *next* shot is the deciding one the rule inverts and
+the winner plays a placement, as far from the beaten paddle as the hit offset
+can be argued into allowing.
+
+**The hard part was making the picture agree with the book.** The loser is
+decided before any geometry happens, so the geometry has to be talked into it,
+and the failure mode is silent: a paddle that covers the ball on the deciding
+shot, or misses it on any other one, hands the point to the wrong player and
+looks completely normal doing it. Both are now guaranteed and both are asserted
+over all 4096 rallies and all 13,182 contacts. A paddle that has to lose does
+it by being late — its reaction is stretched until it runs out of segment a
+clear paddle-width short and is still gliding when the ball goes past, which is
+the failure both characters actually have; the lunger gets a better-looking
+option first, reading the bounce backwards and lunging at the ball's mirror
+image. The closest miss in the whole book is 12.7 px, so no point is ever won
+by a pixel. In the other direction, eight contacts in thirteen thousand need
+the receiving paddle to stretch the last pixel or two rather than concede a
+point nobody scored; the test counts them.
+
+**Cost is trivial and deliberately so.** The walls, the net, both scores and
+the grey readout change only when the score does, so they are composited into
+one frame-sized array once per rally. A frame is one `np.copyto` of that, three
+rectangle fills and two `np.interp` calls over a few dozen paddle keypoints:
+**0.027 ms mean, 0.042 p95** on a desktop over ten minutes of match, with a
+3.4 ms spike on the eight-second boundary where the composite is rebuilt.
+Nothing here is ever per-pixel.
+
+The score's scale is measured rather than assumed: at five digits it is drawn
+at 3× (87 px a side) and it steps down to 2× on its own when the match reaches
+eight digits, some years from now, rather than running the two numbers into
+each other over the net.
+
+```console
+$ python3 pong.py --epoch 1786577088 --duration 60   # deterministic
+$ python3 pong.py --edge 0.6 --rally-gain 1.12       # a rout, and fast
+$ python3 pong.py --rally-length 0.12                # grinding rallies only
+$ python3 scripts/test-pong.py --bench
+```
+
+### pigeon
+
+![pigeon](screenshots/pigeon.png)
+
+A stretch of Potrero Hill pavement with the local rock doves on it. They walk,
+they peck, they look suspicious about it. One of them puffs his chest out and
+turns slow circles at another who could not care less. Two of them squabble
+over a foil-wrapped burrito end somebody dropped. Twice a minute the whole
+flock goes up at once and clatters off the top of the panel, leaving a bare
+pavement, a few feathers coming down and one pale scruffy bird who does not
+fly — because he never does — standing in the middle of the frame pecking at
+the concrete until everybody lands again, slightly rearranged.
+
+There is no number on this panel and nothing to understand. It is here to be
+enjoyable to walk past.
+
+**The one representation choice is that the head is a separate sprite from the
+body.** Everything else falls out of that, because the single most
+recognisable thing a pigeon does is a consequence of its head and body moving
+independently. A walking pigeon does not bob its head for decoration: it holds
+the head *still in space* while the body walks forward underneath it, then
+snaps the head forward to a new fixed point and holds it there again. That is
+how a bird with immobile eyes stabilises an image. Nearly every animated pigeon
+swings the head as a smooth function of the body, which is why nearly every
+animated pigeon looks like a chicken toy.
+
+With two sprites it is one line:
+
+```
+body_x(t) = x0 + v*t                          smooth
+head_x(t) = x0 + v*P*(k + f(p))               stepped
+head_rel  = head_x - body_x = STEP*(f(p) - p)
+```
+
+`k` and `p` are the stride index and phase from `t/P`, and `f(p)` is flat for
+the first 78% of the stride and then ramps. Relative to the body the head
+slides *backwards* through the stride and snaps forward at the end of it; in
+the world it does not move at all. At the default 10 px/s and P = 0.4 s the
+stride is four pixels, so the head holds for six frames and covers the four
+pixels in three. `scripts/test-pigeon.py` asserts this in pixels rather than
+in code: it finds the orange iris and the body's belly rows independently in
+each frame of a stride, and requires the head to be motionless for at least
+twice as long as the body ever is, while still covering the same ground by the
+end. A still frame cannot tell the two versions apart, and neither can a
+reviewer; only that check can.
+
+**The behaviour is a timeline, not a state machine.** `render` has to be a pure
+function of `t`, so nothing here ticks over between frames. `build()` draws
+each bird's whole performance for the cycle from `--seed`: a contiguous list of
+segments — idle, walk, strut, squabble, fly — and inside each idle segment a
+list of head beats (stab, hold, look back over the shoulder, look up).
+`render(t)` bisects into that list and interpolates. Purity is then free, but
+the real win is that the *timing* becomes something you compose: the startles
+are placed where they land best rather than emerging, the squabble is booked
+next to the thing being squabbled over and both birds walk there to arrive on
+the beat, and every bird's script is generated so that it ends the cycle
+standing exactly where it started, which is what lets the loop close
+invisibly.
+
+Composing it also means the failures are all continuity failures, and they were
+all real. Trimming a walk to make room for an appointment left the destination
+in the payload, so a bird arrived where it had not walked to. The distance to
+walk was measured before the idle filling that moved the bird, so the strut
+started fourteen pixels off. The strut and the squabble are oscillations about
+a fixed spot, so a duration that is not a whole number of their own cycles
+leaves the bird mid-swing and it snaps back on the segment boundary — their
+durations are now snapped to whole turns and whole lunges. All three look
+identical in a screenshot and all three are asserted exactly, over ninety
+builds across seeds, bird counts and cycle lengths.
+
+Drawing: birds dark on light concrete, which is the way round it really is and
+the way round that survives being seen at an angle from three metres. A 1px
+dark underside line and a baked shadow keep each silhouette off the pavement —
+the shadow is blitted from a second, pre-darkened copy of the background, so it
+picks up the real concrete texture and costs one masked copy. The only colour
+on a pigeon is the iridescent neck, and it earns its place twice: it is the
+one saturated thing in a grey panel, and it flips green to purple as the head
+turns, because iridescence is a structural colour and genuinely does depend on
+the angle.
+
+The birds are all the same size, which bounds the scene: a bird twice as far
+away would have to be half as tall, and 64 rows cannot carry that. So the
+foreground is a frieze about twenty rows deep and the depth cue is four
+eight-pixel birds up on the kerb instead. The flight sprite anchors five rows
+higher than a standing one, so take-off is a leap rather than a jump-cut.
+
+Cost is sprites and blits, not pixels: one background copy plus a shadow, a
+body and a head per bird. `--birds` is the knob — 0.064 ms/frame at eight on
+the desktop, 0.137 at twenty.
+
+```console
+$ python3 pigeon.py --host 127.0.0.1
+$ python3 pigeon.py --birds 14 --seed 11      # a bigger, messier flock
+$ python3 pigeon.py --startles 4 --cycle 45   # jumpier birds
+$ python3 pigeon.py --birds 3 --speed 4       # three very slow pigeons
+$ python3 scripts/test-pigeon.py --bench
+```
