@@ -1,0 +1,7 @@
+{
+  "_comment": "Where this wall is. Read by demos/ftsite.py; see its docstring. Point FT_SITE at another file to override. Every key is optional -- anything missing or invalid falls back to the defaults compiled into ftsite.py, so deleting this file does not stop the wall.",
+  "name": "Sequoia Fabrica",
+  "short": "SF",
+  "lat": 37.7624929274026,
+  "lon": -122.39969356310202
+}

@@ -29,6 +29,12 @@ game-client
 
 # Python
 *.pyc
+__pycache__/
+
+# numpy compatibility testing: one venv per numpy under test, and the frame
+# fingerprints they produce. Both are rebuildable -- see docs/NumpyUpgrade.md.
+.venvs/
+.compat/
 
 # Misc
 *~
