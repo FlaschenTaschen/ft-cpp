@@ -1,0 +1,101 @@
+# The wall's global state, and its bridge to Home Assistant. Install with:
+#
+#   sudo cp demos/ftctl.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ftctl.service
+#
+# MQTT needs credentials, which do not belong in a file in the repository:
+#
+#   sudo systemctl edit ftctl.service
+#   [Service]
+#   Environment=FTCTL_MQTT_HOST=mqtt.lan
+#   Environment=FTCTL_MQTT_USER=ftctl
+#   Environment=FTCTL_MQTT_PASS=...
+#
+# Without those it still runs, and still serves the HTTP control API; it just
+# does not appear in Home Assistant.
+
+[Unit]
+Description=Flaschen Taschen display control and Home Assistant bridge
+Documentation=https://github.com/FlaschenTaschen/ft-cpp
+After=network-online.target ft_server.service
+Wants=network-online.target
+
+# Deliberately NOT BindsTo=ft_server.service, and deliberately not tied to
+# ftsched either. This is the thing that has to still be there when the others
+# are not: it is what makes "turn the wall off" work while the scheduler is
+# stopped, and what re-applies the remembered brightness after the server has
+# been restarted. An off switch that dies with what it controls is not one.
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ft-cpp/demos
+
+# --listen is loopback: nginx is the way in, and this has no business being a
+# second front door on a port nobody was told about.
+ExecStart=/usr/bin/python3 /home/pi/ft-cpp/demos/ftctl.py \
+    --socket /run/ft/control.sock \
+    --listen 127.0.0.1:8082 \
+    --scheduler http://127.0.0.1:8081 \
+    --previews /home/pi/ft-cpp/demos/previews \
+    --state-file /var/lib/ftctl/desired.json \
+    --motd-file /run/ft-motd/banner.ansi \
+    --motd-tailnet-url https://betelgeuse.cloudforest-perch.ts.net \
+    --node-id betelgeuse --friendly-name Betelgeuse \
+    --public-url=${FTCTL_PUBLIC_URL} \
+    --mqtt-host=${FTCTL_MQTT_HOST} \
+    --mqtt-user=${FTCTL_MQTT_USER} \
+    --mqtt-pass=${FTCTL_MQTT_PASS}
+
+# The --opt=${VAR} form matters: written as `--opt ${VAR}`, an unset variable
+# expands to nothing at all and the flag swallows the next argument instead.
+# Joined with '=' it is always exactly one word, empty value or not.
+
+# Whatever Home Assistant can actually reach this wall on -- it is used for the
+# device's configuration link and to fetch the now-playing thumbnail. Left as
+# the mDNS name, which works on a flat network; set it to the tailnet name if
+# HA lives elsewhere.
+Environment=FTCTL_PUBLIC_URL=http://betelgeuse.local/
+
+Environment=FTCTL_MQTT_HOST=
+Environment=FTCTL_MQTT_USER=
+Environment=FTCTL_MQTT_PASS=
+
+Restart=always
+RestartSec=3
+
+StateDirectory=ftctl
+StateDirectoryMode=0755
+
+# The login banner is rendered here rather than computed at login: on a Pi 3 that
+# would cost seconds of interpreter startup and subprocesses before every prompt.
+# systemd makes the directory and removes it on stop, so a stale banner cannot
+# outlive the daemon that would have kept it true.
+RuntimeDirectory=ft-motd
+RuntimeDirectoryMode=0755
+
+# It talks to a unix socket, two local HTTP ports and a broker, and reads its
+# own checkout. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/ftctl
+# connect() on a unix socket does not write to the inode, so this should not be
+# needed under ProtectSystem=strict -- but being wrong about that would mean the
+# off switch silently does not work, which is worse than a redundant line. The
+# leading '-' is load-bearing: /run/ft only exists while ft_server is running,
+# and without it systemd refuses to start this unit when the wall is stopped,
+# which is exactly when it is most wanted.
+ReadWritePaths=-/run/ft
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=192M
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

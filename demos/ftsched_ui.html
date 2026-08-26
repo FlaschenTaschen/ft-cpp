@@ -63,6 +63,20 @@ header {
 #progress i { display: block; height: 100%; width: 0; background: var(--live); transition: width .25s linear; }
 
 .controls { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+/* The display row, one step quieter than the rotation controls above it: these
+   affect the whole wall rather than what is scheduled on it, and a wall-off
+   button that looks like the primary action invites being pressed by mistake. */
+.controls.display { border-top: 1px solid var(--line); padding-top: 10px; }
+.controls.display label { font-size: 13px; }
+.controls.display input[type=range] { flex: 1 1 120px; min-width: 90px; accent-color: var(--live); }
+.controls.display output { min-width: 3.6em; text-align: right; font-size: 13px; color: var(--dim); }
+/* Off is the state worth noticing from across the room. */
+#btnPower[aria-pressed="true"] { border-color: var(--live); color: var(--live); }
+/* A slider for a dimmer the backend does not have would be a lie; the terminal
+   and LED-strip backends genuinely cannot do it. */
+.controls.display.nodimmer label,
+.controls.display.nodimmer input,
+.controls.display.nodimmer output { opacity: .4; pointer-events: none; }
 /* Pushes the bulk switches away from the transport controls on a desktop, and
    collapses to nothing once the row wraps on a phone. */
 .gap { flex: 1 1 0; min-width: 0; }
@@ -229,6 +243,19 @@ dialog::backdrop { background: rgba(4, 6, 10, .66); }
     <span class="gap"></span>
     <button id="btnAllOn" class="minor">Enable all</button>
     <button id="btnAllOff" class="minor">Disable all</button>
+  </div>
+  <!-- The display itself rather than the rotation: this talks to ft_server via
+       ftctl, not to the scheduler. Hidden until /api/display answers, so the
+       panel is unchanged when served standalone on :8081 or before nginx is
+       routing it. -->
+  <div class="controls display" id="displayBar" hidden>
+    <button id="btnPower" aria-pressed="false">Wall off</button>
+    <label class="dim" for="dim">Brightness</label>
+    <input type="range" id="dim" min="1" max="100" step="1" value="100"
+           aria-label="Display brightness">
+    <output id="dimOut" class="mono">100%</output>
+    <span class="gap"></span>
+    <button id="btnWipe" class="minor">Wipe</button>
   </div>
 </header>
 
@@ -661,13 +688,95 @@ document.getElementById("btnAllOff").addEventListener("click", () => {
 document.getElementById("btnPause").addEventListener("click",
   () => post(state && state.paused ? "resume" : "pause"));
 
+/* ---- the display itself ----------------------------------------------- */
+/* Not the scheduler: brightness and blanking belong to ft_server, which owns
+   the panel, and these go to ftctl over /api/display. Which is also why they
+   keep working when the rotation does not -- and why the bar simply is not
+   there when nothing is answering that path, rather than showing dead
+   controls. */
+
+const displayBar = document.getElementById("displayBar");
+const btnPower = document.getElementById("btnPower");
+const dimSlider = document.getElementById("dim");
+const dimOut = document.getElementById("dimOut");
+let display = null;
+let dimming = false;            // a finger is on the slider; do not fight it
+
+async function postDisplay(body) {
+  try {
+    const r = await fetch("/api/display", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    const s = await r.json();
+    if (!r.ok) { say("display: " + (s.error || r.status)); return; }
+    say("");
+    paintDisplay(s.display);
+  } catch (e) { say("cannot reach the display"); }
+}
+
+function paintDisplay(d) {
+  display = d;
+  if (!d) {                     // ftctl is up but ft_server is not
+    displayBar.hidden = false;
+    btnPower.disabled = true;
+    btnPower.textContent = "display offline";
+    displayBar.classList.add("nodimmer");
+    return;
+  }
+  displayBar.hidden = false;
+  btnPower.disabled = false;
+  btnPower.textContent = d.blanked ? "Wall on" : "Wall off";
+  btnPower.setAttribute("aria-pressed", d.blanked ? "true" : "false");
+  displayBar.classList.toggle("nodimmer", !d.dimmer);
+  if (!dimming) {
+    dimSlider.value = d.brightness;
+    dimOut.textContent = d.brightness + "%";
+  }
+}
+
+async function refreshDisplay() {
+  try {
+    const r = await fetch("/api/display", {cache: "no-store"});
+    if (!r.ok) { displayBar.hidden = true; return; }   // not routed here
+    paintDisplay((await r.json()).display);
+  } catch (e) {
+    displayBar.hidden = true;   // served standalone, or ftctl is not running
+  }
+}
+
+btnPower.addEventListener("click",
+  () => postDisplay({blanked: !(display && display.blanked)}));
+document.getElementById("btnWipe").addEventListener("click", () => {
+  // Clears every layer, background included, so it takes out whatever any
+  // other client had put up -- worth one question.
+  if (confirm("Clear the whole display, including other clients' layers?"))
+    postDisplay({wipe: true});
+});
+
+// Track the value while dragging but only send on release. Each change forces
+// ft_server to re-encode the whole frame under the writer lock, which is fine
+// once and not fine sixty times a second.
+dimSlider.addEventListener("input", () => {
+  dimming = true;
+  dimOut.textContent = dimSlider.value + "%";
+});
+for (const ev of ["change", "pointerup", "keyup"]) {
+  dimSlider.addEventListener(ev, () => {
+    if (!dimming) return;
+    dimming = false;
+    postDisplay({brightness: Number(dimSlider.value)});
+  });
+}
+
 // One poll a second while visible. A backgrounded tab on a phone should not
 // keep the radio awake for a page nobody is looking at.
 let timer = null;
 function poll(on) {
   clearInterval(timer);
-  timer = on ? setInterval(refresh, 1000) : null;
-  if (on) refresh();
+  timer = on ? setInterval(() => { refresh(); refreshDisplay(); }, 1000) : null;
+  if (on) { refresh(); refreshDisplay(); }
 }
 document.addEventListener("visibilitychange", () => poll(!document.hidden));
 poll(true);

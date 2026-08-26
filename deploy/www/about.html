@@ -1,7 +1,7 @@
-<!-- The landing page for the wall. Served by ftindex.py, which substitutes
-     the {{...}} placeholders; there is no client-side templating and no
-     JavaScript at all, because this page has to work first time on whatever
-     phone walks into the room. -->
+<!-- The landing page for the wall. A flat file served by nginx. The only
+     scripting is at the bottom, filling in the hostname and the now-playing
+     line; the page is complete and readable without it, because it has to work
+     first time on whatever phone walks into the room. -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
@@ -89,11 +89,11 @@ footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line);
 <main>
   <header>
     <h1><span class="sub">Sequoia Fabrica</span>Flaschen&nbsp;Taschen</h1>
-    <p class="lede">A {{WIDTH}}&times;{{HEIGHT}} LED wall. It plays a rotation of
+    <p class="lede">A 320&times;64 LED wall. It plays a rotation of
       demos on a loop, and it will draw whatever anyone on this network sends it.</p>
   </header>
 
-  <p class="status">{{STATUS}}</p>
+  <p class="status"><span class="dot" id="dot"></span><span id="status">asking the scheduler&hellip;</span></p>
 
   <a class="cta" href="/">Open the control panel
     <small>see what is queued, skip ahead, turn a demo off</small></a>
@@ -111,14 +111,14 @@ footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line);
   <pre><span class="c"># a red square on layer 5, from anything that can write to a socket</span>
 python3 -c 'import socket
 f = b"P6\n64 64\n#FT: 128 0 5\n255\n" + bytes([255,0,0]) * 64 * 64
-socket.socket(2, 2).sendto(f, ("{{HOST}}", {{FTPORT}}))'</pre>
+socket.socket(2, 2).sendto(f, ("<span class="host">betelgeuse</span>", 1337))'</pre>
   <p>A layer nobody refreshes is dropped after 15 seconds, so whatever you
      leave behind cleans itself up &mdash; and to keep something on screen you
      resend it, which is why the demos are a loop rather than a drawing.</p>
   <dl>
-    <dt>Host</dt><dd class="mono">{{HOST}}</dd>
-    <dt>Port</dt><dd class="mono">{{FTPORT}}/udp</dd>
-    <dt>Size</dt><dd class="mono">{{WIDTH}}&times;{{HEIGHT}}</dd>
+    <dt>Host</dt><dd class="mono"><span class="host">betelgeuse</span></dd>
+    <dt>Port</dt><dd class="mono">1337/udp</dd>
+    <dt>Size</dt><dd class="mono">320&times;64</dd>
     <dt>Layers</dt><dd class="mono">0&ndash;15, topmost non-black wins</dd>
   </dl>
 
@@ -127,3 +127,31 @@ socket.socket(2, 2).sendto(f, ("{{HOST}}", {{FTPORT}}))'</pre>
     <a href="https://github.com/FlaschenTaschen/ft-cpp">github.com/FlaschenTaschen/ft-cpp</a>
   </footer>
 </main>
+<script>
+// This page used to be rendered by ftindex, a Python front door that templated
+// the hostname in and asked ftsched what was playing. nginx serves it flat now,
+// so the two live bits are filled in here instead. Everything else was already
+// static.
+for (const el of document.querySelectorAll(".host")) {
+    el.textContent = location.hostname || "betelgeuse";
+}
+fetch("api/state", {cache: "no-store"}).then(r => {
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+}).then(s => {
+    const now = s.now || {}, health = s.health || {};
+    const live = (s.rotation || []).filter(r => r.enabled).length;
+    document.getElementById("dot").className = "dot ok";
+    document.getElementById("status").innerHTML =
+        "now playing <b></b> <span class=\"dim\"></span>";
+    document.querySelector("#status b").textContent = now.name || "?";
+    document.querySelector("#status .dim").textContent =
+        " \u00b7 " + ((now.position || 0) + 1) + " of " + live +
+        " \u00b7 " + Math.round(health.actual_fps || 0) + " fps";
+}).catch(() => {
+    document.getElementById("dot").className = "dot bad";
+    document.getElementById("status").textContent =
+        "the scheduler is not answering";
+});
+</script>
+
