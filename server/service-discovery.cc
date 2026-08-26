@@ -22,6 +22,7 @@
 #include <avahi-common/error.h>
 #include <avahi-common/malloc.h>
 #include <avahi-common/simple-watch.h>
+#include <avahi-common/strlst.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -33,6 +34,7 @@ ServiceDiscoveryThread::ServiceDiscoveryThread(
     uint16_t width,
     uint16_t height,
     const char* url,
+    const char* ui,
     const char* version,
     const char* backend,
     const char* platform,
@@ -45,6 +47,7 @@ ServiceDiscoveryThread::ServiceDiscoveryThread(
       width_(width),
       height_(height),
       url_(url ? url : ""),
+      ui_(ui ? ui : ""),
       version_(version),
       backend_(backend),
       platform_(platform),
@@ -196,50 +199,38 @@ void ServiceDiscoveryThread::CreateServices() {
     std::string backend_str = "backend=" + backend_;
     std::string platform_str = "platform=" + platform_;
     std::string name_str = "name=" + instance_name_;
-    std::string url_str = url_.empty() ? "" : "url=" + url_;
 
-    // Add service with TXT records
-    // Note: We use varargs to add TXT records
-    if (url_.empty()) {
-        error = avahi_entry_group_add_service(
-            entry_group_,
-            AVAHI_IF_UNSPEC,
-            AVAHI_PROTO_UNSPEC,
-            static_cast<AvahiPublishFlags>(0),
-            instance_name_.c_str(),
-            "_flaschen-taschen._udp",
-            NULL,
-            NULL,
-            port_,
-            width_str,
-            height_str,
-            name_str.c_str(),
-            version_str.c_str(),
-            backend_str.c_str(),
-            platform_str.c_str(),
-            features_str,
-            NULL);
-    } else {
-        error = avahi_entry_group_add_service(
-            entry_group_,
-            AVAHI_IF_UNSPEC,
-            AVAHI_PROTO_UNSPEC,
-            static_cast<AvahiPublishFlags>(0),
-            instance_name_.c_str(),
-            "_flaschen-taschen._udp",
-            NULL,
-            NULL,
-            port_,
-            width_str,
-            height_str,
-            name_str.c_str(),
-            version_str.c_str(),
-            backend_str.c_str(),
-            platform_str.c_str(),
-            features_str,
-            url_str.c_str(),
-            NULL);
+    // A string list rather than the varargs form: the optional fields used to
+    // be handled by duplicating the whole eighteen-line call once per
+    // combination, which does not survive a third one being added. Order is not
+    // significant in a DNS-SD TXT record, so the prepending here is fine.
+    AvahiStringList *txt = NULL;
+    txt = avahi_string_list_add(txt, width_str);
+    txt = avahi_string_list_add(txt, height_str);
+    txt = avahi_string_list_add(txt, name_str.c_str());
+    txt = avahi_string_list_add(txt, version_str.c_str());
+    txt = avahi_string_list_add(txt, backend_str.c_str());
+    txt = avahi_string_list_add(txt, platform_str.c_str());
+    txt = avahi_string_list_add(txt, features_str);
+    if (!url_.empty()) {
+        txt = avahi_string_list_add(txt, ("url=" + url_).c_str());
     }
+    if (!ui_.empty()) {
+        txt = avahi_string_list_add(txt, ("ui=" + ui_).c_str());
+    }
+
+    error = avahi_entry_group_add_service_strlst(
+        entry_group_,
+        AVAHI_IF_UNSPEC,
+        AVAHI_PROTO_UNSPEC,
+        static_cast<AvahiPublishFlags>(0),
+        instance_name_.c_str(),
+        "_flaschen-taschen._udp",
+        NULL,
+        NULL,
+        port_,
+        txt);
+    avahi_string_list_free(txt);
 
     if (error < 0) {
         fprintf(stderr, "Failed to add service: %s\n",

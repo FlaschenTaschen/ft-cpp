@@ -18,6 +18,7 @@
 
 class FlaschenTaschen;
 class CompositeFlaschenTaschen;
+class ServerFlaschenTaschen;
 
 namespace ft {
 class Mutex;
@@ -27,6 +28,19 @@ class Mutex;
 bool udp_server_init(int port);
 void udp_server_run_blocking(CompositeFlaschenTaschen *display,
                              ft::Mutex *mutex);
+
+// Display-wide state: brightness, blanking, clearing. Opt-in; nothing listens
+// unless a socket path is configured. Init before becoming a daemon (so a
+// failure is still visible on a terminal, and so the socket is created while
+// we can still set its permissions); start the thread after.
+//
+// Takes both pointers because the two halves live in different places: wiping
+// is a question of layers, and brightness is a question of the panel.
+bool control_server_init(const char *socket_path);
+void control_server_run_thread(CompositeFlaschenTaschen *display,
+                               ServerFlaschenTaschen *backend,
+                               ft::Mutex *mutex);
+void control_server_shutdown();
 
 // Optional services, currently disabled.
 // These should probably be moved out of this project and implemented

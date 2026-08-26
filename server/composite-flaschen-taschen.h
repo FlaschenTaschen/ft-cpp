@@ -18,6 +18,8 @@
 
 #include "flaschen-taschen.h"
 
+#include <stddef.h>
+
 #include <vector>
 
 namespace ft {
@@ -56,6 +58,14 @@ public:
     // "timeout_seconds". Uses mutex for exclusive access to display.
     void StartLayerGarbageCollection(ft::Mutex *lock,
                                      int timeout_seconds);
+
+    // Black out every layer, background included, and send the result.
+    // Unlike the garbage collector this does not spare layer 0, so it wipes
+    // what is on the display rather than only what is stale. A client that is
+    // still sending will of course paint over it on its next frame.
+    // Must be called with the writer mutex held.
+    void Clear();
+
 private:
     typedef int Ticks;
     class ScreenBuffer;
@@ -66,6 +76,10 @@ private:
     void SetPixelAtLayer(int x, int y, int layer, const Color &col);
     void SetTimeTicks(Ticks t) { current_time_ = t; }
     void ClearLayersOlderThan(Ticks t);
+
+    // Black out one allocated layer, recompositing where it was visible.
+    // Does not Send(); callers batch that.
+    void ClearLayer(size_t layer);
 
     FlaschenTaschen *const delegatee_;
     const int width_;

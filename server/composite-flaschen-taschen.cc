@@ -184,8 +184,26 @@ void CompositeFlaschenTaschen::StartLayerGarbageCollection(ft::Mutex *lock,
     garbage_collect_->Start();
 }
 
-void CompositeFlaschenTaschen::ClearLayersOlderThan(Ticks cutoff_time) {
+void CompositeFlaschenTaschen::ClearLayer(size_t layer) {
     const Color black(0, 0, 0);
+    // Row-major, to stride with the layer and z-buffer storage. Only
+    // recomposite where this layer was the visible one: anywhere the
+    // z-buffer points elsewhere, this layer was already transparent, so
+    // clearing it cannot change the output and the delegatee write, the
+    // walk down the stack and the z-buffer update are all wasted.
+    for (int y = 0; y < height_; ++y) {
+        for (int x = 0; x < width_; ++x) {
+            if (z_buffer_->At(x, y) == (int)layer) {
+                SetPixelAtLayer(x, y, layer, black);
+            } else {
+                screens_[layer]->At(x, y) = black;
+            }
+        }
+    }
+    last_layer_update_time_[layer] = INT_MAX;
+}
+
+void CompositeFlaschenTaschen::ClearLayersOlderThan(Ticks cutoff_time) {
     bool any_change = false;
     // Only cleaning layers above zero (= background)
     for (size_t layer = 1; layer < last_layer_update_time_.size(); ++layer) {
@@ -195,22 +213,26 @@ void CompositeFlaschenTaschen::ClearLayersOlderThan(Ticks cutoff_time) {
             last_layer_update_time_[layer] = INT_MAX;
             continue;
         }
-        // Row-major, to stride with the layer and z-buffer storage. Only
-        // recomposite where this layer was the visible one: anywhere the
-        // z-buffer points elsewhere, this layer was already transparent, so
-        // clearing it cannot change the output and the delegatee write, the
-        // walk down the stack and the z-buffer update are all wasted.
-        for (int y = 0; y < height_; ++y) {
-            for (int x = 0; x < width_; ++x) {
-                if (z_buffer_->At(x, y) == (int)layer) {
-                    SetPixelAtLayer(x, y, layer, black);
-                } else {
-                    screens_[layer]->At(x, y) = black;
-                }
-            }
-        }
-        last_layer_update_time_[layer] = INT_MAX;
+        ClearLayer(layer);
         any_change = true;
     }
     if (any_change) Send();
+}
+
+void CompositeFlaschenTaschen::Clear() {
+    // Ascending, and that matters. Clearing the background first means the
+    // pixels an overlay still covers take the cheap else-branch in
+    // ClearLayer() now and exactly one delegatee write later, when that
+    // overlay is cleared in turn. Descending would write each such pixel
+    // twice: once with the background colour showing through, then black.
+    for (size_t layer = 0; layer < screens_.size(); ++layer) {
+        if (screens_[layer] == NULL) {   // never drawn to, nothing to clear
+            last_layer_update_time_[layer] = INT_MAX;
+            continue;
+        }
+        ClearLayer(layer);
+    }
+    // Layer 0 always exists, so there is always something to send. Send()
+    // itself is a no-op unless a visible pixel actually changed.
+    Send();
 }

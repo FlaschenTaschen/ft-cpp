@@ -33,6 +33,18 @@ struct AvahiClient;
 struct AvahiEntryGroup;
 
 // ServiceDiscoveryThread extends ft::Thread and runs the Avahi event loop
+// Bits in the `features` TXT field; see docs/TXT-spec.md. Clients are required
+// to ignore bits they do not know, so adding one is backwards compatible.
+static const uint16_t kFeatureMultiPacket     = 0x0001;
+static const uint16_t kFeatureMultiLayer      = 0x0002;
+static const uint16_t kFeatureOffset          = 0x0004;
+static const uint16_t kFeatureLayerTimeout    = 0x0008;
+static const uint16_t kFeatureDisplayControl  = 0x0010;
+
+static const uint16_t kFeaturesWireProtocol =
+    kFeatureMultiPacket | kFeatureMultiLayer | kFeatureOffset |
+    kFeatureLayerTimeout;
+
 class ServiceDiscoveryThread : public ft::Thread {
 public:
     /**
@@ -53,10 +65,11 @@ public:
                           uint16_t width,
                           uint16_t height,
                           const char* url,
+                          const char* ui,
                           const char* version,
                           const char* backend,
                           const char* platform,
-                          uint16_t features = 0x000F);
+                          uint16_t features = kFeaturesWireProtocol);
     virtual ~ServiceDiscoveryThread();
 
     // Inherited from ft::Thread
@@ -77,6 +90,7 @@ private:
     uint16_t width_;
     uint16_t height_;
     std::string url_;
+    std::string ui_;
     std::string version_;
     std::string backend_;
     std::string platform_;

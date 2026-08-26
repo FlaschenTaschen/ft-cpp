@@ -47,12 +47,12 @@ BUILD_DIR=../build/server
 # mDNS service discovery is Linux-only; librt also Linux-only
 UNAME_S=$(shell uname -s)
 ifeq ($(UNAME_S),Linux)
-    OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o service-discovery.o
+    OBJECTS=ft-thread.o udp-server.o control-server.o composite-flaschen-taschen.o ppm-reader.o service-discovery.o
     AVAHI_CFLAGS=$(shell pkg-config --cflags avahi-client 2>/dev/null)
     AVAHI_LDFLAGS=$(shell pkg-config --libs avahi-client 2>/dev/null)
     RGB_LDFLAGS=-lrt -lm -lpthread
 else
-    OBJECTS=ft-thread.o udp-server.o composite-flaschen-taschen.o ppm-reader.o
+    OBJECTS=ft-thread.o udp-server.o control-server.o composite-flaschen-taschen.o ppm-reader.o
     AVAHI_CFLAGS=
     AVAHI_LDFLAGS=
     RGB_LDFLAGS=-lm -lpthread

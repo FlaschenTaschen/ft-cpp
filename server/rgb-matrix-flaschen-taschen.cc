@@ -66,11 +66,18 @@ RGBMatrixFlaschenTaschen::RGBMatrixFlaschenTaschen(
     rgb_matrix::RGBMatrix *matrix, int width, int height)
     : matrix_(matrix), back_buffer_(NULL), fb_(NULL),
       dirty_x0_(0), dirty_y0_(0), dirty_x1_(0), dirty_y1_(0),
-      frame_ready_(false), pusher_(NULL) {
+      frame_ready_(false),
+      pending_brightness_(100), applied_brightness_(100),
+      blanked_(false), blank_applied_(false), force_full_(false),
+      pusher_(NULL) {
     if (matrix_ == NULL) {
         fprintf(stderr, "Couldn't initialize RGB matrix.\n");
         exit(1);
     }
+    // Start from whatever --led-brightness asked for, so the first frame is
+    // not gratuitously repainted and a `get` before any command has been sent
+    // reports the truth rather than a hardcoded 100.
+    pending_brightness_ = applied_brightness_ = matrix_->brightness();
     width_ = (width > 0) ? width : matrix_->width();
     height_ = (height > 0) ? height : matrix_->height();
     pthread_cond_init(&frame_ready_cond_, NULL);
@@ -125,13 +132,80 @@ void RGBMatrixFlaschenTaschen::SetPixel(int x, int y, const Color &col) {
 void RGBMatrixFlaschenTaschen::Send() {
     // Writer side is now O(1): hand the frame to the pusher and return.
     // Updates that arrive faster than the panel can present simply coalesce.
+    WakePusher();
+}
+
+void RGBMatrixFlaschenTaschen::WakePusher() {
     frame_ready_ = true;
     pthread_cond_signal(&frame_ready_cond_);
 }
 
+bool RGBMatrixFlaschenTaschen::SetGlobalBrightness(int percent) {
+    if (percent < 1) percent = 1;
+    if (percent > 100) percent = 100;
+    pending_brightness_ = percent;
+    // Must wake the pusher, and not only because there might be a frame
+    // waiting: with nothing being sent -- a static image, or a blanked wall --
+    // TakeDirtyRegion() is never called at all and the command would sit
+    // unapplied indefinitely.
+    WakePusher();
+    return true;
+}
+
+bool RGBMatrixFlaschenTaschen::SetBlanked(bool blanked) {
+    blanked_ = blanked;
+    WakePusher();
+    return true;
+}
+
 bool RGBMatrixFlaschenTaschen::TakeDirtyRegion() {
-    if (!frame_ready_) return false;
+    // Brightness first, above the early returns below, so that dimming while
+    // the wall is blanked is remembered rather than dropped.
+    //
+    // SetBrightness() is not a hardware control: it scales values as they are
+    // encoded into bitplanes by MapColors(), so it "will only affect newly set
+    // pixels" and does nothing at all to what is already on screen. Hence the
+    // forced full-frame repaint behind it. Going through the library rather
+    // than scaling fb_ ourselves is deliberate -- it applies the scale before
+    // the CIE1931 curve, which makes the percentage perceptually linear, and
+    // that is what a brightness slider should feel like.
+    if (pending_brightness_ != applied_brightness_) {
+        applied_brightness_ = pending_brightness_;
+        matrix_->SetBrightness(applied_brightness_);
+        force_full_ = true;
+    }
+
+    if (blanked_ != blank_applied_) {
+        blank_applied_ = blanked_;
+        if (blanked_) {
+            // Clear() is a memset of the bitplane buffer, so it beats 20k
+            // SetPixel(black) calls and handles inverse_color_ for free. fb_ is
+            // deliberately untouched: it stays the source of truth, so
+            // unblanking is one repaint and needs nothing from any client.
+            back_buffer_->Clear();
+            frame_ready_ = false;
+            dirty_x0_ = dirty_y0_ = dirty_x1_ = dirty_y1_ = 0;
+            return true;    // the swap, plus CopyFrom, blacks both canvases
+        }
+        force_full_ = true;
+    }
+
+    if (blanked_) {
+        // Steady state, dark. Consume the flag or the pusher spins on a frame
+        // nobody takes. Writers carry on updating fb_ and accumulating a dirty
+        // region, so whatever arrived while dark shows up on unblank.
+        frame_ready_ = false;
+        return false;
+    }
+
+    if (!frame_ready_ && !force_full_) return false;
     frame_ready_ = false;
+
+    if (force_full_) {
+        force_full_ = false;
+        dirty_x0_ = dirty_y0_ = 0;
+        dirty_x1_ = width_; dirty_y1_ = height_;
+    }
     if (dirty_x1_ <= dirty_x0_) return false;   // flagged, but nothing changed
 
     // Row-major, to stride with fb_.
@@ -154,6 +228,11 @@ void RGBMatrixFlaschenTaschen::SwapAndResync() {
     // CopyFrom() is a memcpy of the internal bitplane representation as
     // opposed to re-encoding every pixel through the CIE1931 lookup and the
     // per-bitplane scatter.
+    //
+    // It is also why one repaint is enough after a brightness change, which
+    // otherwise looks like a bug waiting to happen: this leaves both canvases
+    // byte-identical rather than one frame apart, so re-encoding fb_ into the
+    // offscreen canvas once and swapping puts the new brightness on both.
     rgb_matrix::FrameCanvas *previous = matrix_->SwapOnVSync(back_buffer_);
     previous->CopyFrom(*back_buffer_);
     back_buffer_ = previous;

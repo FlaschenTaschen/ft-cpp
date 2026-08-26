@@ -48,6 +48,30 @@ public:
     // Default is a no-op for backends that present synchronously.
     virtual void StartDisplayThread(ft::Mutex * /*lock*/) {}
     virtual void StopDisplayThread() {}
+
+    // -- Global display state.
+    //
+    // Brightness and blanking are properties of the whole display rather than
+    // of any one client, so they belong to whoever owns the panel: a client
+    // that dimmed itself would just be drawing darker pixels, and any other
+    // client could undo it by drawing on top. Backends that cannot do this
+    // return false rather than pretending, so a UI can say so instead of
+    // offering a control that does nothing.
+    //
+    // All of these are called with the writer mutex held.
+
+    // Brightness in percent, 1..100, clamped. Panel-wide, and independent of
+    // what is being displayed.
+    virtual bool SetGlobalBrightness(int /*percent*/) { return false; }
+
+    // Present black without discarding the composite, so that unblanking
+    // restores the image immediately rather than waiting for a client to draw
+    // its next frame. This is "off" for a display; it is not a wipe.
+    virtual bool SetBlanked(bool /*blanked*/) { return false; }
+
+    virtual bool SupportsGlobalDimmer() const { return false; }
+    virtual int global_brightness() const { return 100; }
+    virtual bool blanked() const { return false; }
 };
 
 // Column helps assembling the various columns of width 5 (the width of a crate)
@@ -122,9 +146,20 @@ public:
     void SetPixel(int x, int y, const Color &col);
     void Send();
 
+    virtual bool SetGlobalBrightness(int percent);
+    virtual bool SetBlanked(bool blanked);
+    virtual bool SupportsGlobalDimmer() const { return true; }
+    virtual int global_brightness() const { return pending_brightness_; }
+    virtual bool blanked() const { return blanked_; }
+
 private:
     class DisplayPusher;
     friend class DisplayPusher;
+
+    // Mark a frame ready and wake the pusher. Send() is one caller; a control
+    // command is the other, because it has to be presented even when no client
+    // is sending anything.
+    void WakePusher();
 
     // Copy the accumulated dirty region of fb_ into the offscreen canvas.
     // Called by the pusher with the writer mutex HELD. False if no work.
@@ -145,6 +180,14 @@ private:
     int dirty_x0_, dirty_y0_, dirty_x1_, dirty_y1_;  // half-open; empty if x1<=x0
     bool frame_ready_;
     pthread_cond_t frame_ready_cond_;
+
+    // Global state. Written by control threads under the writer mutex, read
+    // and acted on by the pusher. The pending/applied pairs let the pusher
+    // notice a change on whichever frame it next gets to, so a burst of
+    // commands (a dragged brightness slider) coalesces into one repaint.
+    int pending_brightness_, applied_brightness_;
+    bool blanked_, blank_applied_;
+    bool force_full_;      // next take covers the whole frame, not the diff
 
     DisplayPusher *pusher_;
 
