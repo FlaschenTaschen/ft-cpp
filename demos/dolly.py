@@ -74,9 +74,20 @@ Update the two constants below when the next year-end report lands, and change
 One (64, 320) float32 field, a half-resolution bloom, and one `np.take`
 through a uint8 ramp into the output buffer. The type is a baked 5x7 bitmap
 font carried in this file, so there is no font to be missing and no Pillow
-import. Measured at 320x64: **see the table in scripts/test-dolly.py**, which
-is what actually times it; the design budget it was written to is 12 ms a
-frame at 24 fps on a 1.2 GHz Pi 3.
+import.
+
+Measured over a whole sixty-second cue on the wall's own Pi -- a 1.2 GHz Pi 3
+at 320x64 -- that is **4.7 ms p50, 6.4 ms p95, 8.8 ms worst** under the numpy
+2.0.2 the scheduler runs, inside the 41 ms a 24 fps frame has and inside the
+12 ms this was designed to. Under the Pi's system numpy 1.19.5 the same cue
+costs 6.4 ms p50, 8.9 p95; both are timed by scripts/test-dolly.py, which is
+what to re-run rather than trusting this paragraph.
+
+It is cheap for the reason opencircuit is: the work happens once, on one
+plane. The sky and the ridge are baked at build and copied in, the bloom is
+computed on a quarter of the pixels because a halo is low-frequency by
+definition, and the dither goes on the ramp *index* rather than on the three
+channels of colour it produces.
 
 Run:  python3 dolly.py --host 127.0.0.1
       python3 dolly.py --at 47          # jump to the last card, for a photo
