@@ -99,11 +99,16 @@ CompositeFlaschenTaschen::CompositeFlaschenTaschen(FlaschenTaschen *delegatee,
       z_buffer_(new ZBuffer(width_, height_)),
       garbage_collect_(NULL) {
     assert(layers < 32);  // otherwise could getting slow.
+    // Layers are allocated on first use, see SetLayer(). Most deployments only
+    // ever touch two or three of them, and a full set is not free: at 320x64
+    // each layer is 60 kB, so 16 of them is ~1 MB of resident memory that is
+    // never read, on a machine with a 512 kB L2.
     for (int i = 0; i < layers; ++i) {
-        screens_.push_back(new ScreenBuffer(delegatee->width(),
-                                            delegatee->height()));
+        screens_.push_back(NULL);
         last_layer_update_time_.push_back(INT_MAX);
     }
+    // The background is always present, so nothing has to null-check it.
+    if (layers > 0) screens_[0] = new ScreenBuffer(width_, height_);
 }
 
 CompositeFlaschenTaschen::~CompositeFlaschenTaschen() {
@@ -125,15 +130,11 @@ void CompositeFlaschenTaschen::Send() {
     if (!any_visible_pixel_drawn_)
         return;
 
-    // Re-render complete composited scene to back buffer before swap.
-    // Necessary for double-buffered backends: SwapOnVSync returns a stale
-    // canvas that does not contain the current composite of all layers.
-    for (int x = 0; x < width_; ++x) {
-        for (int y = 0; y < height_; ++y) {
-            const int layer = z_buffer_->At(x, y);
-            delegatee_->SetPixel(x, y, screens_[layer]->At(x, y));
-        }
-    }
+    // Note: double-buffered backends used to re-render the whole composite
+    // here, because SwapOnVSync() returns a stale canvas. That cost ~10ms of
+    // the ~14ms frame budget on a Pi 3, which pushed each swap past the next
+    // vsync and halved the server's frame intake. Keeping the spare canvas in
+    // sync is the backend's job now (see RGBMatrixFlaschenTaschen::Send).
     delegatee_->Send();
     any_visible_pixel_drawn_ = false;
 }
@@ -145,14 +146,23 @@ void CompositeFlaschenTaschen::SetPixelAtLayer(int x, int y, int layer,
         any_visible_pixel_drawn_ = true;
         if (col.is_black()) {
             // Transparent pixel. Find closest stacked below us that is not.
+            // An unallocated layer has never been drawn to, so it is
+            // transparent everywhere and can be skipped without a load.
             for (/**/; layer > 0; --layer) {
-                if (!screens_[layer]->At(x, y).is_black())
+                if (screens_[layer] != NULL &&
+                    !screens_[layer]->At(x, y).is_black())
                     break;
             }
             delegatee_->SetPixel(x, y, screens_[layer]->At(x, y));
         } else {
             delegatee_->SetPixel(x, y, col);
         }
+        // Invariant: the z-buffer only ever names an allocated layer. It is
+        // written either with the layer being drawn to (allocated by
+        // SetLayer()) or with the result of the walk above, which stops at a
+        // non-NULL layer or falls through to 0, which is allocated in the
+        // constructor. Code that indexes screens_[] by z-buffer value relies
+        // on this.
         z_buffer_->At(x, y) = layer;
     }
 }
@@ -160,6 +170,8 @@ void CompositeFlaschenTaschen::SetPixelAtLayer(int x, int y, int layer,
 void CompositeFlaschenTaschen::SetLayer(int layer) {
     if (layer < 0) layer = 0;
     if (layer >= (int)screens_.size()) layer = screens_.size() - 1;
+    if (screens_[layer] == NULL)   // first time this layer is addressed
+        screens_[layer] = new ScreenBuffer(width_, height_);
     current_layer_ = layer;
     last_layer_update_time_[current_layer_] = current_time_;
 }
@@ -179,10 +191,22 @@ void CompositeFlaschenTaschen::ClearLayersOlderThan(Ticks cutoff_time) {
     for (size_t layer = 1; layer < last_layer_update_time_.size(); ++layer) {
         if (last_layer_update_time_[layer] > cutoff_time)
             continue;
-        // Not very efficient, but good for now:
-        for (int x = 0; x < width_; ++x) {
-            for (int y = 0; y < height_; ++y) {
-                SetPixelAtLayer(x, y, layer, black);
+        if (screens_[layer] == NULL) {   // never drawn to, nothing to clear
+            last_layer_update_time_[layer] = INT_MAX;
+            continue;
+        }
+        // Row-major, to stride with the layer and z-buffer storage. Only
+        // recomposite where this layer was the visible one: anywhere the
+        // z-buffer points elsewhere, this layer was already transparent, so
+        // clearing it cannot change the output and the delegatee write, the
+        // walk down the stack and the z-buffer update are all wasted.
+        for (int y = 0; y < height_; ++y) {
+            for (int x = 0; x < width_; ++x) {
+                if (z_buffer_->At(x, y) == (int)layer) {
+                    SetPixelAtLayer(x, y, layer, black);
+                } else {
+                    screens_[layer]->At(x, y) = black;
+                }
             }
         }
         last_layer_update_time_[layer] = INT_MAX;
