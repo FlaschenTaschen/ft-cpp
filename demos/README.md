@@ -7290,3 +7290,92 @@ $ python3 pigeon.py --startles 4 --cycle 45   # jumpier birds
 $ python3 pigeon.py --birds 3 --speed 4       # three very slow pigeons
 $ python3 scripts/test-pigeon.py --bench
 ```
+
+### opencircuit
+
+![opencircuit](screenshots/opencircuit.png)
+
+**Open Circuit SF's next workshop, on the tube their own website is already
+pretending to be.** Open Circuit SF is the hands-on electronics group whose
+classes run in this room, and their site renders itself inside a photograph of
+a CRT — green type, scanlines, a soft bloom. That is not decoration to be
+sampled, it is their identity, so this panel does not set their name in a tidy
+rectangle and call itself branded. It becomes the tube.
+
+**One colour decision in the whole file.** Every element — the logotype, the
+typed lines, the circuit along the bottom — is drawn as beam current into a
+single monochrome intensity field, and colour happens exactly once, at the
+end, when that field is taken through a phosphor ramp. Nothing on the panel
+can be off-brand because nothing on it chooses its own colour. The ramp's
+saturated stop is `#68FF23`, lifted from their stylesheet; the rest of it runs
+unlit → body → saturated → core burn, going towards white at the top because a
+phosphor driven hard stops being its own colour, which is what makes a bright
+glyph read as *hot* rather than merely bright. `--phosphor amber` and
+`--phosphor white` are P3 and P4, the other two tubes that were actually sold.
+The tube being one phosphor is asserted, without tolerance, over every frame of
+a whole loop: since the ramp is uint8 and the dither is applied to the index
+rather than to the colour, every pixel the panel can emit is *exactly* one of
+256 known triples, so the check is set membership and a single stray blend
+fails it.
+
+**The name is the animation.** Along the bottom is a circuit — wire, resistor,
+capacitor, LED, switch. The switch starts *open*: the circuit is open, the LED
+is dark, which is the group's name drawn literally. Then it closes, a charge
+pulse runs the length of the trace, and the LED flashes as the pulse arrives.
+It is the only thing that moves continuously, it is on every page, and it is
+what keeps a wall of static type from reading as a frozen render.
+
+**The power cycle is the loop seam.** Three pages — the identity card, the
+next workshop, the one after — then the raster collapses to a line and a dot,
+and the loop begins with it striking and opening back out. The picture is
+always the same picture; the power cycle only decides how much of the tube is
+scanning it, so there is no cut anywhere in this demo. A CRT that blinks to a
+new picture is a CRT nobody has ever seen.
+
+**What a person walking past gets:** the date and start time at double height,
+the title, the venue and street, and how far away it is — `IN 9 DAYS`, not
+`IN 21D 7H 14M`, and counted in *calendar days* rather than elapsed hours. A
+class at half six tomorrow evening is twenty-two hours away at half eight
+tonight, and `IN 22 HOURS` is both true and useless; what somebody wants to
+know is whether it is tonight or tomorrow, which is a property of the calendar.
+That distinction was written wrong the first time and the test script caught it.
+
+**When it has nothing it says so, three different ways.** The data is the new
+`opencircuit` product off their keyless `/api/workshops` — 662 bytes cached,
+six hour TTL, fetched hourly — read through `ftdata.load()`, so `build()` and
+`render()` open one JSON file and never a socket. The identity page draws
+whatever the cache says, because a group's name is not a fact with a TTL. The
+workshop page is the one that can lie, so: an absent record names the fetcher
+and the cache path; a cache that is fine but holds no upcoming class says the
+programme is between terms and points at the website, which is a different
+thing from being broken; and past three times its TTL the details are not drawn
+at all. That last one is the failure worth designing against — not a crash, but
+the panel confidently advertising a class that was cancelled a fortnight ago,
+which looks completely normal. All four states are asserted as *words on the
+panel*: no stale page may carry the title or a day name.
+
+`render()` is a pure function of `t`, which is why there is no phosphor
+buffer — the obvious way to get persistence would quietly break the contract
+ftsched builds segments against. Persistence is drawn instead: the charge pulse
+is its own trail, a handful of decaying echoes computed from `t` alone. Two
+independent builds asked for the same instant must produce the same bytes, and
+that is asserted at three different frame rates.
+
+Over a whole loop on the wall's Pi it is **9.2 ms p50, 12.0 ms p95**, inside
+a 30 fps frame — for scale, `fire` is 10.5 ms on the same machine in the same
+session. It got there from 17.2 ms by two measured fixes, both the same mistake
+in different clothes: the dither moved from the three-channel output onto the
+one-plane ramp index (9.1 ms → 2.7 ms), and the bloom moved to half resolution
+in both axes (4.6 ms → 2.4 ms), a halo being low-frequency by definition. The
+type is teletext.py's baked 5x7 font plus ten glyphs, so there is no font file
+to be missing on the Pi and no Pillow import.
+
+```console
+$ python3 ftdata.py --once --only opencircuit    # the fetcher, first
+$ python3 opencircuit.py --host 127.0.0.1
+$ python3 opencircuit.py --phosphor amber --scanline 0.4
+$ python3 opencircuit.py --no-rail --bloom 0.9
+$ python3 opencircuit.py --at 1788485000         # pin the clock, for a photo
+$ FT_DATA_CACHE=/tmp/nothing python3 opencircuit.py    # the no-data card
+$ python3 scripts/test-opencircuit.py            # the assertions
+```

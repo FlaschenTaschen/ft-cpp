@@ -2378,6 +2378,186 @@ def _sequoia_calendar():
 
 
 # --------------------------------------------------------------------------
+# Open Circuit SF, the electronics group whose workshops run in the room this
+# wall is in. Their own site publishes the schedule keyless at /api/workshops,
+# which is the whole reason this is a product rather than a scrape: it is a
+# small, stable JSON document that the people who run the workshops maintain,
+# so what the wall says and what the website says cannot drift.
+#
+# `sequoia-calendar` above is the room's calendar -- everything that happens
+# here, from any group, as start times and durations. This is one group's
+# programme with the parts a poster needs: what the workshop teaches, where it
+# is, how many seats it has. They overlap in the sense that a soldering class
+# appears in both, and they are not substitutes: one is a shape of a month, the
+# other is a thing you can turn up to.
+# --------------------------------------------------------------------------
+
+OPENCIRCUIT_URL = "https://www.opencircuitsf.com/api/workshops"
+
+# Six hours, and as with the calendar above this is a dead-fetcher detector
+# rather than a shelf life: a workshop three weeks out is exactly as true this
+# afternoon as it was this morning.
+OPENCIRCUIT_TTL = 21600
+
+# Hourly. The document is 2 kB and a volunteer-run programme does not change
+# between elevenses and lunch; the only edit that is genuinely urgent is a
+# cancellation, and an hour is inside any notice a person would get by email.
+OPENCIRCUIT_INTERVAL = 3600
+
+# How far past its end a workshop stays on the record. Long enough to hold the
+# one that is running right now, which is the single most valuable state the
+# panel can be in -- somebody reading the wall during the class it is
+# advertising should see it say so, not see the next one a month away.
+OPENCIRCUIT_KEEP_PAST = 10800
+
+# A season at this cadence. The feed has published two at a time so far; this
+# is a backstop against a recurrence expander appearing, not a real limit.
+OPENCIRCUIT_MAX = 24
+
+# The panel draws the title at double height, where a 5x7 glyph is 6 columns,
+# so 44 characters is 264 of its 320. Longer than that is wrapped by the demo
+# rather than cut here, but the record still needs a cap so one pathological
+# entry cannot make it unbounded.
+OPENCIRCUIT_TITLE_MAX = 60
+
+# The venue line is drawn at single height next to a label, so it gets less.
+OPENCIRCUIT_PLACE_MAX = 34
+
+
+def _oc_epoch(s):
+    """An `2026-09-04T01:30:00Z` stamp as epoch seconds. None if it is not one.
+
+    This feed is honest UTC with a Z on it, which is the ordinary case and not
+    the one `_sequoia_cal_epoch` above exists to work around -- so the offset
+    is *believed* here, and the demo turns it into a local clock time with
+    `time.localtime` the way every other panel does. Sliced rather than parsed
+    for the same reason as that function: the slice says which characters are
+    read, and `datetime.fromisoformat` on 3.9 -- which is what the wall runs --
+    rejects the trailing Z outright.
+    """
+    s = str(s or "")
+    if len(s) < 20 or s[4] != "-" or s[7] != "-" or s[10] != "T" \
+            or s[13] != ":" or s[16] != ":" or s[19] != "Z":
+        return None
+    try:
+        import calendar as _cal
+        return float(_cal.timegm((
+            int(s[0:4]), int(s[5:7]), int(s[8:10]),
+            int(s[11:13]), int(s[14:16]), int(s[17:19]), 0, 0, 0)))
+    except ValueError:
+        return None
+
+
+def _oc_text(s, limit):
+    """Fold to the upper case the wall draws in, squash space, cap the length.
+
+    Case is folded here and not in the demo for the reason given at
+    `_sequoia_cal_title`: capitals are what every panel draws, so storing the
+    mixed-case form would be storing a string nobody reads. `&` becomes `/`
+    because the 5x7 font has no ampersand and inventing one at five pixels
+    wide produces a blot, not a character.
+    """
+    s = " ".join(str(s or "").replace("&", "/").split()).upper()
+    if len(s) <= limit:
+        return s
+    cut = s[:limit]
+    sp = cut.rfind(" ")
+    if sp >= limit * 2 // 3:
+        cut = cut[:sp]
+    return cut.rstrip()
+
+
+def _oc_street(addr):
+    """`1736 18th Street, San Francisco CA 94107` -> `1736 18TH STREET`.
+
+    The city is the city the wall is in and the ZIP is not something anybody
+    reads off a wall at three metres, so the panel carries the part that tells
+    a person which door: the street line, which is everything before the first
+    comma.
+    """
+    return _oc_text(str(addr or "").split(",")[0], OPENCIRCUIT_PLACE_MAX)
+
+
+@product("opencircuit", ttl=OPENCIRCUIT_TTL, interval=OPENCIRCUIT_INTERVAL,
+         description="Open Circuit SF's upcoming electronics workshops")
+def _opencircuit():
+    """Open Circuit SF's published workshop schedule, trimmed to a poster.
+
+    An empty `upcoming` is stored as an empty record rather than raised, for
+    the same reason the makerspace calendar does it: a gap between programmes
+    is a real state of a small group's schedule and the panel draws it as one.
+    Raising instead would leave the previous record in place -- see `fetch()`
+    -- and the wall would go on advertising a class that has already run,
+    which is the one outcome worse than saying nothing.
+    """
+    raw = get_json(OPENCIRCUIT_URL, timeout=20)
+    if not isinstance(raw, dict):
+        raise ValueError("opencircuit feed is not a JSON object")
+    upcoming = raw.get("upcoming")
+    if not isinstance(upcoming, list):
+        raise ValueError("opencircuit feed has no upcoming array")
+
+    now = time.time()
+    events, skipped = [], 0
+    for item in upcoming:
+        if not isinstance(item, dict):
+            skipped += 1
+            continue
+        start = _oc_epoch(item.get("starts_at"))
+        title = _oc_text(item.get("title"), OPENCIRCUIT_TITLE_MAX)
+        if start is None or not title:
+            skipped += 1
+            continue
+        end = _oc_epoch(item.get("ends_at"))
+        if end is None or end <= start:
+            end = start + 7200.0
+        if end < now - OPENCIRCUIT_KEEP_PAST:
+            continue
+        # Only published workshops. A draft is a workshop somebody is still
+        # deciding about, and the wall is a poster, not a planning board.
+        if str(item.get("status") or "published").lower() != "published":
+            skipped += 1
+            continue
+        cap = item.get("capacity")
+        cap = int(cap) if isinstance(cap, int) and 0 < cap < 1000 else 0
+        topics = []
+        for it in (item.get("interests") or []):
+            if isinstance(it, dict) and it.get("name"):
+                topics.append(_oc_text(it["name"], 28))
+        events.append({
+            "t": int(round(start)),
+            # A duration, not an end: three digits instead of ten, and the
+            # panel wants the length rather than the far endpoint anyway.
+            "d": int(round(min(end - start, 86400.0))),
+            "n": title,
+            "v": _oc_text(item.get("location_name"), OPENCIRCUIT_PLACE_MAX),
+            "a": _oc_street(item.get("location_address")),
+            "w": _oc_text(item.get("location_note"), OPENCIRCUIT_PLACE_MAX),
+            "cap": cap,
+            "topic": topics[0] if topics else "",
+        })
+
+    events.sort(key=lambda e: (e["t"], e["n"]))
+    uniq, seen = [], set()
+    for e in events:
+        key = (e["t"], e["n"])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(e)
+
+    return {
+        "org": "OPEN CIRCUIT SF",
+        "host": "OPENCIRCUITSF.COM",
+        "n": len(uniq[:OPENCIRCUIT_MAX]),
+        "n_feed": len(upcoming),
+        "skipped": skipped,
+        "tz": "UTC in the feed; the panel draws local time",
+        "ev": uniq[:OPENCIRCUIT_MAX],
+    }, OPENCIRCUIT_URL
+
+
+# --------------------------------------------------------------------------
 
 WIKI_STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange"
 
