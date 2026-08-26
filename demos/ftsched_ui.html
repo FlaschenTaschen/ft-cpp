@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>flaschen taschen — rotation</title>
+<style>
+/* The wall is 320x64: everything here is 5:1, and the layout is built around
+   that rather than fighting it. One column on a phone, as many as fit on a
+   desktop, and a preview is never scaled up past its native 320px because a
+   blown-up LED panel looks like a mistake rather than like pixel art. */
+:root {
+  --bg: #0b0d12;
+  --card: #151922;
+  --card-hi: #1d2230;
+  --line: #262c3a;
+  --text: #e8ecf4;
+  --dim: #8891a5;
+  --live: #ffb03a;
+  --on: #45d17a;
+  --off: #464e60;
+  --pad: 14px;
+}
+* { box-sizing: border-box; }
+/* The UA rule for [hidden] is display:none at the lowest specificity, so any
+   class that sets display -- .missing does, below -- silently beats it and the
+   element stays on screen. */
+[hidden] { display: none !important; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  padding: 0 var(--pad) calc(var(--pad) + env(safe-area-inset-bottom));
+}
+h1 { font-size: 15px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; margin: 0; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+/* ---- header ---------------------------------------------------------- */
+header {
+  position: sticky; top: 0; z-index: 10;
+  margin: 0 calc(-1 * var(--pad));
+  padding: var(--pad) var(--pad) 10px;
+  background: linear-gradient(var(--bg) 78%, transparent);
+  backdrop-filter: blur(6px);
+}
+.bar { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.bar .spacer { flex: 1 1 auto; }
+#health { color: var(--dim); font-size: 12px; }
+#health.warn { color: var(--live); }
+.about { color: var(--dim); font-size: 12px; text-decoration: none; }
+.about:hover { color: var(--text); }
+
+.now { margin-top: 10px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.now .title { font-size: 20px; font-weight: 650; }
+.now .title .pos { color: var(--dim); font-weight: 400; font-size: 14px; }
+.now .up { color: var(--dim); font-size: 13px; }
+.now .up b { color: var(--text); font-weight: 600; }
+
+#progress { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: 9px; }
+#progress i { display: block; height: 100%; width: 0; background: var(--live); transition: width .25s linear; }
+
+.controls { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+/* Pushes the bulk switches away from the transport controls on a desktop, and
+   collapses to nothing once the row wraps on a phone. */
+.gap { flex: 1 1 0; min-width: 0; }
+button.minor { color: var(--dim); padding: 9px 11px; }
+button.minor:hover { color: var(--text); }
+button.primary { border-color: var(--live); color: var(--live); }
+button {
+  font: inherit; color: var(--text); background: var(--card); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 14px; min-height: 40px;      /* thumb-sized on a phone */
+  -webkit-tap-highlight-color: transparent;
+}
+button:hover { background: var(--card-hi); }
+button:active { transform: translateY(1px); }
+button[aria-pressed="true"] { border-color: var(--live); color: var(--live); }
+
+/* ---- the rotation ----------------------------------------------------- */
+#grid {
+  display: grid; gap: 12px; margin-top: 14px;
+  /* 320 is the panel's native width; below that a phone gets one column. */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+}
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.card.live { border-color: var(--live); box-shadow: 0 0 0 1px var(--live); }
+.card.disabled .shot, .card.disabled .name { opacity: .32; }
+
+.shot {
+  position: relative; display: block; width: 100%; aspect-ratio: 5 / 1;
+  border: 0; padding: 0; margin: 0; border-radius: 0; min-height: 0;
+  background: #000; cursor: pointer;
+}
+.shot img {
+  display: block; width: 100%; height: 100%; object-fit: contain;
+  /* Nearest-neighbour: these are 320x64 and every pixel is meant. */
+  image-rendering: pixelated;
+}
+.shot .missing {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--off); font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+}
+.shot .badge {
+  position: absolute; left: 8px; top: 8px;
+  background: rgba(0,0,0,.66); color: #fff; border-radius: 5px;
+  padding: 1px 6px; font-size: 11px;
+}
+.card.live .shot .badge { background: var(--live); color: #1a1200; font-weight: 700; }
+
+.row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; }
+.name { font-weight: 600; }
+.meta { color: var(--dim); font-size: 12px; }
+.meta .solo, .meta .cust { color: var(--live); }
+
+/* Only on cards whose demo actually declares options, so its presence is the
+   answer to "can I change this one". */
+.cog {
+  flex: none; width: 36px; min-height: 36px; padding: 0;
+  color: var(--dim); font-size: 15px; line-height: 1;
+}
+.cog:hover { color: var(--text); }
+.cog.custom { color: var(--live); border-color: var(--live); }
+
+/* A checkbox styled as a switch, so it stays a real control: focusable,
+   toggleable with the keyboard, and announced properly by a screen reader. */
+.sw { margin-left: auto; position: relative; width: 46px; height: 28px; flex: none; }
+.sw input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.sw span {
+  position: absolute; inset: 0; border-radius: 999px; background: var(--off);
+  transition: background .15s; pointer-events: none;
+}
+.sw span::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px;
+  border-radius: 50%; background: #fff; transition: transform .15s;
+}
+.sw input:checked + span { background: var(--on); }
+.sw input:checked + span::after { transform: translateX(18px); }
+.sw input:focus-visible + span { outline: 2px solid var(--text); outline-offset: 2px; }
+
+/* ---- the settings editor ---------------------------------------------- */
+/* <dialog> rather than a hand-rolled overlay: it comes with the backdrop, the
+   focus trap, Esc, and inertness of everything behind it, all of which are
+   easy to write and tedious to get right. On a phone it is a sheet up from
+   the bottom, where a thumb is; on a desktop it is a centred panel. */
+dialog {
+  border: 1px solid var(--line); border-radius: 14px; padding: 0;
+  background: var(--card); color: var(--text); overflow: hidden;
+  width: min(560px, calc(100% - 24px)); max-height: min(86vh, 760px);
+}
+dialog[open] { display: flex; flex-direction: column; }
+dialog::backdrop { background: rgba(4, 6, 10, .66); }
+#editorForm { display: flex; flex-direction: column; min-height: 0; }
+.ed-head, .ed-foot { display: flex; align-items: center; gap: 10px; flex: none; padding: 12px 14px; }
+.ed-head { border-bottom: 1px solid var(--line); }
+.ed-foot { border-top: 1px solid var(--line); }
+.ed-head b { font-size: 17px; }
+.ed-head .mod { color: var(--dim); font-size: 12px; }
+.ed-x { width: 36px; min-height: 36px; padding: 0; color: var(--dim); }
+.ed-body { overflow-y: auto; -webkit-overflow-scrolling: touch; min-height: 0; padding: 2px 14px 14px; }
+.ed-note { color: var(--dim); font-size: 12px; padding-top: 12px; }
+
+.fld { padding: 11px 0; border-bottom: 1px solid var(--line); }
+.fld .top { display: flex; align-items: center; gap: 12px; }
+.fld .lbl { font-weight: 600; }
+.fld .lbl em { color: var(--dim); font-weight: 400; font-style: normal; font-size: 12px; }
+.fld .ctl { margin-left: auto; flex: none; }
+.fld .hlp { color: var(--dim); font-size: 12px; margin-top: 5px; }
+/* Long text -- a splitflap board, a console script -- gets the full width on
+   its own line instead of a slot at the end of the label row. */
+.fld > .ctl { margin: 8px 0 0; width: 100%; }
+.fld input[type=text], .fld input[type=number], .fld select, .fld textarea {
+  font: inherit;
+  /* 16px, or iOS Safari zooms the page the instant a field takes focus and
+     never zooms back out again. */
+  font-size: 16px;
+  color: var(--text); background: var(--bg); width: 100%;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-height: 40px;
+}
+.fld input[type=number] { width: 9ch; }
+.fld select { width: auto; max-width: 15rem; }
+.fld textarea { resize: vertical; min-height: 84px; line-height: 1.45; }
+.fld input:focus-visible, .fld select:focus-visible, .fld textarea:focus-visible {
+  outline: 2px solid var(--live); outline-offset: 1px; border-color: var(--live);
+}
+@media (max-width: 520px) {
+  dialog {
+    width: 100%; max-width: 100%; max-height: 92vh;
+    margin: auto auto 0;                    /* sits on the bottom edge */
+    border-radius: 14px 14px 0 0; border-bottom: 0;
+  }
+  .ed-foot { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .fld input[type=number] { width: 8ch; }
+}
+
+#err {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  background: #40121a; border: 1px solid #7d2233; color: #ffd7dd;
+  padding: 8px 14px; border-radius: 8px; font-size: 13px; display: none;
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <h1>Flaschen Taschen</h1>
+    <span class="spacer"></span>
+    <!-- Only present when something is fronting this at the root; served
+         standalone on :8081 the link is a 404, so it is not in the way. -->
+    <a class="about" href="/about">about</a>
+    <span id="health" class="mono"></span>
+  </div>
+  <div class="now">
+    <span class="title"><span id="nowName">—</span> <span class="pos mono" id="nowPos"></span></span>
+    <span class="up">next <b id="nextName">—</b></span>
+  </div>
+  <div id="progress"><i></i></div>
+  <div class="controls">
+    <button id="btnPause" aria-pressed="false">Pause</button>
+    <button id="btnNext">Skip &rsaquo;&rsaquo;</button>
+    <span class="gap"></span>
+    <button id="btnAllOn" class="minor">Enable all</button>
+    <button id="btnAllOff" class="minor">Disable all</button>
+  </div>
+</header>
+
+<div id="grid"></div>
+
+<dialog id="editor" aria-labelledby="edName">
+  <!-- method="dialog" so Enter in a field closes rather than navigates; every
+       button carries an explicit type, since a bare one inside a form submits
+       and would dismiss the editor on the way past. -->
+  <form id="editorForm" method="dialog">
+    <div class="ed-head">
+      <b id="edName">—</b>
+      <span class="mod mono" id="edModule"></span>
+      <span class="gap"></span>
+      <button type="button" class="ed-x" id="edClose" aria-label="Close">&#10005;</button>
+    </div>
+    <div class="ed-body" id="edBody"></div>
+    <div class="ed-foot">
+      <button type="button" class="minor" id="edReset">Restore defaults</button>
+      <span class="gap"></span>
+      <button type="button" id="edCancel">Cancel</button>
+      <button type="button" class="primary" id="edSave">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="err"></div>
+
+<script>
+"use strict";
+
+const grid = document.getElementById("grid");
+const errBox = document.getElementById("err");
+const bar = document.querySelector("#progress i");
+
+let state = null;
+let cards = new Map();          // name -> {el, img, sw, badge}
+// module -> [{name, label, flags, type, default, choices, help}], read once.
+// Empty until /api/schema answers, which is what decides whether a card gets
+// a settings button at all, so the cards are rebuilt when it lands.
+let schema = {};
+// The server publishes once a second; the progress bar is advanced locally in
+// between so it moves smoothly instead of stepping.
+let localElapsed = 0, localDuration = 1, lastTick = performance.now();
+
+function fmtTime(s) {
+  s = Math.max(0, Math.round(s));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function say(msg) {
+  errBox.textContent = msg;
+  errBox.style.display = msg ? "block" : "none";
+}
+
+async function post(op, extra) {
+  try {
+    const r = await fetch("/api/command", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(Object.assign({op}, extra || {}))
+    });
+    if (!r.ok) say("command failed: " + (await r.json()).error);
+    else { say(""); refresh(); }            // the command lands next frame
+  } catch (e) { say("offline"); }
+}
+
+/* ---- the cards -------------------------------------------------------- */
+
+function buildCards(rotation) {
+  grid.textContent = "";
+  cards.clear();
+  for (const e of rotation) {
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const shot = document.createElement("button");
+    shot.className = "shot";
+    shot.title = "Jump to " + e.name;
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = e.name + " preview";
+    img.src = "/previews/" + encodeURIComponent(e.name) + ".webp";
+    const missing = document.createElement("div");
+    missing.className = "missing";
+    missing.textContent = "no preview";
+    missing.hidden = true;
+    img.addEventListener("error", () => { img.hidden = true; missing.hidden = false; });
+    const badge = document.createElement("div");
+    badge.className = "badge mono";
+    shot.append(img, missing, badge);
+    // Jumping to something switched off would put it on the wall and then
+    // never come back to it, which reads as a bug. Turn it on as well.
+    shot.addEventListener("click", () => {
+      if (!e.enabled) post("toggle", {name: e.name, on: true});
+      post("jump", {index: cardPosition(e.name)});
+    });
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = e.name;
+    const meta = document.createElement("div");
+    meta.className = "meta mono";
+    const spacer = document.createElement("span");
+    spacer.className = "gap";
+    // Only where there is something to edit: an exec entry is somebody else's
+    // program, and a demo that declares no options has no form to show.
+    let cog = null;
+    if (e.kind !== "exec" && (schema[e.module] || []).length) {
+      cog = document.createElement("button");
+      cog.type = "button";
+      cog.className = "cog";
+      cog.textContent = "⚙";
+      cog.title = "Settings for " + e.name;
+      cog.setAttribute("aria-label", "Settings for " + e.name);
+      cog.addEventListener("click", () => openEditor(e.name));
+    }
+    const sw = document.createElement("label");
+    sw.className = "sw";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = e.enabled;
+    box.setAttribute("aria-label", "Play " + e.name + " in the rotation");
+    box.addEventListener("change", () => post("toggle", {name: e.name, on: box.checked}));
+    sw.append(box, document.createElement("span"));
+    row.append(name, meta, spacer);
+    if (cog) row.append(cog);
+    row.append(sw);
+
+    card.append(shot, row);
+    grid.append(card);
+    cards.set(e.name, {card, badge, box, meta, cog});
+  }
+}
+
+function cardPosition(name) {
+  const e = state.rotation.find(x => x.name === name);
+  return e ? e.position : 0;
+}
+
+function paint(s) {
+  const names = s.rotation.map(e => e.name).join(" ");
+  if (names !== paint.names) { buildCards(s.rotation); paint.names = names; }
+
+  for (const e of s.rotation) {
+    const c = cards.get(e.name);
+    if (!c) continue;
+    const live = e.name === s.now.name;
+    c.card.classList.toggle("live", live);
+    c.card.classList.toggle("disabled", !e.enabled);
+    if (document.activeElement !== c.box) c.box.checked = e.enabled;
+    c.badge.textContent = live ? "ON AIR"
+      : e.enabled ? "#" + (e.position + 1) : "off";
+    // exec entries are external programs, so they have no preview to bake and
+    // no render cost of ours to report. Saying so beats an unexplained gap.
+    c.meta.innerHTML = [fmtTime(e.seconds),
+                        e.kind === "exec" ? "external" : "",
+                        e.fps ? e.fps + " fps" : "",
+                        e.ms ? e.ms.toFixed(1) + " ms" : "",
+                        e.solo && e.kind !== "exec"
+                          ? '<span class="solo">solo</span>' : "",
+                        e.customised ? '<span class="cust">custom</span>' : ""]
+                       .filter(Boolean).join(" &middot; ");
+    if (c.cog) c.cog.classList.toggle("custom", !!e.customised);
+  }
+
+  document.getElementById("nowName").textContent = s.now.name || "—";
+  document.getElementById("nowPos").textContent =
+    s.now.position >= 0
+      ? (s.now.position + 1) + "/" + s.rotation.filter(e => e.enabled).length
+      : "";
+  document.getElementById("nextName").textContent =
+    (s.next.name || "—") + (s.next.ready ? "" : " (building)");
+
+  const btn = document.getElementById("btnPause");
+  btn.setAttribute("aria-pressed", String(s.paused));
+  btn.textContent = s.paused ? "Paused" : "Pause";
+
+  const h = s.health;
+  const el = document.getElementById("health");
+  el.textContent = h.actual_fps.toFixed(1) + "/" + h.target_fps + " fps  "
+    + h.ms_per_frame.toFixed(1) + " ms  " + fmtTime(h.uptime) + " up"
+    + (h.late_frames ? "  " + h.late_frames + " late" : "");
+  // Only shout when we are actually missing the frame rate, not for the odd
+  // late frame during a transition, which is normal and expected.
+  el.classList.toggle("warn", h.actual_fps < h.target_fps * 0.9);
+
+  localElapsed = s.now.elapsed;
+  localDuration = Math.max(1, s.now.duration);
+  lastTick = performance.now();
+}
+
+/* ---- the settings editor ---------------------------------------------- *
+ * The form is generated from the schema the server read off each demo's own
+ * argparse, so there is nothing here that knows what a firefly is. Adding an
+ * option to a demo puts a control in this dialog and nothing has to be
+ * touched on this side -- which is the only version of this that stays true
+ * a year from now.
+ */
+
+const dlg = document.getElementById("editor");
+const edBody = document.getElementById("edBody");
+let editing = null;             // name of the entry the dialog is showing
+let fields = [];                // [{o, el}] for the form currently in it
+
+async function loadSchema() {
+  try {
+    const r = await fetch("/api/schema", {cache: "no-store"});
+    schema = (await r.json()).modules || {};
+    paint.names = null;         // the cards were built without their buttons
+    refresh();
+  } catch (e) { /* no editors, and everything else still works */ }
+}
+
+/* Effective settings: what the entry overrides, over the demo's defaults. */
+function settingsOf(e) {
+  const out = {};
+  for (const o of schema[e.module] || [])
+    out[o.name] = (e.options && o.name in e.options) ? e.options[o.name]
+                                                     : o.default;
+  return out;
+}
+
+function makeField(o, value) {
+  const box = document.createElement("div");
+  box.className = "fld";
+  const top = document.createElement("div");
+  top.className = "top";
+
+  const lbl = document.createElement("label");
+  lbl.className = "lbl";
+  lbl.textContent = o.label;
+  // The person retyping the splitflap board from a phone is often the person
+  // who has run it from a terminal, so show what it is called there -- but
+  // only the flags the label does not already say. "--flies" next to "flies"
+  // is noise; "--12h" next to "ampm", or "--no-trails" next to "trails", is
+  // the whole point.
+  const extra = o.flags.filter(f => f.replace(/^-+/, "") !== o.label);
+  if (extra.length) {
+    const flags = document.createElement("em");
+    flags.textContent = "  " + extra.join(" ");
+    lbl.append(flags);
+  }
+
+  let el, wide = false;
+  if (o.choices) {
+    el = document.createElement("select");
+    for (const c of o.choices) {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      el.append(opt);
+    }
+    el.value = String(value);
+  } else if (o.type === "bool") {
+    el = document.createElement("input");
+    el.type = "checkbox";
+    el.checked = !!value;
+  } else if (o.type === "int" || o.type === "float") {
+    el = document.createElement("input");
+    el.type = "number";
+    el.step = o.type === "int" ? "1" : "any";
+    // Gets a phone the right keypad; type=number alone gets a full keyboard
+    // on some of them.
+    el.inputMode = o.type === "int" ? "numeric" : "decimal";
+    el.value = String(value);
+  } else {
+    wide = String(o.default).length > 40 || String(value).length > 40;
+    el = document.createElement(wide ? "textarea" : "input");
+    if (!wide) el.type = "text";
+    el.value = value == null ? "" : String(value);
+  }
+  el.id = "ed-" + o.name;
+  lbl.htmlFor = el.id;
+
+  let ctl;
+  if (o.type === "bool") {
+    // The same switch as on the cards, so on/off looks like one thing.
+    ctl = document.createElement("label");
+    ctl.className = "ctl sw";
+    ctl.append(el, document.createElement("span"));
+  } else {
+    ctl = document.createElement("div");
+    ctl.className = "ctl";
+    ctl.append(el);
+  }
+
+  top.append(lbl);
+  box.append(top);
+  // A message or a script gets its own full-width line; everything else sits
+  // at the end of the label row.
+  if (wide) { box.classList.add("wide"); box.append(ctl); }
+  else top.append(ctl);
+  if (o.help) {
+    const help = document.createElement("div");
+    help.className = "hlp";
+    help.textContent = o.help;
+    box.append(help);
+  }
+  fields.push({o, el});
+  return box;
+}
+
+function openEditor(name) {
+  const e = state && state.rotation.find(x => x.name === name);
+  if (!e) return;
+  const spec = schema[e.module] || [];
+  if (!spec.length) return;
+
+  editing = name;
+  fields = [];
+  document.getElementById("edName").textContent = e.name;
+  document.getElementById("edModule").textContent =
+    e.module === e.name ? "" : e.module + ".py";
+  edBody.textContent = "";
+  const current = settingsOf(e);
+  for (const o of spec) edBody.append(makeField(o, current[o.name]));
+
+  const note = document.createElement("div");
+  note.className = "ed-note";
+  // Both halves matter: the wall will not change under you the moment you
+  // press Save unless this is the effect on air, and the ms figure on the
+  // card was measured against the settings the rotation shipped with.
+  note.textContent = state.now.name === name
+    ? "Saving plays " + name + " again from the top with the new settings."
+    : "Applies the next time " + name + " comes round. The render cost on the"
+      + " card was measured with the settings it shipped with.";
+  edBody.append(note);
+
+  if (dlg.showModal) dlg.showModal(); else dlg.setAttribute("open", "");
+  edBody.scrollTop = 0;
+}
+
+function closeEditor() {
+  if (dlg.close && dlg.open) dlg.close(); else dlg.removeAttribute("open");
+  editing = null;
+  fields = [];
+}
+
+/* Read the form back. Only what differs from the demo's own default is sent,
+   so an entry nobody has really changed does not end up carrying a frozen
+   copy of every setting that a later edit to the demo could not reach. */
+function collect() {
+  const out = {};
+  for (const {o, el} of fields) {
+    let v;
+    if (o.type === "bool") {
+      v = el.checked;
+    } else if (o.type === "int" || o.type === "float") {
+      v = Number(el.value);
+      if (el.value.trim() === "" || !isFinite(v)) {
+        el.focus();
+        throw new Error(o.label + " needs a number");
+      }
+      if (o.type === "int") v = Math.round(v);
+    } else {
+      v = el.value;
+    }
+    if (v !== o.default) out[o.name] = v;
+  }
+  return out;
+}
+
+/* `restart` only when this is what is on the wall: editing the number of
+   fireflies while looking at fireflies has to show, or the control reads as
+   broken for the rest of a 45 second slot. */
+function applyEditor(options) {
+  const name = editing;
+  const live = !!(state && state.now.name === name);
+  closeEditor();
+  post("configure", {name, options, restart: live});
+}
+
+document.getElementById("edSave").addEventListener("click", () => {
+  let options;
+  try { options = collect(); }
+  catch (err) { say(err.message); return; }
+  applyEditor(options);
+});
+document.getElementById("edReset").addEventListener("click", () => {
+  // Confirmed only when there is something to lose. It sits a thumb's width
+  // from Save on a phone, and somebody may have spent a while on these.
+  const e = state && state.rotation.find(x => x.name === editing);
+  if (e && e.customised
+      && !confirm("Put " + editing + " back to the settings it shipped with?"))
+    return;
+  // null, not {}: back to what the rotation file says, which is what the
+  // wall was installed with -- not the demo's bare argparse defaults, which
+  // nobody chose.
+  applyEditor(null);
+});
+document.getElementById("edCancel").addEventListener("click", closeEditor);
+document.getElementById("edClose").addEventListener("click", closeEditor);
+dlg.addEventListener("cancel", closeEditor);            // Esc
+// A click that lands on the dialog element itself is a click on the backdrop:
+// everything inside is a child.
+dlg.addEventListener("click", (ev) => { if (ev.target === dlg) closeEditor(); });
+
+function tick() {
+  const now = performance.now();
+  if (state && !state.paused) localElapsed += (now - lastTick) / 1000;
+  lastTick = now;
+  bar.style.width = (100 * Math.min(1, localElapsed / localDuration)) + "%";
+  requestAnimationFrame(tick);
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    const s = await r.json();
+    if (!s || !s.rotation) return;          // still starting up
+    state = s;
+    paint(s);
+    say("");
+  } catch (e) {
+    say("cannot reach the scheduler");
+  }
+}
+
+document.getElementById("btnNext").addEventListener("click", () => post("next"));
+document.getElementById("btnAllOn").addEventListener("click", () => post("all", {on: true}));
+document.getElementById("btnAllOff").addEventListener("click", () => {
+  // Irreversible-ish from a phone -- putting 35 switches back one at a time is
+  // nobody's afternoon -- and it is right next to Skip, so confirm it.
+  if (confirm("Switch every effect off except the one on air?"))
+    post("all", {on: false});
+});
+document.getElementById("btnPause").addEventListener("click",
+  () => post(state && state.paused ? "resume" : "pause"));
+
+// One poll a second while visible. A backgrounded tab on a phone should not
+// keep the radio awake for a page nobody is looking at.
+let timer = null;
+function poll(on) {
+  clearInterval(timer);
+  timer = on ? setInterval(refresh, 1000) : null;
+  if (on) refresh();
+}
+document.addEventListener("visibilitychange", () => poll(!document.hidden));
+poll(true);
+loadSchema();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

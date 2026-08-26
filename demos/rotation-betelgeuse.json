@@ -1,0 +1,462 @@
+{
+  "rotation": [
+    {
+      "kind": "py",
+      "name": "console",
+      "seconds": 40,
+      "fps": 30,
+      "ms": 0.7,
+      "enabled": true,
+      "solo": false,
+      "options": {}
+    },
+    {
+      "kind": "py",
+      "name": "fireworks",
+      "seconds": 45.0,
+      "fps": 24,
+      "enabled": true,
+      "ms": 33.7,
+      "solo": false,
+      "options": {
+        "rate": 3
+      }
+    },
+    {
+      "kind": "py",
+      "name": "wopr",
+      "seconds": 45.0,
+      "fps": 30,
+      "ms": 6.0,
+      "enabled": true,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "defcon",
+      "seconds": 80.0,
+      "fps": 30,
+      "ms": 25.7,
+      "enabled": true,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "boing",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 2.0,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "karl",
+      "seconds": 45.0,
+      "fps": 24,
+      "enabled": true,
+      "ms": 32.7,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "cycle",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 2.2,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "water",
+      "seconds": 45.0,
+      "fps": 20,
+      "enabled": true,
+      "ms": 45.8,
+      "solo": false,
+      "options": {
+        "drops": 4
+      }
+    },
+    {
+      "kind": "py",
+      "name": "pacman",
+      "module": "pixelart",
+      "seconds": 30,
+      "fps": 60,
+      "ms": 3.1,
+      "enabled": true,
+      "solo": false,
+      "options": {
+        "art": "pacman-32x32-1..6",
+        "sequence_ms": 50.0,
+        "mode": "scroll",
+        "speed": 34.0,
+        "transparent": "black",
+        "travel": "right"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "metaballs",
+      "seconds": 45.0,
+      "fps": 24,
+      "enabled": true,
+      "ms": 29.0,
+      "solo": false,
+      "options": {
+        "palette": "magma"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "knit",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 4.5,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "tron",
+      "seconds": 45.0,
+      "fps": 30,
+      "ms": 16.1,
+      "enabled": true,
+      "solo": false,
+      "options": {}
+    },
+    {
+      "kind": "py",
+      "name": "headroom",
+      "seconds": 45.0,
+      "fps": 30,
+      "ms": 16.0,
+      "enabled": true,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "sneakers",
+      "seconds": 45.0,
+      "fps": 30,
+      "ms": 8.3,
+      "enabled": true,
+      "solo": false,
+      "options": {}
+    },
+    {
+      "kind": "py",
+      "name": "maze",
+      "seconds": 45,
+      "fps": 24,
+      "ms": 25.2,
+      "enabled": true,
+      "solo": false,
+      "options": {
+        "palette": "ice"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "splitflap",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 6.2,
+      "solo": false,
+      "options": {
+        "messages": "SEQUOIA FABRICA|DEPARTURES {TIME};FLASCHEN TASCHEN|320 X 64 PIXELS;WELCOME|MAKE SOMETHING TODAY"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "daliclock",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 20.1,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "mario",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 6.4,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "sunset",
+      "seconds": 70.0,
+      "fps": 24,
+      "enabled": true,
+      "ms": 30.0,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "nyancat",
+      "seconds": 45.0,
+      "fps": 60,
+      "enabled": true,
+      "ms": 8.2,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "sf-tree-bounce",
+      "module": "pixelart",
+      "seconds": 30,
+      "fps": 30,
+      "ms": 19.3,
+      "enabled": true,
+      "solo": false,
+      "options": {
+        "art": "sf-tree*7",
+        "mode": "bounce",
+        "speed": 22.0
+      }
+    },
+    {
+      "kind": "py",
+      "name": "tunnel",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 13.5,
+      "solo": false,
+      "options": {
+        "palette": "ice"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "trench",
+      "seconds": 45.0,
+      "fps": 24,
+      "ms": 29.2,
+      "enabled": true,
+      "solo": false,
+      "options": {}
+    },
+    {
+      "kind": "py",
+      "name": "sf-tree",
+      "module": "pixelart",
+      "seconds": 30,
+      "fps": 30,
+      "ms": 7.0,
+      "enabled": true,
+      "solo": false,
+      "options": {
+        "art": "sf-tree",
+        "mode": "center"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "fire",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 18.8,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "sewing",
+      "module": "pixelart",
+      "seconds": 30,
+      "fps": 30,
+      "ms": 9.4,
+      "enabled": true,
+      "solo": false,
+      "options": {
+        "art": "sew1..8",
+        "sequence_ms": 120.0,
+        "mode": "center",
+        "transparent": "none"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "grove",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 18.7,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "starfield",
+      "seconds": 45.0,
+      "fps": 50,
+      "enabled": true,
+      "ms": 9.9,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "fsn",
+      "seconds": 45.0,
+      "fps": 20,
+      "ms": 46.6,
+      "enabled": true,
+      "solo": true,
+      "options": {}
+    },
+    {
+      "kind": "py",
+      "name": "space-invaders",
+      "module": "pixelart",
+      "seconds": 30,
+      "fps": 30,
+      "ms": 18.0,
+      "enabled": true,
+      "solo": false,
+      "options": {
+        "art": "space-invaders-1..4",
+        "mode": "bounce",
+        "speed": 18.0,
+        "poses": ",b",
+        "sequence_ms": 500.0
+      }
+    },
+    {
+      "kind": "py",
+      "name": "floor",
+      "seconds": 45.0,
+      "fps": 50,
+      "enabled": true,
+      "ms": 10.3,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "printer",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 16.9,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "pacman-ghosts",
+      "module": "pixelart",
+      "seconds": 25,
+      "fps": 30,
+      "ms": 11.0,
+      "enabled": true,
+      "solo": false,
+      "options": {
+        "art": "pac-man-ghosts",
+        "mode": "center",
+        "transparent": "black"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "wheel",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 13.1,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "laser",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 11.9,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "esper",
+      "seconds": 70.0,
+      "fps": 30,
+      "ms": 10.9,
+      "enabled": true,
+      "solo": false,
+      "options": {}
+    },
+    {
+      "kind": "py",
+      "name": "life",
+      "seconds": 45,
+      "fps": 30,
+      "ms": 19.3,
+      "enabled": true,
+      "solo": false,
+      "options": {
+        "density": 6,
+        "palette": "fire"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "rotozoom",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 12.6,
+      "solo": false,
+      "options": {
+        "palette": "rainbow"
+      }
+    },
+    {
+      "kind": "py",
+      "name": "goldengate",
+      "seconds": 45.0,
+      "fps": 30,
+      "enabled": true,
+      "ms": 19.2,
+      "solo": false
+    },
+    {
+      "kind": "py",
+      "name": "slime",
+      "seconds": 60.0,
+      "fps": 8,
+      "enabled": true,
+      "ms": 81.5,
+      "solo": true,
+      "options": {
+        "agents": 6000,
+        "warmup": 60
+      }
+    },
+    {
+      "kind": "py",
+      "name": "fireflies",
+      "seconds": 60.0,
+      "fps": 12,
+      "enabled": true,
+      "ms": 61.3,
+      "solo": true
+    },
+    {
+      "kind": "py",
+      "name": "scroller",
+      "seconds": 45.0,
+      "fps": 40,
+      "enabled": true,
+      "ms": 12.0,
+      "solo": false,
+      "options": {
+        "plasma_frames": 60,
+        "text": "SEQUOIA FABRICA  \u2726  FLASCHENTASCHEN LIVES  \u2726  320 X 64 OF PURE PHOTONS  \u2726     "
+      }
+    }
+  ]
+}

@@ -163,6 +163,73 @@ def build(module, **overrides):
 # Transitions, for sequencing effects into one show.
 # --------------------------------------------------------------------------
 
+class Blender(object):
+    """The transitions again, but blending through preallocated scratch.
+
+    The free functions below are the readable form and are what a demo or a
+    one-shot script should use. They are also, per call, five full-frame
+    temporaries: two astype(float32), the two products, and the astype(uint8)
+    on the way out. At 320x64 that is 245 KB apiece, so a transition running
+    at 20 fps churns about 24 MB/s of allocate-and-free -- which the allocator
+    handles, but only by staying busy, and it hands the garbage collector a
+    steady stream of large objects to walk.
+
+    A long-lived sequencer blends on every transition frame forever, so it is
+    worth owning the buffers instead. Same arithmetic, same results, no
+    per-frame allocation: every numpy call here writes through `out=`.
+    """
+
+    def __init__(self, height, width):
+        shape = (height, width, 3)
+        self.fa = np.empty(shape, f32)
+        self.fb = np.empty(shape, f32)
+        self.out = np.empty(shape, np.uint8)
+        self._white = np.full(shape, 255, np.uint8)
+        self._cols = np.arange(width, dtype=f32)
+        self._ramp = np.empty(width, f32)
+
+    def _mix(self, a, b, weights):
+        """out = a*(1-w) + b*w, with `weights` broadcastable over (H, W, 3)."""
+        np.copyto(self.fa, a)
+        np.copyto(self.fb, b)
+        self.fb *= weights
+        self.fa *= (1.0 - weights)
+        self.fa += self.fb
+        np.copyto(self.out, self.fa, casting="unsafe")
+        return self.out
+
+    def crossfade(self, a, b, k):
+        return self._mix(a, b, f32(np.clip(k, 0.0, 1.0)))
+
+    def fade_black(self, a, k):
+        np.copyto(self.fa, a)
+        self.fa *= (1.0 - float(np.clip(k, 0.0, 1.0)))
+        np.copyto(self.out, self.fa, casting="unsafe")
+        return self.out
+
+    def wipe(self, a, b, k, softness=24):
+        w = a.shape[1]
+        k = float(np.clip(k, 0.0, 1.0))
+        # See wipe() below on why the edge overshoots by a full softness.
+        edge = k * (w + softness)
+        np.subtract(edge, self._cols, out=self._ramp)
+        self._ramp /= max(softness, 1e-6)
+        np.clip(self._ramp, 0.0, 1.0, out=self._ramp)
+        return self._mix(a, b, self._ramp[None, :, None])
+
+    def flash(self, a, b, k):
+        """Out through white. Loud; used sparingly."""
+        if k < 0.5:
+            return self.crossfade(a, self._white, k * 2.0)
+        return self.crossfade(self._white, b, k * 2.0 - 1.0)
+
+    def through_black(self, a, b, k):
+        """Out through black and back in; both effects run the whole time."""
+        if k < 0.5:
+            return self.fade_black(a, k * 2.0)
+        return self.fade_black(b, 2.0 - k * 2.0)
+
+
 def crossfade(a, b, k):
     """Blend two frames. k runs 0 (all a) to 1 (all b)."""
     k = float(np.clip(k, 0.0, 1.0))

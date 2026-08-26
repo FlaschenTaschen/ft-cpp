@@ -42,6 +42,288 @@ $ python3 megademo.py --playlist "fire:20,tunnel:15:wipe,water:12+drops=4"
 $ python3 megademo.py --no-banner --segment 25 --transition 3
 ```
 
+## ftsched
+
+![the control panel](screenshots/ftsched-ui.png)
+
+The installation's rotation, as a daemon rather than a shell script, with a
+control panel you can open from a phone in the room.
+
+```console
+$ python3 ftsched.py --host 127.0.0.1 --listen 0.0.0.0:8081
+```
+
+The rotation used to be a `bash` loop launching `python3 demo.py --duration
+45` per segment, which cost a fresh interpreter and a fresh `import numpy`
+every 45 seconds — about 1.4 s of black wall each time on a Pi 3, so roughly
+3% of the show was the rotation booting. It also made every segment change a
+hard cut, because two effects cannot be alive at once across a process
+boundary, and there was nothing to ask what was playing or to skip it.
+
+`ftsched` keeps the modules imported, builds ahead on a worker thread the same
+way `megademo` does, blends between segments, and serves a JSON API and the
+page above. Three threads: render, build, http. The HTTP side only reads a
+snapshot the render loop publishes once a second, and pushes commands onto a
+queue drained at the top of the next frame, so a slow client cannot stall the
+wall.
+
+**Steering.** Tap a card to jump straight to it, the switch to drop an effect
+from the rotation. A jump is implemented as the current segment ending early,
+so it rides the ordinary transition rather than cutting. What is switched off
+persists across restarts via `--state-file`; the running order itself does
+not, since that belongs in the rotation file, where it gets reviewed.
+
+**Settings.** The gear on a card opens an editor for that effect's own
+options — the splitflap board's messages, the number of fireflies, which
+palette `life` burns through.
+
+![the settings editor](screenshots/ftsched-editor.png)
+
+Nothing in the panel knows what a firefly is. Every demo already declares its
+options in `add_arguments()` with a type, a default, its choices and a line of
+help, so [`ftsched_opts.py`](ftsched_opts.py) reads that description back off
+the parser and `/api/schema` serves it; the page generates the form. Adding an
+option to a demo puts a control in the editor and there is nothing to keep in
+step — which is the only version of this that is still true in a year. It does
+mean walking `ArgumentParser._actions`, which is private, but there is no
+public introspection API and the alternative is parsing `--help`.
+
+Two shapes need fixing up on the way through: a flag *pair* like scroller's
+`--plasma` / `--no-plasma` is two actions writing one dest and collapses to
+one switch, and an option taking more than one value is left out rather than
+shown as a control that cannot round-trip it. Values are checked against the
+schema at the API — an unknown option or a value outside the declared choices
+comes back as a 400 with a sentence in it, rather than as a build that raises
+forty-five seconds later and switches the effect off.
+
+A change applies the next time that effect is *built*, since rebuilding
+underneath the one on screen would drop the wall for as long as the build
+takes. The exception is the effect on air, which is played again from the top
+so the change actually shows: retyping the splitflap board while looking at it
+has to do something, or the control reads as broken for the rest of the slot.
+Note that the `ms` figure on the card was measured with the settings the
+rotation shipped with — turn `--flies` up far enough and the pairing arithmetic
+below is no longer describing what is on the wall.
+
+Edits live in the `--state-file` alongside what is switched off, and for the
+same reason: what somebody retyped from their phone in the shop has not been
+through review, so it is kept apart from the rotation file and can only touch
+entries that file already lists. Only what differs is stored, so a later edit
+to the rotation is not silently overridden by a state file nobody remembers
+writing, and *Restore defaults* means the settings the entry was installed
+with rather than the demo's bare argparse defaults, which nobody chose. The
+file is rewritten within the second rather than at shutdown — this machine
+usually goes down by being unplugged.
+
+**Frame rate is per segment**, as it was when each demo ran as its own
+process: `boing` costs 2 ms and runs at 60, `water` costs 45.8 and runs at 20.
+Holding the whole show to one rate would make the cheap effects choppier than
+they are today for no gain. Each rate leaves roughly 40% headroom over the
+measured cost. The demo is *built* at the rate it will be driven at, because
+several of them scale motion per frame off `args.fps`.
+
+**Cost.** Each card shows that effect's measured p95 on the Pi. These matter
+in pairs, not singly: a transition renders *both* neighbours into one frame,
+so a pair can cost more than either one's own rate allows — `grove` into
+`daliclock` is 38.8 ms against the 33.3 ms frame they both run at. The
+transition is therefore paced to what the pair actually costs and steps back
+up afterwards; two seconds at a lower rate during a crossfade does not read,
+whereas frames arriving late do. `pair_check()` reports the ones that get
+paced down a long way, since that usually means the running order could be
+better. Anything that cannot fit a frame even alone — `slime` at 81.5 ms,
+`fireflies` at 61.3 — is marked `solo` and gets a cut on either side instead.
+
+**Building costs the current segment some frame rate.** The builder is a
+thread, and Python threads share the GIL, so while an expensive `build()` runs
+the effect on screen dips — `nyancat` measured 60.0/60 fps in steady state and
+32/60 during the few seconds `printer` was building behind it. That is the
+trade being made on purpose: the shell rotation this replaces went *entirely
+black* for 1.4 s at every segment change, and a brief rate dip in the middle
+of a 45 s slot is a much better failure than a stall at the transition. Moving
+builds to a subprocess would remove it, at the cost of shipping the built
+tables back across a pipe.
+
+**Previews.** The clips in `previews/` are 16 frames at 8 fps, committed rather
+than generated at runtime: baking three dozen of them costs every demo's
+`build()` and would steal the CPU the render loop needs. Rebuild after
+changing a demo:
+
+```console
+$ python3 scripts/make-previews.py --force knit sunset
+```
+
+A still cannot show what most of these are — `splitflap` is *entirely* motion,
+and `slime` looks like noise until it moves. (Two are stills anyway:
+`pacman-ghosts` does not move, and `daliclock` does not change within a two
+second window.)
+
+They are **animated WebP**, losslessly encoded, having been GIFs. GIF was
+costing about a third more for pixels that were also worse: its compression is
+weak enough that the palette had to be cut to 128 colours to keep the files
+reasonable, which is real damage on a wall whose whole business is gradients.
+Lossless WebP compresses a paletted image so much better that 256 colours in
+WebP still come out smaller than 128 in GIF — measured over this rotation, 32%
+smaller and strictly closer to what the demo rendered, with `fire`, `slime`,
+`metaballs`, `nyancat` and `pacman` landing exact. Lossy WebP was measured too
+and is the wrong tool: 320×64 of dithered noise and hard pixel edges is the
+worst case for a DCT, and at a quality matching GIF's error it saved nothing.
+
+**Segments** are `py` (a demoscene module, rendered in-process) or `exec` (an
+external command that draws on the wall itself, for the C++ tools). The
+scheduler stops sending for an `exec` slot and supervises the child, killing
+it if it outruns its time. Transitions cannot cross a process boundary, so
+those always cut.
+
+```console
+$ python3 ftsched.py --dump-rotation > rotation.json   # then edit, and:
+$ python3 ftsched.py --rotation rotation.json
+```
+
+An `exec` entry names the layers it draws on (`clears`), which are blanked
+when its slot ends — the C++ tools set a layer with a timeout of their own, so
+a pacman would otherwise sit on top of the next effect for the rest of it. Our
+own layer is blanked when the child starts, or the frozen last frame of the
+outgoing effect shows through wherever the child's layer is black. `wait`
+says whether the child exiting ends the slot: true for the ones that run for
+their whole `-t`, false for `send-text`, which sets a layer and returns at
+once.
+
+[`rotation-betelgeuse.json`](rotation-betelgeuse.json) is the Sequoia Fabrica
+installation's running order: 34 entries, 25 minutes, and **all of them
+native**. The segments that predate the numpy demos were ported rather than
+shelled out to — the pixel art into [`pixelart.py`](#pixelart), the C
+binaries into [`life.py`](#life) and [`maze.py`](#maze), the `send-text` jokes
+into [`console.py`](#console) — so every one of them now blends into its
+neighbours, has a preview, and runs from a checkout on any machine instead of
+from absolute paths on one Pi. `exec` remains as the escape hatch it was
+built to be; nothing in this rotation needs it.
+
+Site-specific text lives in that file rather than in `ftsched.py`: the marquee
+and the split-flap messages. The running order itself is generated to satisfy
+the pairing rule above and currently has **zero** transitions paced down; note
+that a `solo` neighbour cuts, so the edges either side of `slime` and
+`fireflies` are free and an expensive effect can sit there.
+
+The order is genuinely load-bearing, and it is easy to break by accident:
+removing one cheap segment leaves the two expensive ones that were either side
+of it adjacent, which is how dropping `full-moon` put `goldengate` next to
+`fire` and paced that transition down to 21 fps from 30. The floor is set by
+`water`, which at 45.8 ms cannot fit its own 20 fps frame even alone, so its
+two edges run at 80% however the rest is arranged; the order is chosen to
+bring everything else up to at least that.
+
+An entry's `module` may differ from its `name` — the six pixel-art segments
+are one module with six sets of options — and previews are keyed by name.
+
+The API is a handful of verbs — `jump`, `toggle`, `next`, `pause`/`resume`,
+`restart`, `configure` — POSTed as JSON to `/api/command`, with `/api/state`
+returning everything the page renders and `/api/schema` what each demo can be
+told to do:
+
+```console
+$ curl -s localhost:8081/api/state | jq '.now, .health'
+$ curl -sX POST localhost:8081/api/command -d '{"op":"jump","index":12}'
+$ curl -s localhost:8081/api/schema | jq '.modules.fireflies[].label'
+$ curl -sX POST localhost:8081/api/command -d \
+    '{"op":"configure","name":"splitflap","options":{"colour":"amber"}}'
+```
+
+`configure` carries the whole set of options for that entry rather than a
+patch, so an editor that has been open a while cannot half-apply against a
+rotation that has moved under it; `"options": null` puts the entry back to
+what the rotation file says.
+
+There is no authentication: it is a wall in a makerspace, and the worst anyone
+on the shop wifi can do is change what is on it. Bind it to the LAN or to a
+Tailscale address, not to the internet.
+
+Deployment is [`ftsched.service`](ftsched.service), which `Conflicts=` with
+the old `ft_demos.service` so the two can never both drive layer 0.
+
+<img src="screenshots/ftsched-ui-mobile.png" width="300" alt="the same panel on a phone">
+<img src="screenshots/ftsched-editor-mobile.png" width="300" alt="the settings editor on a phone">
+
+On a phone the editor is a sheet up from the bottom, where a thumb is, rather
+than a dialog floating in the middle of the screen. It is a `<dialog>`, so the
+backdrop, the focus trap, Esc and making everything behind it inert come from
+the browser instead of from three hundred lines here.
+
+## ftindex
+
+![the about page](screenshots/ftindex.png)
+
+`ftsched` serves its panel on 8081, which is fine for a checkout and wrong for
+an installation: a port number is something you have to be *told*, and someone
+standing in front of the wall with a phone types the hostname and nothing
+else. [`ftindex.py`](ftindex.py) owns the root instead — it reverse-proxies
+`ftsched` at `/` and keeps one page of its own at `/about`, covering what the
+wall is and how to push your own pixels at it, which the panel has no business
+explaining.
+
+```console
+$ python3 ftindex.py --listen 0.0.0.0:80 --panel-port 8081
+```
+
+Everything therefore lives in **one origin on one port**. That is not only
+tidier: it is what lets the panel be served over TLS at all without the page
+having to know which of its links need a different scheme and port, and it
+means the same URLs work on the shop wifi and over the tailnet. An earlier
+version of this fronted the two separately and had to rewrite links based on
+`X-Forwarded-Proto`; proxying deleted that problem rather than solving it.
+
+```console
+$ tailscale serve --bg --https=443 http://127.0.0.1:80
+```
+
+One line, because there is nothing left that needs a second rule. `tailscale
+serve` terminates TLS with a real `ts.net` certificate, renews it, and exposes
+it to the tailnet only — three things this would otherwise have to get right
+by itself.
+
+It is a **separate daemon** from `ftsched` on purpose. The scheduler is
+driving the wall on a frame deadline; the front door is the thing most likely
+to be hit by a room full of curious people, and it can be restarted, reloaded
+and got wrong without touching the render loop. It is also deliberately not
+`BindsTo=ftsched`: when the scheduler is down this answers **502 with a page
+that says so**, which is a great deal better than a connection refused on the
+one URL anybody knows.
+
+**Previews are served from disk here, not proxied.** They are the
+overwhelming majority of the bytes — a cold page load is three dozen files and
+a couple of megabytes, against a 5 kB poll once a second — and putting that
+burst through `ftsched` would run it through the GIL the render loop is
+waiting on, which is the whole thing keeping the front door in its own process
+was meant to avoid. They are static files in the same checkout, so it reads
+them directly and `ftsched` never hears about it; the wall's pictures also
+keep loading when the scheduler is down.
+
+What is left to proxy is small, so proxying is deliberately dumb: one upstream
+request per request, no connection reuse, no caching. Bodies stream rather
+than being read whole, and upstream 4xx pass through rather than being
+swallowed — a 400 for a malformed command is `ftsched`'s answer, not an error
+in the proxy.
+
+`/about` has no JavaScript and is rendered server-side, because it has to work
+first time on whatever phone walks in. Its one dynamic part is a `now playing`
+line fetched from `ftsched` with a 0.6 s timeout: the page is worth more than
+the status line on it, so a wedged scheduler costs a blink rather than a
+spinner.
+
+Binding `:80` does not need root. [`ftindex.service`](ftindex.service) runs as
+`pi` with `AmbientCapabilities=CAP_NET_BIND_SERVICE` — exactly the one
+privilege — plus the usual `Protect*` sandbox, since this is the process most
+exposed to the room.
+
+`ftsched` listens on `127.0.0.1:8081`, so the front door is the only way in
+and the panel is not also answering on a port nobody was told about. That does
+mean there is no second way to drive the wall if `ftindex` is the broken
+thing; the fallback is an ssh tunnel, which is a fair trade for not having a
+second unauthenticated listener on the shop wifi.
+
+```console
+$ ssh -N -L 8081:127.0.0.1:8081 pi@betelgeuse
+```
+
 ## The effects
 
 ### fire
@@ -612,6 +894,100 @@ sign.
 ```console
 $ python3 splitflap.py --messages "SEQUOIA FABRICA|OPEN HOUSE {TIME};MAKE THINGS|ASK ANYONE" --hold 12
 ```
+
+### pixelart
+
+![pixelart](screenshots/pixelart.png)
+
+The sprite sheets in [`pixelart/`](pixelart) — a sequoia, space invaders,
+pacman and his ghosts, an eight-frame sewing machine — which have been on the
+Sequoia Fabrica wall for years, played until now by an external C binary
+reading JSON files of hex strings.
+
+Sprites are either joined side by side into one strip and moved as a unit
+(four invaders in a row, seven sequoias marching past) or played in place as
+frames of an animation (the sewing machine, pacman's chomp), and placed
+centred, bouncing or scrolling. `--art` takes ranges, so `sew1..8` and
+`sf-tree*7` mean what they look like.
+
+`--poses` is both at once: it names alternative sheets of the same slots, so a
+strip can hold four different sprites and still animate, all of them changing
+pose together. That is how an arcade cabinet did it, and it is the difference
+between a row of invaders and a printed banner of invaders. The second pose is
+baked from the first by
+[`scripts/make-invader-poses.py`](scripts/make-invader-poses.py), which moves
+the limbs rather than redrawing them — the bodies stay byte-identical, so
+nothing in the outline flickers when the pose changes.
+
+A scroll needs `--travel` pointed whichever way the artwork faces, or pacman
+chomps his way backwards across the wall.
+
+Half the set is greyscale line art and half is full colour, so `--render auto`
+checks for chroma: the ghosts are drawn as they are, and the tree and the
+invaders are painted from a palette. The palette is laid **across** the strip
+rather than mapped from brightness — brightness to hue turns every antialiased
+edge into a different colour and the shape into confetti, which is exactly what
+the first attempt at this looked like.
+
+```console
+$ python3 pixelart.py --art sf-tree --mode center
+$ python3 pixelart.py --art pacman-32x32-1..6 --sequence-ms 50 \
+      --mode scroll --travel right
+$ python3 pixelart.py --art space-invaders-1..4 --poses ,b --sequence-ms 500 \
+      --mode bounce
+```
+
+### life
+
+![life](screenshots/life.png)
+
+Conway, one cell per pixel, which at 320x64 is 20,480 cells — enough for
+gliders to travel and for still lifes to settle out all over the board.
+
+The rule is four lines of numpy. Everything else is about making a black and
+white automaton worth looking at on an LED wall: cells are coloured by how
+long they have been alive, so a fresh birth is bright and a block that has sat
+there a minute has faded to an ember, and dead cells leave a decaying trail so
+a glider draws its own wake. Life always dies down, so when the population
+stops changing — allowing for period-2 oscillators, which change forever
+without going anywhere — a fresh patch is seeded somewhere and the board gets
+reinvaded rather than reset.
+
+Neighbour counting is eight slices of one padded scratch board. `np.roll`
+would build sixteen full-size temporaries per generation, which on a Pi is
+most of the cost of the rule.
+
+### maze
+
+![maze](screenshots/maze.png)
+
+A maze carved, flooded and solved, on a loop. The old C version drew a
+finished maze and left it there, but a finished maze is a texture; the making
+of it is the part worth watching. A depth-first walk knocks down walls with
+the head glowing at the frontier, visibly backtracking when it paints itself
+into a corner; then a breadth-first flood pours down every dead end at once;
+then the route lights up end to end and holds.
+
+The carve order and the route are baked into grids rather than kept as lists,
+so each frame is one comparison against a rising playhead instead of a Python
+loop over a few thousand cells.
+
+### console
+
+![console](screenshots/console.png)
+
+Code typing itself out, with a cursor and syntax colouring — the three Arduino
+one-liners that used to appear as static text for five seconds each.
+
+The typing is deliberately uneven: a constant interval reads as a machine
+printing, while a little jitter and a longer beat after a semicolon reads as
+someone at a keyboard. Every character's arrival time is worked out up front,
+which is what lets `render()` stay a pure function of `t` — the demo can be
+started at any moment, seeked, or run at any frame rate and look the same. The
+cursor blinks only while idle; blinking through the typing looks like a fault.
+
+Lines are just an argument, so this is the one demo anyone in the space can
+add to without touching code.
 
 ### scroller
 
