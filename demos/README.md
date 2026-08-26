@@ -4802,6 +4802,71 @@ still true and only "now" has gone soft. With no record at all, a no-data card.
     FT_DATA_CACHE=/tmp/empty python3 sfmix.py     # the no-data card
     python3 scripts/test-sfmix.py
 
+### dolly
+
+![dolly](screenshots/dolly.png)
+
+Sixty seconds of hot pink for Dolly Parton, written to be *cued* rather than
+shuffled: it belongs at 9:25, and the joke is the time. The panel puts up a
+clock reading **9:25** with the colon blinking the way every clock radio in
+America blinked, and underneath it says WE'RE WORKIN' 9:25. CLOSE ENOUGH.
+
+Then it stops being a joke and starts being the reason. Twelve butterflies --
+one a month, which is what her Imagination Library mails a child from birth to
+five -- lift off a ridgeline, cross the panel and land as books, and the pile
+of spines they make is the year. The figure that follows is the programme's
+own 2025 year-end number with the year printed next to it, because a number on
+a wall without a date on it is a number that will rot. The last card asks for
+the only thing worth asking a room full of people who make things.
+
+It carries her dates in the smallest type in the file and it is deliberately
+not solemn: a panel that went grey and quiet for Dolly Parton would be the one
+thing she never was.
+
+**Pink is the only colour decision.** The whole picture is a single (64, 320)
+intensity field -- sky, ridge, butterflies, type, rhinestones -- taken through
+one 256-entry ramp that runs unlit, plum, magenta, hot pink, blush, gold,
+rhinestone white. Nothing on the panel chooses its own colour, so nothing on
+it can clash: a butterfly is bright, so it comes out gold, and the ridge it
+rises off is dim, so it comes out plum. The hot pink stop is `#FF2D95` and the
+gold is `#FFC46E`, and those two are the entire visual identity.
+
+**The rhinestones are most of the design and cost nothing.** Forty specular
+glints on fixed positions, each twinkling at its own frequency off `t`, each a
+little cross, all of them landing at the top of the ramp so they come out
+white-hot. Run it with `--sparkle 0` and the panel is instantly a weather
+graphic. That is how much of a stage costume is sequins.
+
+**Everything is a pure function of `t`.** The butterflies fly on closed-form
+paths and the pile's height is `int(landed(t))` rather than a counter that
+gets incremented, so the demo can be entered at any instant at any frame rate
+and land in the same picture -- which is what ftsched, the preview baker and
+`--at` all need, and what `scripts/test-dolly.py` asserts by building two
+copies and diffing their bytes.
+
+**Type is data, not literals.** Every line lives in one `TEXT` table with the
+size it goes up at, and the draw calls name a line rather than repeat its
+words. That is not tidiness: a headline at scale 2 is twelve pixels a
+character, so 320 pixels is twenty-six characters and not one more, and a
+sentence that overruns does not look broken -- it looks like a sentence with
+the last two words missing. `12 A YEAR, 60 BY AGE FIVE.` was `TWELVE A YEAR.
+SIXTY BY FIVE.` until the pixels were looked at. The test measures every line
+against the panel, and `fit_scale()` steps a line down a size rather than let
+a narrower panel eat the end of it.
+
+Four acts, dissolving through the shared sky rather than cutting, and the last
+one does not dissolve out: its final frame is what the wall is holding when
+the minute ends and the rotation cuts back in, so it is the one frame in the
+file guaranteed to be photographed.
+
+Run:
+
+    python3 dolly.py --host 127.0.0.1
+    python3 dolly.py --at 47          # the closing card, for a photograph
+    python3 dolly.py --sparkle 0      # see what the rhinestones were doing
+
+    python3 scripts/test-dolly.py
+
 ## where the wall is — `site.json` and `ftsite.py`
 
 The installation's own coordinate, in one file, read by everything that needs it.
