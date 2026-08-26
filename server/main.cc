@@ -294,6 +294,10 @@ int main(int argc, char *argv[]) {
         CompositeFlaschenTaschen layered_display(display, 16);
         layered_display.StartLayerGarbageCollection(&mutex, layer_timeout);
 
+        // Backends that would otherwise block on hardware inside Send() move
+        // that work here, so writers never wait on the panel refresh.
+        display->StartDisplayThread(&mutex);
+
 #ifdef HAVE_MDNS
         // Create service discovery thread if enabled (after hardware is initialized
         // so we have the correct width/height from the display)
@@ -324,6 +328,9 @@ int main(int argc, char *argv[]) {
 #endif
 
         udp_server_run_blocking(&layered_display, &mutex);  // last server blocks.
+
+        // Stop presenting before the layer GC thread and the display go away.
+        display->StopDisplayThread();
 
 #ifdef HAVE_MDNS
         // Shutdown service discovery thread gracefully
