@@ -17,6 +17,8 @@
 
 #include "flaschen-taschen.h"
 
+#include <pthread.h>
+
 #include <vector>
 #include <string>
 
@@ -25,13 +27,27 @@ class MultiSPI;
 class LEDStrip;
 }
 
+namespace ft {
+class Mutex;
+}
+
 class ServerFlaschenTaschen : public FlaschenTaschen {
 public:
+    virtual ~ServerFlaschenTaschen() {}
+
     // Server-side FlaschenTaschen displays might need to do some initialization
     // after they have become a daemon. This can be used for general init
     // tasks, but in particular to start threads (Threads must not be started
     // before becoming a daemon).
     virtual void PostDaemonInit() {}
+
+    // Backends whose Send() would otherwise block on hardware present
+    // asynchronously instead: Send() only marks the frame ready, and a
+    // dedicated thread does the blocking part with the writer lock released.
+    // "lock" is the same mutex that serialises writers.
+    // Default is a no-op for backends that present synchronously.
+    virtual void StartDisplayThread(ft::Mutex * /*lock*/) {}
+    virtual void StopDisplayThread() {}
 };
 
 // Column helps assembling the various columns of width 5 (the width of a crate)
@@ -95,16 +111,42 @@ public:
     virtual ~RGBMatrixFlaschenTaschen();
 
     virtual void PostDaemonInit();  // Starting threads.
+    virtual void StartDisplayThread(ft::Mutex *lock);
+    virtual void StopDisplayThread();
 
     int width() const { return width_; }
     int height() const { return height_; }
 
+    // Both are called on writer threads with the writer mutex held. Neither
+    // touches the matrix, so neither can block on hardware.
     void SetPixel(int x, int y, const Color &col);
     void Send();
 
 private:
+    class DisplayPusher;
+    friend class DisplayPusher;
+
+    // Copy the accumulated dirty region of fb_ into the offscreen canvas.
+    // Called by the pusher with the writer mutex HELD. False if no work.
+    bool TakeDirtyRegion();
+
+    // Present the offscreen canvas and resync the spare. Blocks until vsync,
+    // so it is called by the pusher with the writer mutex RELEASED.
+    void SwapAndResync();
+
     rgb_matrix::RGBMatrix *const matrix_;
+
+    // Only ever touched by the pusher thread, so it needs no locking.
     rgb_matrix::FrameCanvas *back_buffer_;
+
+    // Source of truth for what should be on screen. Writers mutate this and
+    // nothing else; guarded by the writer mutex.
+    Color *fb_;
+    int dirty_x0_, dirty_y0_, dirty_x1_, dirty_y1_;  // half-open; empty if x1<=x0
+    bool frame_ready_;
+    pthread_cond_t frame_ready_cond_;
+
+    DisplayPusher *pusher_;
 
     int width_;
     int height_;
